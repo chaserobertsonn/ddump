@@ -1059,9 +1059,20 @@ struct AppearanceSettings: View {
   func resetIcon() {
     let target = Bundle.main.bundleURL
       .appendingPathComponent("Contents/Resources/AppIcon.icns")
-    try? FileManager.default.removeItem(at: target)
-    refreshTrigger += 1
-    notice = "Reset to default icon."
+    let defaultIcon = Bundle.main.bundleURL
+      .appendingPathComponent("Contents/Resources/DefaultAppIcon.icns")
+    do {
+      if FileManager.default.fileExists(atPath: defaultIcon.path) {
+        if FileManager.default.fileExists(atPath: target.path) {
+          try FileManager.default.removeItem(at: target)
+        }
+        try FileManager.default.copyItem(at: defaultIcon, to: target)
+      }
+      refreshTrigger += 1
+      notice = "Reset to default icon."
+    } catch {
+      notice = "Failed to reset icon: \(error.localizedDescription)"
+    }
   }
 
   func writeICNS(image: NSImage, to url: URL) throws {

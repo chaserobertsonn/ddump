@@ -81,11 +81,19 @@ if [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
   <string>0.2</string>
   <key>CFBundleExecutable</key>
   <string>DDump</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
 </dict>
 </plist>
 PLIST
+    if [[ -f "${PROJECT_DIR}/app/Assets/AppIcon.icns" ]]; then
+      cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+      cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/DefaultAppIcon.icns"
+    fi
     if swiftc -parse-as-library -o "${APP_BUNDLE}/Contents/MacOS/DDump" "${PROJECT_DIR}/app/DDumpApp.swift"; then
       chmod +x "${APP_BUNDLE}/Contents/MacOS/DDump"
       /usr/bin/touch "$APP_BUNDLE"
