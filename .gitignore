@@ -1,0 +1,20 @@
+# macOS / editor noise
+.DS_Store
+._*
+*.swp
+
+# Build outputs
+DDump
+*.app/
+*.dSYM/
+
+# Local runtime state belongs in ~/Library/Application Support/DDump, not source.
+state/
+logs/
+reports/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Historical rescue scripts are kept locally but not shipped.
+/zz-archive/
