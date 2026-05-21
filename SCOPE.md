@@ -243,3 +243,27 @@ Still blocked or intentionally deferred:
 - Existing stranded folder `~/Temp/2026-05-19-dump` still needs explicit recovery/upload confirmation.
 - Real calendar mode needs `gcalcli` installed and authorized on the Mac before live testing.
 - Production Densley cutover should stay blocked until a real-card retry/interruption test passes against `_DDumpTest`.
+
+## 2026-05-20 rclone memory follow-up
+
+Completed:
+
+- Changed the Google Drive rclone mount from an always-on LaunchAgent to an on-demand service:
+  - `RunAtLoad=false`
+  - `KeepAlive=false`
+  - DDump starts it only when `POST_MOVE_ROOT` points under `~/GoogleDrive` and the mount is not already active.
+  - DDump tries a normal unmount when it started the mount itself; if the mount is busy, it leaves it running instead of forcing it.
+- Replaced the Finder-heavy rclone profile with a low-memory profile:
+  - `--vfs-cache-mode writes`
+  - `--buffer-size 8M`
+  - `--transfers 2`
+  - `--checkers 4`
+  - `--drive-chunk-size 16M`
+  - shorter directory/poll/cache settings
+- Verified the old live profile used about 1.13 GB resident memory.
+- Verified the new profile started around 71 MB resident memory in a controlled test.
+- Confirmed the separate `dfp-server` Finder mount remains active and separate from the Google Drive mount.
+
+Tradeoff:
+
+- The new profile is tuned for DDump uploads and light Finder checks, not heavy all-day Finder browsing/previews. If Finder browsing of Google Drive becomes important again, use a separate manual Finder-heavy profile instead of keeping the DDump profile always on.

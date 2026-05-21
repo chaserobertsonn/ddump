@@ -375,6 +375,7 @@ move_last_target=""
 missed_report_rows=0
 missed_report_truncated=0
 pending_recovery_touched=0
+ddump_started_gdrive_mount=0
 current_status_phase="starting"
 current_status_message=""
 current_status_volume=""
@@ -599,6 +600,72 @@ build_video_post_move_target_dir() {
   printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
 }
 
+path_uses_gdrive_mount() {
+  local path="$1"
+  local gdrive="${HOME}/GoogleDrive"
+  case "$path" in
+    "$gdrive"|"$gdrive"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+gdrive_mount_active() {
+  /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "
+}
+
+ensure_gdrive_mount_for_post_move() {
+  local target_root="$1"
+  path_uses_gdrive_mount "$target_root" || return 0
+  gdrive_mount_active && return 0
+
+  local uid plist label mount_dir
+  uid="$(/usr/bin/id -u)"
+  plist="${HOME}/Library/LaunchAgents/com.chase.rclone-gdrive.plist"
+  label="com.chase.rclone-gdrive"
+  mount_dir="${HOME}/GoogleDrive"
+  if [[ ! -f "$plist" ]]; then
+    move_last_status="blocked"
+    move_last_detail="Google Drive mount agent missing: ${plist}"
+    return 1
+  fi
+
+  /bin/mkdir -p "$mount_dir"
+  /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+  /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+  ddump_started_gdrive_mount=1
+
+  local i
+  for i in {1..30}; do
+    if gdrive_mount_active; then
+      return 0
+    fi
+    /bin/sleep 1
+  done
+
+  move_last_status="blocked"
+  move_last_detail="Google Drive mount did not become ready"
+  return 1
+}
+
+stop_gdrive_mount_if_started() {
+  [[ "${ddump_started_gdrive_mount:-0}" == "1" ]] || return 0
+  local uid label mount_dir
+  uid="$(/usr/bin/id -u)"
+  label="com.chase.rclone-gdrive"
+  mount_dir="${HOME}/GoogleDrive"
+
+  if gdrive_mount_active; then
+    if /usr/sbin/diskutil unmount "$mount_dir" >/dev/null 2>&1; then
+      /bin/launchctl bootout "gui/${uid}/${label}" >/dev/null 2>&1 || true
+      log "Stopped Google Drive rclone mount started by DDump."
+    else
+      log "Google Drive rclone mount was started by DDump but is still busy; leaving it mounted."
+    fi
+  else
+    /bin/launchctl bootout "gui/${uid}/${label}" >/dev/null 2>&1 || true
+  fi
+}
+
 queue_path_unique() {
   local queue_file="$1"
   local path="$2"
@@ -728,6 +795,12 @@ move_queued_paths_to_post_target() {
     move_last_status="empty"
     move_last_detail="nothing queued"
     return 0
+  fi
+
+  if ! ensure_gdrive_mount_for_post_move "$(effective_post_move_root)"; then
+    log "Post-move blocked for ${vol_name}: ${move_last_detail}"
+    notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
+    return 1
   fi
 
   if ! check_post_move_ready; then
@@ -2792,4 +2865,5 @@ if [[ -n "$summary_kept_mounted_volumes" ]]; then
 fi
 finalize_empty_missed_report
 write_daily_digest "$daily_digest_file" "$summary_message" "$kept_mounted_msg" "blocked=${summary_post_move_blocked_total}, failed=${summary_post_move_fail_total}" "$summary_errors_total"
+stop_gdrive_mount_if_started
 exit 0
