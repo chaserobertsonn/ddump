@@ -99,6 +99,15 @@ PLIST
       cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
       cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/DefaultAppIcon.icns"
     fi
+    if [[ -d "${PROJECT_DIR}/app/Assets/Fonts" ]]; then
+      mkdir -p "${APP_BUNDLE}/Contents/Resources/Fonts"
+      cp "${PROJECT_DIR}/app/Assets/Fonts"/*.otf "${APP_BUNDLE}/Contents/Resources/Fonts/" 2>/dev/null || true
+    fi
+    for asset in logo-icon.png logo-icon-512.png logo-mark.svg; do
+      if [[ -f "${PROJECT_DIR}/app/Assets/${asset}" ]]; then
+        cp "${PROJECT_DIR}/app/Assets/${asset}" "${APP_BUNDLE}/Contents/Resources/${asset}"
+      fi
+    done
     if swiftc -parse-as-library -o "${APP_BUNDLE}/Contents/MacOS/DDump" "${PROJECT_DIR}/app/DDumpApp.swift"; then
       chmod +x "${APP_BUNDLE}/Contents/MacOS/DDump"
       /usr/bin/touch "$APP_BUNDLE"

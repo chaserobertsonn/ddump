@@ -12,6 +12,7 @@
 import SwiftUI
 import AppKit
 import Foundation
+import CoreText
 
 // MARK: - Paths
 
@@ -35,6 +36,17 @@ enum DDumpPaths {
   static var stopFlag: URL { controlDir.appendingPathComponent("stop_after_file.flag") }
   static var keepMountedFlag: URL { controlDir.appendingPathComponent("keep_mounted.flag") }
   static var ejectNowFlag: URL { controlDir.appendingPathComponent("eject_now.flag") }
+}
+
+func registerBundledFonts() {
+  guard let resourceRoot = Bundle.main.resourceURL else { return }
+  let fontsDir = resourceRoot.appendingPathComponent("Fonts")
+  guard let files = try? FileManager.default.contentsOfDirectory(at: fontsDir, includingPropertiesForKeys: nil) else {
+    return
+  }
+  for file in files where file.pathExtension.lowercased() == "otf" {
+    CTFontManagerRegisterFontsForURL(file as CFURL, .process, nil)
+  }
 }
 
 // MARK: - Shell config / status parsing
@@ -784,12 +796,182 @@ func openInFinder(_ path: String) {
   }
 }
 
+extension AppState {
+  var currentBytesLabel: String {
+    let kb = 1024.0
+    let mb = kb * 1024.0
+    let gb = mb * 1024.0
+    let estimatedPerFile = 6.5 * mb
+    let bytes = Double(max(total, 0)) * estimatedPerFile
+    if bytes >= gb {
+      return String(format: "%.1f GB", bytes / gb)
+    }
+    if bytes >= mb {
+      return String(format: "%.0f MB", bytes / mb)
+    }
+    return "\(Int(bytes / kb)) KB"
+  }
+}
+
 struct InfoHint: View {
   let text: String
   var body: some View {
     Image(systemName: "info.circle")
       .foregroundColor(.secondary)
       .help(text)
+  }
+}
+
+extension Color {
+  static let ddumpBG = Color(red: 0x0B / 255.0, green: 0x0A / 255.0, blue: 0x09 / 255.0)
+  static let ddumpBGAlt = Color(red: 0x11 / 255.0, green: 0x0F / 255.0, blue: 0x0D / 255.0)
+  static let ddumpSurface = Color(red: 0x16 / 255.0, green: 0x13 / 255.0, blue: 0x10 / 255.0)
+  static let ddumpSurface2 = Color(red: 0x1D / 255.0, green: 0x1A / 255.0, blue: 0x16 / 255.0)
+  static let ddumpSurface3 = Color(red: 0x26 / 255.0, green: 0x22 / 255.0, blue: 0x1C / 255.0)
+  static let ddumpSurface4 = Color(red: 0x32 / 255.0, green: 0x2D / 255.0, blue: 0x26 / 255.0)
+  static let ddumpFG1 = Color(red: 0xF2 / 255.0, green: 0xEB / 255.0, blue: 0xE0 / 255.0)
+  static let ddumpFG2 = Color(red: 0xB8 / 255.0, green: 0xAF / 255.0, blue: 0xA2 / 255.0)
+  static let ddumpFG3 = Color(red: 0x7A / 255.0, green: 0x74 / 255.0, blue: 0x68 / 255.0)
+  static let ddumpFG4 = Color(red: 0x4E / 255.0, green: 0x48 / 255.0, blue: 0x3F / 255.0)
+  static let ddumpLine1 = Color.white.opacity(0.06)
+  static let ddumpLine2 = Color.white.opacity(0.10)
+  static let ddumpLine3 = Color.white.opacity(0.16)
+  static let ddumpPeach = Color(red: 0xE8 / 255.0, green: 0xB9 / 255.0, blue: 0x99 / 255.0)
+  static let ddumpPeachLight = Color(red: 0xF4 / 255.0, green: 0xD8 / 255.0, blue: 0xC0 / 255.0)
+  static let ddumpPeachSoft = Color(red: 0xE8 / 255.0, green: 0xB9 / 255.0, blue: 0x99 / 255.0, opacity: 0.12)
+  static let ddumpSuccess = Color(red: 0x7F / 255.0, green: 0xB0 / 255.0, blue: 0x89 / 255.0)
+  static let ddumpWarning = Color(red: 0xD4 / 255.0, green: 0xA8 / 255.0, blue: 0x57 / 255.0)
+  static let ddumpDanger = Color(red: 0xD1 / 255.0, green: 0x72 / 255.0, blue: 0x66 / 255.0)
+}
+
+enum DDumpFont {
+  static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+    let name = (weight == .bold || weight == .black || weight == .heavy) ? "Montserrat Alternates Bold" : "Montserrat Alternates SemiBold"
+    return .custom(name, size: size)
+  }
+
+  static func ui(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    let name: String
+    if weight == .bold || weight == .black || weight == .heavy {
+      name = "Montserrat Bold"
+    } else if weight == .semibold {
+      name = "Montserrat SemiBold"
+    } else if weight == .medium {
+      name = "Montserrat Medium"
+    } else {
+      name = "Montserrat Regular"
+    }
+    return .custom(name, size: size)
+  }
+}
+
+struct DDumpPrimaryButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(DDumpFont.ui(13, weight: .medium))
+      .foregroundColor(Color(red: 0x1A / 255.0, green: 0x11 / 255.0, blue: 0x07 / 255.0))
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(LinearGradient(colors: [.ddumpPeachLight, .ddumpPeach], startPoint: .top, endPoint: .bottom))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .stroke(Color.black.opacity(0.35), lineWidth: 1)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .stroke(Color.white.opacity(0.12), lineWidth: 1)
+          .blendMode(.plusLighter)
+      )
+      .opacity(configuration.isPressed ? 0.88 : 1)
+      .scaleEffect(configuration.isPressed ? 0.99 : 1)
+  }
+}
+
+struct DDumpSecondaryButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(DDumpFont.ui(13, weight: .medium))
+      .foregroundColor(.ddumpFG1)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(LinearGradient(colors: [.ddumpSurface3, .ddumpSurface2], startPoint: .top, endPoint: .bottom))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .stroke(Color.black.opacity(0.45), lineWidth: 1)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .stroke(Color.white.opacity(0.08), lineWidth: 1)
+          .blendMode(.plusLighter)
+      )
+      .opacity(configuration.isPressed ? 0.88 : 1)
+      .scaleEffect(configuration.isPressed ? 0.99 : 1)
+  }
+}
+
+struct DDumpStatusPill: View {
+  let text: String
+  let color: Color
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(color)
+        .frame(width: 6, height: 6)
+        .shadow(color: color.opacity(0.7), radius: 4, x: 0, y: 0)
+      Text(text)
+        .font(DDumpFont.ui(11, weight: .medium))
+    }
+    .foregroundColor(.ddumpFG1)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 4)
+    .background(color.opacity(0.14), in: Capsule())
+  }
+}
+
+struct DDumpTabChip: View {
+  let icon: String
+  let title: String
+  let active: Bool
+  let onTap: () -> Void
+
+  var body: some View {
+    Button(action: onTap) {
+      HStack(spacing: 6) {
+        Image(systemName: icon)
+          .foregroundColor(active ? .ddumpPeach : .ddumpFG2)
+        Text(title)
+      }
+      .font(DDumpFont.ui(12, weight: active ? .medium : .regular))
+      .foregroundColor(active ? .ddumpFG1 : .ddumpFG2)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(active ? Color.ddumpSurface2 : Color.clear)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .stroke(active ? Color.black.opacity(0.45) : Color.clear, lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+extension View {
+  func ddumpFormSkin() -> some View {
+    self
+      .scrollContentBackground(.hidden)
+      .background(Color.ddumpBG)
+      .tint(.ddumpPeach)
+      .foregroundColor(.ddumpFG1)
   }
 }
 
@@ -801,10 +983,10 @@ struct ContentView: View {
 
   var phaseColor: Color {
     switch state.phase {
-    case "importing", "scanning", "starting": return .blue
-    case "complete": return .green
-    case "stopped", "paused": return .orange
-    default: return .secondary
+    case "importing", "scanning", "starting": return .ddumpPeach
+    case "complete": return .ddumpSuccess
+    case "stopped", "paused": return .ddumpWarning
+    default: return .ddumpFG3
     }
   }
 
@@ -820,38 +1002,73 @@ struct ContentView: View {
     }
   }
 
+  func appIconImage() -> NSImage {
+    NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      HStack(spacing: 14) {
-        Image(systemName: state.phase == "complete" ? "checkmark.seal.fill" : "camera.aperture")
-          .font(.system(size: 38))
-          .foregroundColor(phaseColor)
-        VStack(alignment: .leading, spacing: 2) {
-          Text("DDump").font(.title2).bold()
-          Text(phaseLabel).foregroundColor(phaseColor)
+    VStack(spacing: 0) {
+      VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 16) {
+          Image(nsImage: appIconImage())
+            .resizable()
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+          VStack(alignment: .leading, spacing: 4) {
+            Text("DDump")
+              .font(DDumpFont.display(22, weight: .semibold))
+              .foregroundColor(.ddumpFG1)
+            HStack(spacing: 10) {
+              DDumpStatusPill(text: "\(phaseLabel)\(state.volume.isEmpty ? "" : " · \(state.volume)")", color: phaseColor)
+              Text("\(state.total) files · \(state.currentBytesLabel)")
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundColor(.ddumpFG3)
+            }
+          }
+          Spacer()
+          VStack(alignment: .trailing, spacing: 4) {
+            Text("Free locally")
+              .font(DDumpFont.ui(11, weight: .semibold))
+              .textCase(.uppercase)
+              .tracking(1.4)
+              .foregroundColor(.ddumpFG3)
+            Text("\(state.localFreeGB) GB")
+              .font(.system(size: 18, weight: .medium, design: .monospaced))
+              .foregroundColor(.ddumpFG1)
+          }
         }
+        .padding(.bottom, 18)
+        .overlay(alignment: .bottom) {
+          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+        }
+
+        if !state.runActive && state.total == 0 {
+          IdleView()
+            .padding(.top, 18)
+        } else {
+          ProgressDetail()
+            .padding(.top, 18)
+        }
+
+        DestinationSummaryPanel()
+          .padding(.top, 18)
+
+        RunChecklistPanel()
+          .padding(.top, 20)
+
+        HealthPanel()
+          .padding(.top, 18)
+
+        ControlBar()
+          .padding(.top, 14)
+
         Spacer()
-        if !state.updatedAt.isEmpty && state.runActive {
-          Text(state.updatedAt).font(.caption2).foregroundColor(.secondary)
-        }
       }
-
-      Divider()
-
-      if !state.runActive && state.total == 0 {
-        IdleView()
-      } else {
-        ProgressDetail()
-      }
-
-      RunChecklistPanel()
-
-      HealthPanel()
-
-      // Control buttons — always visible; disabled when no run active
-      ControlBar()
-
-      Spacer(minLength: 8)
+      .padding(.horizontal, 28)
+      .padding(.top, 22)
+      .padding(.bottom, 16)
+      .background(Color.ddumpBG)
+      .frame(minWidth: 840, minHeight: 860)
 
       HStack(spacing: 12) {
         Button {
@@ -859,6 +1076,7 @@ struct ContentView: View {
         } label: {
           Label("Settings…", systemImage: "gearshape")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
         .keyboardShortcut(",", modifiers: .command)
 
         Spacer()
@@ -868,19 +1086,27 @@ struct ContentView: View {
         } label: {
           Label("Open Uploads", systemImage: "folder")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
 
         Button {
           openInFinder(DDumpPaths.logFile.path)
         } label: {
           Label("Log", systemImage: "doc.text")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
       }
+      .padding(.horizontal, 20)
+      .padding(.vertical, 12)
+      .background(
+        LinearGradient(colors: [Color.clear, Color.black.opacity(0.22)], startPoint: .top, endPoint: .bottom)
+      )
+      .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
     }
-    .padding(20)
-    .frame(minWidth: 560, minHeight: 420)
+    .background(Color.ddumpBG)
     .sheet(isPresented: $showingSettings) {
       SettingsSheet(isPresented: $showingSettings)
         .environmentObject(state)
+        .preferredColorScheme(state.preferredColorScheme())
     }
   }
 }
@@ -889,21 +1115,77 @@ struct ContentView: View {
 /// (independent of the auto-bound Settings scene which has quirks).
 struct SettingsSheet: View {
   @Binding var isPresented: Bool
+  @EnvironmentObject var state: AppState
+
+  enum SettingsTab: String, CaseIterable {
+    case destination = "Destination"
+    case naming = "Naming"
+    case detection = "Detection"
+    case cloud = "Cloud"
+    case calendar = "Calendar"
+    case appearance = "Appearance"
+
+    var icon: String {
+      switch self {
+      case .destination: return "folder"
+      case .naming: return "character.textbox"
+      case .detection: return "camera.aperture"
+      case .cloud: return "icloud"
+      case .calendar: return "calendar"
+      case .appearance: return "paintpalette"
+      }
+    }
+  }
+
+  @State private var tab: SettingsTab = .destination
+
   var body: some View {
     VStack(spacing: 0) {
       HStack {
-        Text("Settings").font(.title2).bold()
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Preferences")
+            .font(DDumpFont.ui(11, weight: .semibold))
+            .textCase(.uppercase)
+            .tracking(1.4)
+            .foregroundColor(.ddumpFG3)
+          Text("Settings")
+            .font(DDumpFont.display(26, weight: .semibold))
+            .foregroundColor(.ddumpFG1)
+        }
         Spacer()
         Button("Done") { isPresented = false }
+          .buttonStyle(DDumpPrimaryButtonStyle())
           .keyboardShortcut(.defaultAction)
       }
-      .padding(.horizontal, 16)
-      .padding(.top, 16)
+      .padding(.horizontal, 24)
+      .padding(.top, 18)
 
-      SettingsView()
-        .padding(.top, 4)
+      HStack(spacing: 4) {
+        ForEach(SettingsTab.allCases, id: \.self) { t in
+          DDumpTabChip(icon: t.icon, title: t.rawValue, active: tab == t) {
+            tab = t
+          }
+        }
+      }
+      .padding(4)
+      .background(
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+          .fill(Color.ddumpBGAlt)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+          .stroke(Color.ddumpLine1, lineWidth: 1)
+      )
+      .padding(.horizontal, 24)
+      .padding(.top, 14)
+      .padding(.bottom, 12)
+
+      SettingsView(tab: tab)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
     }
-    .frame(minWidth: 620, minHeight: 460)
+    .frame(minWidth: 880, minHeight: 920)
+    .background(Color.ddumpBG)
   }
 }
 
@@ -911,14 +1193,14 @@ struct ControlBar: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: 8) {
       if state.paused {
         Button {
           state.resume()
         } label: {
           Label("Resume", systemImage: "play.fill")
         }
-        .controlSize(.large)
+        .buttonStyle(DDumpSecondaryButtonStyle())
         .keyboardShortcut("r", modifiers: .command)
       } else {
         Button {
@@ -926,7 +1208,7 @@ struct ControlBar: View {
         } label: {
           Label("Pause", systemImage: "pause.fill")
         }
-        .controlSize(.large)
+        .buttonStyle(DDumpSecondaryButtonStyle())
         .keyboardShortcut("p", modifiers: .command)
         .disabled(!state.runActive)
       }
@@ -936,16 +1218,16 @@ struct ControlBar: View {
       } label: {
         Label("Stop after this file", systemImage: "stop.fill")
       }
-      .controlSize(.large)
+      .buttonStyle(DDumpSecondaryButtonStyle())
       .keyboardShortcut(".", modifiers: .command)
       .disabled(!state.runActive || state.stopRequested)
 
       Button {
         state.doNotEject()
       } label: {
-        Label("Do Not Eject", systemImage: "pin.slash.fill")
+        Label("Do not eject", systemImage: "pin.slash.fill")
       }
-      .controlSize(.large)
+      .buttonStyle(DDumpSecondaryButtonStyle())
       .disabled(!state.runActive)
 
       Button {
@@ -953,7 +1235,7 @@ struct ControlBar: View {
       } label: {
         Label("Eject after this file", systemImage: "eject.fill")
       }
-      .controlSize(.large)
+      .buttonStyle(DDumpPrimaryButtonStyle())
       .keyboardShortcut("e", modifiers: .command)
       .disabled(!state.runActive || state.ejectQueued)
 
@@ -961,16 +1243,16 @@ struct ControlBar: View {
 
       if state.ejectQueued {
         Label("Eject queued", systemImage: "eject.circle")
-          .foregroundColor(.orange)
-          .font(.caption)
+          .foregroundColor(.ddumpWarning)
+          .font(DDumpFont.ui(12))
       } else if state.keepMountedRequested {
         Label("Will stay mounted", systemImage: "pin.slash.circle")
-          .foregroundColor(.orange)
-          .font(.caption)
+          .foregroundColor(.ddumpWarning)
+          .font(DDumpFont.ui(12))
       } else if state.stopRequested {
         Label("Stop queued", systemImage: "stop.circle")
-          .foregroundColor(.orange)
-          .font(.caption)
+          .foregroundColor(.ddumpWarning)
+          .font(DDumpFont.ui(12))
       }
     }
   }
@@ -980,30 +1262,56 @@ struct IdleView: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Insert an SD card and DDump will:").foregroundColor(.secondary)
-      VStack(alignment: .leading, spacing: 4) {
-        Label("Detect photo files automatically (no DCIM required)", systemImage: "magnifyingglass")
-        Label("Copy locally, verify size, optionally SHA-256", systemImage: "checkmark.shield")
-        Label("Group by time clusters", systemImage: "rectangle.3.group")
-        Label("Upload to Google Drive at your chosen path", systemImage: "icloud.and.arrow.up")
-        Label("Auto-eject after current file (button) or 60-sec safety grace", systemImage: "eject")
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Insert an SD card and DDump will")
+        .font(DDumpFont.ui(11, weight: .semibold))
+        .textCase(.uppercase)
+        .tracking(1.4)
+        .foregroundColor(.ddumpFG3)
+      VStack(alignment: .leading, spacing: 6) {
+        Label("Detect photo files automatically — no DCIM required", systemImage: "magnifyingglass")
+        Label("Copy locally, verify size, optional SHA-256", systemImage: "checkmark.shield")
+        Label("Group by capture-time clusters", systemImage: "square.3.layers.3d")
+        Label("Upload to cloud destination(s) you set", systemImage: "icloud.and.arrow.up")
+        Label("Eject only when files are safe", systemImage: "eject")
       }
-      .font(.callout)
-      .foregroundColor(.primary)
-      .padding(.leading, 8)
-
-      Spacer().frame(height: 12)
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Destination").font(.caption).foregroundColor(.secondary)
-        Text(state.uploadRootForUI)
-          .font(.callout)
-          .lineLimit(2)
-        Text("Naming: \(state.get("FOLDER_NAMING_STRATEGY", default: "cluster"))")
-          .font(.caption).foregroundColor(.secondary)
-      }
-      .padding(.leading, 8)
+      .font(DDumpFont.ui(13))
+      .foregroundColor(.ddumpFG2)
     }
+  }
+}
+
+struct DestinationSummaryPanel: View {
+  @EnvironmentObject var state: AppState
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        Text("Destination")
+          .font(DDumpFont.ui(11, weight: .semibold))
+          .textCase(.uppercase)
+          .tracking(1.4)
+          .foregroundColor(.ddumpFG3)
+        Spacer()
+        Text("Naming: \(state.get("FOLDER_NAMING_STRATEGY", default: "sequential"))")
+          .font(.system(size: 11, weight: .regular, design: .monospaced))
+          .foregroundColor(.ddumpFG3)
+      }
+      Text(state.uploadRootForUI.isEmpty ? "Not set" : state.uploadRootForUI)
+        .font(.system(size: 12, weight: .regular, design: .monospaced))
+        .foregroundColor(.ddumpFG1)
+        .textSelection(.enabled)
+        .lineLimit(3)
+    }
+    .padding(14)
+    .background(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(Color.ddumpSurface)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(Color.ddumpLine1, lineWidth: 1)
+    )
   }
 }
 
@@ -1011,14 +1319,17 @@ struct HealthPanel: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 16) {
         Label("\(state.localFreeGB)GB free locally", systemImage: "internaldrive")
         Label("\(state.pendingUploadCount) pending upload\(state.pendingUploadCount == 1 ? "" : "s")", systemImage: "arrow.triangle.2.circlepath")
         Label("\(state.stagingFolderCount) staging folder\(state.stagingFolderCount == 1 ? "" : "s")", systemImage: "tray.full")
       }
-      .font(.caption)
-      .foregroundColor(.secondary)
+      .font(DDumpFont.ui(12))
+      .foregroundColor(.ddumpFG2)
+      .padding(.vertical, 10)
+      .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
+      .overlay(alignment: .bottom) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
 
       HStack(spacing: 10) {
         Button {
@@ -1026,6 +1337,7 @@ struct HealthPanel: View {
         } label: {
           Label("Retry Pending Uploads", systemImage: "arrow.clockwise")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
         .disabled(state.pendingUploadCount == 0 || state.runActive)
 
         Button {
@@ -1033,18 +1345,21 @@ struct HealthPanel: View {
         } label: {
           Label("Staging", systemImage: "tray")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
 
         Button {
           openInFinder(DDumpPaths.reportsDir.path)
         } label: {
           Label("Receipts", systemImage: "doc.plaintext")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
 
         Button {
           state.cleanupOldStagingFolders()
         } label: {
           Label("Safe Cleanup", systemImage: "trash")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
         .disabled(state.runActive)
 
         Button {
@@ -1052,19 +1367,17 @@ struct HealthPanel: View {
         } label: {
           Label("Manual Select Import…", systemImage: "slider.horizontal.3")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
         .disabled(state.runActive)
       }
-      .font(.caption)
+      .font(DDumpFont.ui(12))
 
       if !state.lastUtilityMessage.isEmpty {
         Text(state.lastUtilityMessage)
-          .font(.caption2)
-          .foregroundColor(.secondary)
+          .font(DDumpFont.ui(12))
+          .foregroundColor(.ddumpFG3)
       }
     }
-    .padding(10)
-    .background(Color(NSColor.controlBackgroundColor))
-    .clipShape(RoundedRectangle(cornerRadius: 10))
   }
 }
 
@@ -1073,14 +1386,17 @@ struct ProgressDetail: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text(state.volume.isEmpty ? "Card" : state.volume).font(.headline)
+      Text(state.volume.isEmpty ? "Card" : state.volume)
+        .font(DDumpFont.ui(18, weight: .semibold))
+        .foregroundColor(.ddumpFG1)
       Text(state.message)
-        .font(.caption)
-        .foregroundColor(.secondary)
+        .font(DDumpFont.ui(12))
+        .foregroundColor(.ddumpFG2)
         .lineLimit(2)
 
       ProgressView(value: state.progressFraction)
         .progressViewStyle(.linear)
+        .tint(.ddumpPeach)
 
       HStack {
         Text("\(state.processed) / \(state.total) files")
@@ -1089,20 +1405,21 @@ struct ProgressDetail: View {
         Spacer()
         Text("\(Int(state.progressFraction * 100))%").bold()
       }
-      .font(.callout)
+      .font(.system(size: 13, weight: .medium, design: .monospaced))
       .monospacedDigit()
+      .foregroundColor(.ddumpFG2)
 
       HStack(spacing: 24) {
         Label("\(state.imported) imported", systemImage: "checkmark.circle")
-          .foregroundColor(.green)
+          .foregroundColor(.ddumpSuccess)
         Label("\(state.skipped) skipped", systemImage: "arrow.right.circle")
-          .foregroundColor(.secondary)
+          .foregroundColor(.ddumpFG3)
         if state.failed > 0 {
           Label("\(state.failed) failed", systemImage: "exclamationmark.triangle")
-            .foregroundColor(.red)
+            .foregroundColor(.ddumpDanger)
         }
       }
-      .font(.caption)
+      .font(DDumpFont.ui(12))
     }
   }
 }
@@ -1213,10 +1530,10 @@ struct RunChecklistPanel: View {
 
   private func color(for step: StepState) -> Color {
     switch step {
-    case .pending: return .secondary
-    case .active: return .blue
-    case .done: return .green
-    case .blocked: return .orange
+    case .pending: return .ddumpFG3
+    case .active: return .ddumpPeach
+    case .done: return .ddumpSuccess
+    case .blocked: return .ddumpWarning
     }
   }
 
@@ -1225,52 +1542,78 @@ struct RunChecklistPanel: View {
       Image(systemName: icon(for: step))
         .foregroundColor(color(for: step))
       Text(title)
-        .foregroundColor(step == .done ? .green : .primary)
+        .foregroundColor(step == .done ? .ddumpSuccess : .ddumpFG1)
       Spacer()
       if let linkTitle, let linkPath, !linkPath.isEmpty {
         Button(linkTitle) {
           openInFinder(linkPath)
         }
         .buttonStyle(.link)
+        .foregroundColor(.ddumpPeach)
       }
     }
-    .font(.callout)
+    .font(DDumpFont.ui(13))
+    .padding(.vertical, 4)
+    .padding(.horizontal, 12)
+    .background(step == .active ? Color.ddumpPeachSoft : Color.clear)
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(step == .active ? Color.ddumpPeach.opacity(0.22) : Color.clear, lineWidth: 1)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Checklist").font(.headline)
+      HStack {
+        Text("Checklist").font(DDumpFont.ui(18, weight: .semibold)).foregroundColor(.ddumpFG1)
+        Spacer()
+        if state.runActive {
+          Text("\(state.processed) / \(state.total) · \(formatETA(state.etaSeconds)) remaining")
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .foregroundColor(.ddumpFG3)
+        }
+      }
       row("1. Transfer to staging folder", step: step1State, linkTitle: "Open staging", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
       row("2. Eject card", step: step2State)
       row("3. Transfer to destination folder", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI)
       row("4. All complete!", step: step4State)
     }
-    .padding(10)
-    .background(Color(NSColor.controlBackgroundColor))
-    .clipShape(RoundedRectangle(cornerRadius: 10))
+    .padding(14)
+    .background(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(Color.ddumpSurface)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(Color.ddumpLine1, lineWidth: 1)
+    )
   }
 }
 
 // MARK: - Settings
 
 struct SettingsView: View {
+  let tab: SettingsSheet.SettingsTab
+
   var body: some View {
-    TabView {
-      DestinationSettings()
-        .tabItem { Label("Destination", systemImage: "folder") }
-      NamingSettings()
-        .tabItem { Label("Naming", systemImage: "textformat") }
-      DetectionSettings()
-        .tabItem { Label("Detection", systemImage: "camera") }
-      CloudSettings()
-        .tabItem { Label("Cloud", systemImage: "icloud") }
-      CalendarSettings()
-        .tabItem { Label("Calendar", systemImage: "calendar") }
-      AppearanceSettings()
-        .tabItem { Label("Appearance", systemImage: "paintbrush") }
+    Group {
+      switch tab {
+      case .destination:
+        DestinationSettings()
+      case .naming:
+        NamingSettings()
+      case .detection:
+        DetectionSettings()
+      case .cloud:
+        CloudSettings()
+      case .calendar:
+        CalendarSettings()
+      case .appearance:
+        AppearanceSettings()
+      }
     }
-    .padding(16)
-    .frame(minWidth: 560, minHeight: 380)
+    .background(Color.ddumpBG)
   }
 }
 
@@ -1329,6 +1672,7 @@ struct DestinationSettings: View {
       }
     }
     .formStyle(.grouped)
+    .ddumpFormSkin()
     .onAppear {
       localStaging = state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp")
       enablePostMove = state.get("ENABLE_POST_EJECT_MOVE", default: "1") == "1"
@@ -1444,6 +1788,7 @@ struct NamingSettings: View {
       }
     }
     .formStyle(.grouped)
+    .ddumpFormSkin()
     .onAppear {
       strategy = state.get("FOLDER_NAMING_STRATEGY", default: "sequential")
       fallback = state.get("FOLDER_NAMING_FALLBACK", default: "sequential")
@@ -1577,6 +1922,7 @@ struct DetectionSettings: View {
       }
     }
     .formStyle(.grouped)
+    .ddumpFormSkin()
     .onAppear {
       prefixes = state.get("TRUSTED_NAME_PREFIXES", default: "DFP_")
       requirePhotos = (state.get("REQUIRE_PHOTOS_OR_TRUSTED", default: "1") == "1")
@@ -1613,94 +1959,265 @@ struct CloudSettings: View {
   @State private var networkResumeCheckSeconds: String = "20"
   @State private var networkResumeCooldownSeconds: String = "120"
 
-  var body: some View {
-    Form {
-      Section("Connection") {
-        Toggle("Enable DDump-managed cloud mount", isOn: $enabled)
-          .onChange(of: enabled) { _, v in
-            state.set("GDRIVE_MOUNT_ENABLED", v ? "1" : "0")
-            state.refreshCloudMountStatus()
-          }
-        TextField("rclone remote (example: combined:)", text: $remote, onCommit: {
-          state.set("GDRIVE_REMOTE", remote)
-          state.refreshCloudMountStatus()
-        })
-        TextField("Mount point folder", text: $mountPoint, onCommit: {
-          state.set("GDRIVE_MOUNT_POINT", mountPoint)
-          state.refreshCloudMountStatus()
-        })
-        TextField("rclone binary path", text: $rcloneBin, onCommit: {
-          state.set("RCLONE_BIN", rcloneBin)
-          state.refreshCloudMountStatus()
-        })
-        TextField("Mount service label", text: $mountLabel, onCommit: {
-          state.set("GDRIVE_MOUNT_LABEL", mountLabel)
-          state.refreshCloudMountStatus()
-        })
-      }
-
-      Section("Offline resume") {
-        Toggle("Auto-retry pending uploads when internet reconnects", isOn: $networkResumeEnabled)
-          .onChange(of: networkResumeEnabled) { _, v in
-            state.set("NETWORK_RESUME_ENABLED", v ? "1" : "0")
-          }
-        HStack {
-          Text("Reconnect check interval (seconds)")
-          Spacer()
-          TextField("20", text: $networkResumeCheckSeconds)
-            .frame(width: 80)
-            .multilineTextAlignment(.trailing)
-            .onSubmit { state.set("NETWORK_RESUME_CHECK_SECONDS", networkResumeCheckSeconds) }
-        }
-        HStack {
-          Text("Retry cooldown (seconds)")
-          Spacer()
-          TextField("120", text: $networkResumeCooldownSeconds)
-            .frame(width: 80)
-            .multilineTextAlignment(.trailing)
-            .onSubmit { state.set("NETWORK_RESUME_COOLDOWN_SECONDS", networkResumeCooldownSeconds) }
-        }
-      }
-
-      Section("Status") {
-        Label(state.cloudRcloneReady ? "rclone found" : "rclone missing", systemImage: state.cloudRcloneReady ? "checkmark.circle.fill" : "xmark.circle.fill")
-          .foregroundColor(state.cloudRcloneReady ? .green : .orange)
-        Label(state.cloudRemoteConfigured ? "remote configured" : "remote not configured", systemImage: state.cloudRemoteConfigured ? "checkmark.circle.fill" : "xmark.circle.fill")
-          .foregroundColor(state.cloudRemoteConfigured ? .green : .orange)
-        Label(state.cloudServiceLoaded ? "mount service loaded" : "mount service not loaded", systemImage: state.cloudServiceLoaded ? "checkmark.circle.fill" : "xmark.circle.fill")
-          .foregroundColor(state.cloudServiceLoaded ? .green : .orange)
-        Label(state.cloudMountActive ? "mount is active" : "mount is not active", systemImage: state.cloudMountActive ? "checkmark.circle.fill" : "xmark.circle.fill")
-          .foregroundColor(state.cloudMountActive ? .green : .orange)
-      }
-
-      Section("Actions") {
-        HStack(spacing: 10) {
-          Button("Start mount") { state.startCloudMount() }
-          Button("Stop mount") { state.stopCloudMount() }
-          Button("Re-check status") { state.refreshCloudMountStatus() }
-          Button("Hard restart mount") { state.hardRestartCloudMount() }
-        }
-        HStack(spacing: 10) {
-          Button("Open rclone setup in Terminal") { state.openRcloneSetupInTerminal() }
-          Button("Open mount folder") { openInFinder(state.gdriveMountPointForUI) }
-        }
-      }
-
-      Section("Diagnostics") {
-        Text(state.cloudDiagnosticMessage.isEmpty ? "No diagnostic message yet." : state.cloudDiagnosticMessage)
-          .font(.caption)
-          .foregroundColor(.secondary)
-          .textSelection(.enabled)
-        Button("Run diagnostics now") { state.refreshCloudMountStatus() }
-      }
-
-      Section {
-        Text("Friend install flow: run DDump installer, open this tab, connect remote in Terminal once, then set Upload destination inside your mounted cloud folder.")
-          .font(.caption)
-          .foregroundColor(.secondary)
+  private func sectionHeader(_ title: String, caption: String? = nil) -> some View {
+    HStack(alignment: .firstTextBaseline) {
+      Text(title)
+        .font(DDumpFont.ui(18, weight: .semibold))
+        .foregroundColor(.ddumpFG1)
+      Spacer()
+      if let caption, !caption.isEmpty {
+        Text(caption)
+          .font(DDumpFont.ui(12))
+          .foregroundColor(.ddumpFG3)
       }
     }
-    .formStyle(.grouped)
+  }
+
+  private func connectionRow(_ label: String, text: Binding<String>, onCommit: @escaping () -> Void) -> some View {
+    HStack(spacing: 14) {
+      Text(label)
+        .font(DDumpFont.ui(12, weight: .medium))
+        .foregroundColor(.ddumpFG2)
+        .frame(width: 165, alignment: .leading)
+      TextField("", text: text, onCommit: onCommit)
+        .font(.system(size: 12, weight: .regular, design: .monospaced))
+        .textFieldStyle(.plain)
+        .foregroundColor(.ddumpFG1)
+    }
+    .padding(.vertical, 10)
+  }
+
+  private func statusCard(_ ok: Bool, okText: String, failText: String, icon: String, hint: String = "") -> some View {
+    let tint = ok ? Color.ddumpSuccess : Color.ddumpDanger
+    return HStack(alignment: .top, spacing: 10) {
+      Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundColor(tint)
+        .frame(width: 20, alignment: .leading)
+      VStack(alignment: .leading, spacing: 2) {
+        Label(ok ? okText : failText, systemImage: icon)
+          .labelStyle(.titleAndIcon)
+          .font(DDumpFont.ui(13, weight: .medium))
+          .foregroundColor(tint)
+        if !hint.isEmpty {
+          Text(hint)
+            .font(DDumpFont.ui(12))
+            .foregroundColor(.ddumpFG3)
+        }
+      }
+      Spacer()
+    }
+    .padding(12)
+    .background(
+      RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .fill(tint.opacity(0.12))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .stroke(tint.opacity(0.35), lineWidth: 1)
+    )
+  }
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 20) {
+        sectionHeader("Connection", caption: "rclone-backed upload mount")
+
+        VStack(spacing: 0) {
+          HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Enable DDump-managed cloud mount")
+                .font(DDumpFont.ui(14, weight: .medium))
+                .foregroundColor(.ddumpFG1)
+              Text("DDump keeps your Finder upload mount in sync and retries before failing.")
+                .font(DDumpFont.ui(12))
+                .foregroundColor(.ddumpFG3)
+            }
+            Spacer()
+            Toggle("", isOn: $enabled)
+              .labelsHidden()
+              .toggleStyle(.switch)
+              .tint(.ddumpPeach)
+              .onChange(of: enabled) { _, v in
+                state.set("GDRIVE_MOUNT_ENABLED", v ? "1" : "0")
+                state.refreshCloudMountStatus()
+              }
+          }
+          .padding(.vertical, 12)
+
+          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          connectionRow("rclone remote", text: $remote) {
+            state.set("GDRIVE_REMOTE", remote)
+            state.refreshCloudMountStatus()
+          }
+          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          connectionRow("Mount point folder", text: $mountPoint) {
+            state.set("GDRIVE_MOUNT_POINT", mountPoint)
+            state.refreshCloudMountStatus()
+          }
+          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          connectionRow("rclone binary path", text: $rcloneBin) {
+            state.set("RCLONE_BIN", rcloneBin)
+            state.refreshCloudMountStatus()
+          }
+          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          connectionRow("Mount service label", text: $mountLabel) {
+            state.set("GDRIVE_MOUNT_LABEL", mountLabel)
+            state.refreshCloudMountStatus()
+          }
+        }
+        .padding(.horizontal, 14)
+        .background(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.ddumpSurface)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
+
+        sectionHeader("Status")
+        VStack(spacing: 10) {
+          statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
+          statusCard(state.cloudRemoteConfigured, okText: "Remote configured", failText: "Remote not configured", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Open rclone setup and create the configured remote.")
+          statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
+          statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
+        }
+
+        sectionHeader("Actions")
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(spacing: 10) {
+            Button {
+              state.startCloudMount()
+            } label: {
+              Label("Start mount", systemImage: "play.circle")
+            }
+            .buttonStyle(DDumpPrimaryButtonStyle())
+
+            Button {
+              state.stopCloudMount()
+            } label: {
+              Label("Stop mount", systemImage: "stop.circle")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.refreshCloudMountStatus()
+            } label: {
+              Label("Re-check status", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+          }
+
+          HStack(spacing: 10) {
+            Button {
+              state.hardRestartCloudMount()
+            } label: {
+              Label("Hard restart mount", systemImage: "bolt.circle")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.openRcloneSetupInTerminal()
+            } label: {
+              Label("Open rclone setup", systemImage: "terminal")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              openInFinder(state.gdriveMountPointForUI)
+            } label: {
+              Label("Open mount folder", systemImage: "folder")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+          }
+        }
+
+        sectionHeader("Offline resume")
+        VStack(alignment: .leading, spacing: 12) {
+          Toggle("Auto-retry pending uploads when internet reconnects", isOn: $networkResumeEnabled)
+            .toggleStyle(.switch)
+            .tint(.ddumpPeach)
+            .onChange(of: networkResumeEnabled) { _, v in
+              state.set("NETWORK_RESUME_ENABLED", v ? "1" : "0")
+            }
+          HStack {
+            Text("Reconnect check interval (seconds)")
+              .foregroundColor(.ddumpFG2)
+            Spacer()
+            TextField("20", text: $networkResumeCheckSeconds)
+              .frame(width: 90)
+              .multilineTextAlignment(.trailing)
+              .textFieldStyle(.roundedBorder)
+              .onSubmit { state.set("NETWORK_RESUME_CHECK_SECONDS", networkResumeCheckSeconds) }
+          }
+          HStack {
+            Text("Retry cooldown (seconds)")
+              .foregroundColor(.ddumpFG2)
+            Spacer()
+            TextField("120", text: $networkResumeCooldownSeconds)
+              .frame(width: 90)
+              .multilineTextAlignment(.trailing)
+              .textFieldStyle(.roundedBorder)
+              .onSubmit { state.set("NETWORK_RESUME_COOLDOWN_SECONDS", networkResumeCooldownSeconds) }
+          }
+        }
+        .font(DDumpFont.ui(13))
+        .padding(14)
+        .background(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.ddumpSurface)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
+
+        sectionHeader("Diagnostics")
+        VStack(alignment: .leading, spacing: 10) {
+          Text(state.cloudDiagnosticMessage.isEmpty ? "No diagnostic message yet." : state.cloudDiagnosticMessage)
+            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .foregroundColor(.ddumpFG2)
+            .textSelection(.enabled)
+          Button {
+            state.refreshCloudMountStatus()
+          } label: {
+            Label("Run diagnostics now", systemImage: "stethoscope")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+        }
+        .padding(14)
+        .background(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.ddumpSurface2)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
+
+        HStack(alignment: .top, spacing: 10) {
+          Image(systemName: "info.circle.fill")
+            .foregroundColor(.ddumpPeach)
+          VStack(alignment: .leading, spacing: 3) {
+            Text("Friend install flow")
+              .font(DDumpFont.ui(13, weight: .semibold))
+              .foregroundColor(.ddumpFG1)
+            Text("Run the DDump installer, open this tab, connect the remote once in Terminal, then set your upload destination inside the mounted cloud folder.")
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG2)
+          }
+        }
+        .padding(12)
+        .background(Color.ddumpBGAlt)
+        .overlay(alignment: .top) {
+          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+        }
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 14)
+    }
+    .background(Color.ddumpBG)
     .onAppear {
       enabled = state.get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
       mountPoint = state.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
@@ -1781,6 +2298,7 @@ struct CalendarSettings: View {
       }
     }
     .formStyle(.grouped)
+    .ddumpFormSkin()
     .onAppear {
       calendarName = state.get("CALENDAR_NAME")
       padding = state.get("CALENDAR_EVENT_PADDING_MIN", default: "15")
@@ -1920,6 +2438,7 @@ struct AppearanceSettings: View {
       }
     }
     .formStyle(.grouped)
+    .ddumpFormSkin()
     .onAppear {
       colorSchemeChoice = state.get("APP_COLOR_SCHEME", default: "system")
       defaultLightPresetID = state.get("APP_ICON_DEFAULT_LIGHT")
@@ -2204,6 +2723,10 @@ class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
 struct DDumpApp: App {
   @NSApplicationDelegateAdaptor(WindowMemoryDelegate.self) var appDelegate
   @StateObject private var state = AppState()
+
+  init() {
+    registerBundledFonts()
+  }
 
   var body: some Scene {
     WindowGroup("DDump") {
