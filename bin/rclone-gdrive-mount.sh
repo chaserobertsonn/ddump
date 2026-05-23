@@ -9,6 +9,7 @@ APP_SUPPORT_DIR="$HOME/Library/Application Support/DDump"
 CONFIG_FILE="$APP_SUPPORT_DIR/config.env"
 DEFAULT_CONFIG_FILE="${0:A:h}/../config/config.env"
 LOG_DIR="$APP_SUPPORT_DIR/logs"
+STATE_DIR="$APP_SUPPORT_DIR/state"
 
 # Defaults (overridden by config files)
 GDRIVE_MOUNT_ENABLED="1"
@@ -27,8 +28,26 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$STATE_DIR"
 MOUNT="$GDRIVE_MOUNT_POINT"
 REMOTE="$GDRIVE_REMOTE"
+LOCK_DIR="$STATE_DIR/rclone-mount.lock"
+
+if ! /bin/mkdir "$LOCK_DIR" >/dev/null 2>&1; then
+  lock_mtime="$(/usr/bin/stat -f '%m' "$LOCK_DIR" 2>/dev/null || echo 0)"
+  now_epoch="$(date +%s)"
+  if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( now_epoch - lock_mtime > 900 )); then
+    /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+  fi
+  if ! /bin/mkdir "$LOCK_DIR" >/dev/null 2>&1; then
+    echo "$(date)  mount skipped: another mount attempt is already in progress" >> "$LOG"
+    exit 0
+  fi
+fi
+cleanup_lock() {
+  /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+}
+trap cleanup_lock EXIT
 
 if [[ "${GDRIVE_MOUNT_ENABLED:-1}" != "1" ]]; then
   echo "$(date)  mount skipped: GDRIVE_MOUNT_ENABLED=${GDRIVE_MOUNT_ENABLED}" >> "$LOG"

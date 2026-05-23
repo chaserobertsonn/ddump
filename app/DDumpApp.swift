@@ -421,6 +421,8 @@ mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
 retry_csv=\(shellDoubleQuoted(retryCSV))
 wait_seconds=\(shellDoubleQuoted(waitSeconds))
+legacy_label="com.chase.rclone-gdrive"
+lock_dir="${HOME}/Library/Application Support/DDump/state/cloud-mount-start.lock"
 if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then wait_seconds=30; fi
 if [ "$wait_seconds" -lt 10 ]; then wait_seconds=10; fi
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
@@ -432,11 +434,28 @@ fi
 uid="$(/usr/bin/id -u)"
 plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
 /bin/mkdir -p "${mount_point}"
+ /bin/mkdir -p "${HOME}/Library/Application Support/DDump/state"
+if ! /bin/mkdir "${lock_dir}" >/dev/null 2>&1; then
+  # Another mount worker is already trying. Avoid parallel retries.
+  exit 0
+fi
+cleanup_lock() { /bin/rmdir "${lock_dir}" >/dev/null 2>&1 || true; }
+trap cleanup_lock EXIT
+
+if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist" ]; then
+  mount_label="$legacy_label"
+  plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+fi
 if [ ! -f "$plist" ]; then
   exit 1
 fi
 
 attempt_mount() {
+  if /bin/launchctl print "gui/${uid}/${mount_label}" >/dev/null 2>&1 \
+     && ! /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+    # Clear any stale scheduled/running agent before retrying.
+    /bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+  fi
   /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
   /bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
   i=0
@@ -496,8 +515,13 @@ exit 1
       task.arguments = ["-lc", """
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
+legacy_label="com.chase.rclone-gdrive"
 uid="$(/usr/bin/id -u)"
 plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist" ]; then
+  mount_label="$legacy_label"
+  plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+fi
 if [ -x "${HOME}/.local/bin/finderserver" ]; then
   "${HOME}/.local/bin/finderserver" on >/dev/null 2>&1 || true
 fi
@@ -537,11 +561,13 @@ exit 0
       task.arguments = ["-lc", """
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
+legacy_label="com.chase.rclone-gdrive"
 uid="$(/usr/bin/id -u)"
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
   /usr/sbin/diskutil unmount "${mount_point}" >/dev/null 2>&1 || /sbin/umount -f "${mount_point}" >/dev/null 2>&1 || true
 fi
 /bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+/bin/launchctl bootout "gui/${uid}/${legacy_label}" >/dev/null 2>&1 || true
 exit 0
 """]
       do {

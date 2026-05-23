@@ -47,11 +47,6 @@ if [[ -f "$OLD_PLIST_PATH" ]]; then
   launchctl bootout "gui/${uid}" "$OLD_PLIST_PATH" >/dev/null 2>&1 || true
   rm -f "$OLD_PLIST_PATH"
 fi
-if [[ -f "$OLD_MOUNT_PLIST_PATH" ]]; then
-  echo "Removing stale mount LaunchAgent: $OLD_MOUNT_LABEL"
-  launchctl bootout "gui/${uid}" "$OLD_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
-  rm -f "$OLD_MOUNT_PLIST_PATH"
-fi
 
 mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 
@@ -350,6 +345,7 @@ if [[ -z "$mount_label" ]]; then
   mount_label="$DEFAULT_MOUNT_LABEL"
 fi
 MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${mount_label}.plist"
+COMPAT_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_MOUNT_LABEL}.plist"
 NETWORK_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${NETWORK_WATCH_LABEL}.plist"
 
 cat >"$MOUNT_PLIST_PATH" <<PLIST
@@ -380,6 +376,37 @@ PLIST
 
 launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+
+# Compatibility mount agent for finderserver (it still references com.chase.rclone-gdrive).
+if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
+  cat >"$COMPAT_MOUNT_PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${OLD_MOUNT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>${BIN_DIR}/rclone-gdrive-mount.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/rclone-gdrive.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/rclone-gdrive.stderr.log</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/${uid}" "$COMPAT_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/${uid}" "$COMPAT_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+fi
 
 # ---------------------------------------------------------------------------
 # Network reconnect watcher (retry pending uploads when internet returns)
@@ -423,5 +450,8 @@ echo "Config:      ${USER_CONFIG}"
 echo "Mac app:     ${APP_BUNDLE}"
 echo "LaunchAgent: ${PLIST_PATH}"
 echo "Mount agent: ${MOUNT_PLIST_PATH}"
+if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
+  echo "Compat mount: ${COMPAT_MOUNT_PLIST_PATH}"
+fi
 echo "Net watcher: ${NETWORK_WATCH_PLIST_PATH}"
 echo "Log file:    ${LOG_DIR}/ddump.log"
