@@ -2740,6 +2740,41 @@ pending_file_contains_source_path() {
   return 1
 }
 
+uuid_has_pending_recovery_file() {
+  local uuid="$1"
+  local pending_file base_name
+  [[ -n "$uuid" ]] || return 1
+  for pending_file in "$PENDING_DIR"/pending.*.tsv; do
+    [[ -f "$pending_file" ]] || continue
+    base_name="$(basename "$pending_file")"
+    case "$base_name" in
+      "pending.${uuid}."*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+uuid_has_unfinished_media_rows() {
+  local uuid="$1"
+  db_available || return 1
+  [[ -n "$uuid" ]] || return 1
+  local count
+  count="$(/usr/bin/sqlite3 -batch -noheader "$DB_FILE" "SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND status IN ('copy_failed','verify_failed','copied','organized','upload_pending','needs_reinsert');" 2>>"$LOG_FILE" || echo 0)"
+  [[ "${count:-0}" -gt 0 ]]
+}
+
+should_force_recopy_for_uuid() {
+  local uuid="$1"
+  [[ -n "$uuid" ]] || return 1
+  if uuid_has_pending_recovery_file "$uuid"; then
+    return 0
+  fi
+  if uuid_has_unfinished_media_rows "$uuid"; then
+    return 0
+  fi
+  return 1
+}
+
 seed_pending_from_db_incomplete() {
   db_available || return 0
 
@@ -2984,6 +3019,11 @@ for vol_path in /Volumes/*; do
     notify "DDump" "${vol_name}: recovering previously missing files first, then new files." info
     log "Volume ${vol_name} has files marked needs_reinsert; prioritizing those first."
   fi
+  force_recopy_for_uuid=0
+  if [[ -n "$uuid" ]] && should_force_recopy_for_uuid "$uuid"; then
+    force_recopy_for_uuid=1
+    log "Volume ${vol_name}: forcing re-copy from card because unfinished recovery exists for UUID ${uuid}."
+  fi
 
   manual_selection_for_volume=0
   manual_candidates_file=""
@@ -3141,7 +3181,9 @@ for vol_path in /Volumes/*; do
         continue
       fi
 
-      if [[ -n "$uuid" ]] && db_file_has_local_copy "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime"; then
+      if [[ "$force_recopy_for_uuid" != "1" ]] \
+         && [[ -n "$uuid" ]] \
+         && db_file_has_local_copy "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime"; then
         skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
         record_missed_file "$vol_name" "skipped_db_local_copy" "$src_file" "sqlite status already copied/upload pending/uploaded"
         processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
@@ -3153,7 +3195,8 @@ for vol_path in /Volumes/*; do
         continue
       fi
 
-      if [[ "$USE_FAST_SEEN_INDEX" == "1" && -n "$uuid" ]] \
+      if [[ "$force_recopy_for_uuid" != "1" ]] \
+         && [[ "$USE_FAST_SEEN_INDEX" == "1" && -n "$uuid" ]] \
          && fast_seen_key_exists "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" \
          && ! db_file_retry_needed "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime"; then
         skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
