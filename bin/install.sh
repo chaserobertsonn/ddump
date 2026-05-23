@@ -188,6 +188,8 @@ add_missing_key 'GDRIVE_MOUNT_POINT' '"$HOME/GoogleDrive"' "Mounted cloud folder
 add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDump."
 add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
 add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent label for DDump's mount helper."
+add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"5,15,60,180,360,600"' "Mount retry backoff schedule in seconds."
+add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt waits for readiness."
 
 # v2 keys (new)
 add_missing_key 'TRUSTED_NAME_PREFIXES' '"DFP_"' "Volume name prefixes that auto-trust (comma-separated)."
@@ -226,6 +228,7 @@ add_missing_key 'NTFY_NOTIFY_STAGING_STARTED' '"0"'
 add_missing_key 'NTFY_NOTIFY_CARD_EJECTED' '"1"'
 add_missing_key 'NTFY_NOTIFY_UPLOAD_STARTED' '"0"'
 add_missing_key 'NTFY_NOTIFY_UPLOAD_COMPLETE' '"1"'
+add_missing_key 'NTFY_NOTIFY_MOUNT_FAILED' '"1"'
 
 if grep -q '^VERIFY_COPY_HASH="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^VERIFY_COPY_HASH="1"$/VERIFY_COPY_HASH="0"/' "$USER_CONFIG"

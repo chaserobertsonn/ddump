@@ -128,6 +128,7 @@ final class AppState: ObservableObject {
   @Published var cloudServiceLoaded: Bool = false
   @Published var cloudRcloneReady: Bool = false
   @Published var cloudRemoteConfigured: Bool = false
+  @Published var cloudDiagnosticMessage: String = ""
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
@@ -396,12 +397,18 @@ final class AppState: ObservableObject {
   func startCloudMount(userMessagePrefix: String = "Cloud mount") {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
+    let retryCSV = get("GDRIVE_MOUNT_RETRY_SECONDS", default: "5,15,60,180,360,600")
+    let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
       task.arguments = ["-lc", """
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
+retry_csv=\(shellDoubleQuoted(retryCSV))
+wait_seconds=\(shellDoubleQuoted(waitSeconds))
+if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then wait_seconds=30; fi
+if [ "$wait_seconds" -lt 10 ]; then wait_seconds=10; fi
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
   exit 0
 fi
@@ -411,15 +418,38 @@ fi
 uid="$(/usr/bin/id -u)"
 plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
 /bin/mkdir -p "${mount_point}"
-if [ -f "$plist" ]; then
+if [ ! -f "$plist" ]; then
+  exit 1
+fi
+
+attempt_mount() {
   /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
   /bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+  i=0
+  while [ "$i" -lt "$wait_seconds" ]; do
+    if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+      return 0
+    fi
+    /bin/sleep 1
+    i=$((i+1))
+  done
+  return 1
+}
+
+if attempt_mount; then
+  exit 0
 fi
-for i in {1..30}; do
-  if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+
+IFS=',' read -r -a retries <<<"$retry_csv"
+for delay in "${retries[@]}"; do
+  delay="$(echo "$delay" | /usr/bin/xargs)"
+  if ! [[ "$delay" =~ ^[0-9]+$ ]]; then
+    continue
+  fi
+  /bin/sleep "$delay"
+  if attempt_mount; then
     exit 0
   fi
-  /bin/sleep 1
 done
 exit 1
 """]
@@ -439,6 +469,47 @@ exit 1
           self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
         }
         self.refreshCloudMountStatus()
+      }
+    }
+  }
+
+  func hardRestartCloudMount() {
+    let mountPoint = gdriveMountPointForUI
+    let mountLabel = gdriveMountLabelForUI
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+mount_point=\(shellDoubleQuoted(mountPoint))
+mount_label=\(shellDoubleQuoted(mountLabel))
+uid="$(/usr/bin/id -u)"
+plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+if [ -x "${HOME}/.local/bin/finderserver" ]; then
+  "${HOME}/.local/bin/finderserver" on >/dev/null 2>&1 || true
+fi
+if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+  /usr/sbin/diskutil unmount force "${mount_point}" >/dev/null 2>&1 || /sbin/umount -f "${mount_point}" >/dev/null 2>&1 || true
+fi
+/bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+/bin/sleep 2
+if [ -f "$plist" ]; then
+  /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+  /bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+fi
+exit 0
+"""]
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not hard-restart cloud mount: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      DispatchQueue.main.async {
+        self.lastUtilityMessage = "Hard restart requested. Retrying mount..."
+        self.startCloudMount(userMessagePrefix: "Cloud hard restart")
       }
     }
   }
@@ -499,30 +570,58 @@ else
 fi
 
 if [ -n "$rclone" ]; then
+  rclone_ready=1
   echo "rclone_ready=1"
   remote_name="${remote%%:*}:"
   if "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "$remote_name"; then
+    remote_configured=1
     echo "remote_configured=1"
   else
+    remote_configured=0
     echo "remote_configured=0"
   fi
 else
+  rclone_ready=0
+  remote_configured=0
   echo "rclone_ready=0"
   echo "remote_configured=0"
 fi
 
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+  mount_active=1
   echo "mount_active=1"
 else
+  mount_active=0
   echo "mount_active=0"
 fi
 
 uid="$(/usr/bin/id -u)"
 if /bin/launchctl print "gui/${uid}/${mount_label}" >/dev/null 2>&1; then
+  service_loaded=1
   echo "service_loaded=1"
 else
+  service_loaded=0
   echo "service_loaded=0"
 fi
+
+diag=""
+if [ "${rclone_ready:-0}" = "0" ]; then
+  diag="rclone binary not found"
+elif [ "${remote_configured:-0}" = "0" ]; then
+  diag="rclone remote '${remote}' is not configured"
+elif [ "${service_loaded:-0}" = "0" ]; then
+  diag="mount service is not loaded"
+elif [ "${mount_active:-0}" = "0" ]; then
+  last_log="$(tail -n 1 "${HOME}/Library/Application Support/DDump/logs/rclone-gdrive.log" 2>/dev/null || true)"
+  if [ -n "$last_log" ]; then
+    diag="service running but mount inactive; last mount log: ${last_log}"
+  else
+    diag="service running but mount inactive"
+  fi
+else
+  diag="mount active and ready"
+fi
+echo "diag_reason=$diag"
 """]
       let pipe = Pipe()
       task.standardOutput = pipe
@@ -540,6 +639,7 @@ fi
         self.cloudServiceLoaded = parsed["service_loaded"] == "1"
         self.cloudRcloneReady = parsed["rclone_ready"] == "1"
         self.cloudRemoteConfigured = parsed["remote_configured"] == "1"
+        self.cloudDiagnosticMessage = parsed["diag_reason"] ?? ""
       }
     }
   }
@@ -1418,11 +1518,20 @@ struct CloudSettings: View {
           Button("Start mount") { state.startCloudMount() }
           Button("Stop mount") { state.stopCloudMount() }
           Button("Re-check status") { state.refreshCloudMountStatus() }
+          Button("Hard restart mount") { state.hardRestartCloudMount() }
         }
         HStack(spacing: 10) {
           Button("Open rclone setup in Terminal") { state.openRcloneSetupInTerminal() }
           Button("Open mount folder") { openInFinder(state.gdriveMountPointForUI) }
         }
+      }
+
+      Section("Diagnostics") {
+        Text(state.cloudDiagnosticMessage.isEmpty ? "No diagnostic message yet." : state.cloudDiagnosticMessage)
+          .font(.caption)
+          .foregroundColor(.secondary)
+          .textSelection(.enabled)
+        Button("Run diagnostics now") { state.refreshCloudMountStatus() }
       }
 
       Section {

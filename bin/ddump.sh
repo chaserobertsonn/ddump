@@ -95,6 +95,7 @@ ntfy_notify() {
     card_ejected) enabled_key="${NTFY_NOTIFY_CARD_EJECTED:-1}" ;;
     upload_started) enabled_key="${NTFY_NOTIFY_UPLOAD_STARTED:-0}" ;;
     upload_complete) enabled_key="${NTFY_NOTIFY_UPLOAD_COMPLETE:-1}" ;;
+    mount_failed) enabled_key="${NTFY_NOTIFY_MOUNT_FAILED:-1}" ;;
     *) enabled_key="0" ;;
   esac
   [[ "$enabled_key" == "1" ]] || return 0
@@ -290,11 +291,14 @@ GDRIVE_MOUNT_POINT="${HOME}/GoogleDrive"
 GDRIVE_REMOTE="combined:"
 RCLONE_BIN="${HOME}/bin/rclone"
 GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
+GDRIVE_MOUNT_RETRY_SECONDS="5,15,60,180,360,600"
+GDRIVE_MOUNT_WAIT_SECONDS="30"
 NTFY_TOPIC="dfp-chase-scheduler"
 NTFY_NOTIFY_STAGING_STARTED="0"
 NTFY_NOTIFY_CARD_EJECTED="1"
 NTFY_NOTIFY_UPLOAD_STARTED="0"
 NTFY_NOTIFY_UPLOAD_COMPLETE="1"
+NTFY_NOTIFY_MOUNT_FAILED="1"
 
 if [[ -f "$DEFAULT_CONFIG_PATH" ]]; then
   # shellcheck disable=SC1090
@@ -677,6 +681,26 @@ gdrive_mount_plist_path() {
   printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$label"
 }
 
+sanitize_retry_schedule_csv() {
+  local raw="${1:-5,15,60,180,360,600}"
+  local cleaned=""
+  local part=""
+  IFS=',' read -r -a _retry_parts <<<"$raw"
+  for part in "${_retry_parts[@]}"; do
+    part="$(trim "$part")"
+    [[ "$part" =~ ^[0-9]+$ ]] || continue
+    if [[ -z "$cleaned" ]]; then
+      cleaned="$part"
+    else
+      cleaned="${cleaned},${part}"
+    fi
+  done
+  if [[ -z "$cleaned" ]]; then
+    cleaned="5,15,60,180,360,600"
+  fi
+  printf '%s' "$cleaned"
+}
+
 finderserver_available() {
   if [[ -x "$FINDERSERVER_BIN" ]]; then
     return 0
@@ -791,40 +815,71 @@ ensure_gdrive_mount_for_post_move() {
     return 1
   fi
 
-  local uid plist label mount_dir
+  local uid plist label mount_dir wait_seconds retry_csv
   uid="$(/usr/bin/id -u)"
   plist="$(gdrive_mount_plist_path)"
   label="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"
   mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
+  wait_seconds="$(sanitize_positive_int "${GDRIVE_MOUNT_WAIT_SECONDS:-30}" "30")"
+  if [[ "$wait_seconds" -lt 10 ]]; then
+    wait_seconds=10
+  fi
+  retry_csv="$(sanitize_retry_schedule_csv "${GDRIVE_MOUNT_RETRY_SECONDS:-5,15,60,180,360,600}")"
   if [[ ! -f "$plist" ]]; then
     move_last_status="blocked"
     move_last_detail="Google Drive mount agent missing: ${plist}"
+    ntfy_notify "mount_failed" "DDump: mount failed" "${move_last_detail}"
     return 1
   fi
 
   /bin/mkdir -p "$mount_dir"
 
-  if finderserver_available; then
-    if ! run_finderserver on >/dev/null 2>&1; then
-      log "finderserver on failed; falling back to launchctl mount start."
-    fi
-  fi
-  /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
-  /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
-  ddump_started_gdrive_mount=1
+  local attempt=1
+  local sleep_seconds
+  local -a retry_steps=()
+  IFS=',' read -r -a retry_steps <<<"$retry_csv"
 
-  local i
-  for i in {1..30}; do
-    if gdrive_mount_active; then
-      refresh_finderserver_timer_if_low
-      start_finderserver_timer_guard
-      return 0
+  while true; do
+    if finderserver_available; then
+      if ! run_finderserver on >/dev/null 2>&1; then
+        log "finderserver on failed; falling back to launchctl mount start."
+      fi
     fi
-    /bin/sleep 1
+
+    /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+    /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+    ddump_started_gdrive_mount=1
+
+    local i
+    for ((i = 1; i <= wait_seconds; i++)); do
+      if gdrive_mount_active; then
+        refresh_finderserver_timer_if_low
+        start_finderserver_timer_guard
+        if [[ "$attempt" -gt 1 ]]; then
+          log "Google Drive mount became ready on retry attempt ${attempt}."
+        fi
+        return 0
+      fi
+      /bin/sleep 1
+    done
+
+    if [[ "${#retry_steps[@]}" -eq 0 ]]; then
+      break
+    fi
+    sleep_seconds="${retry_steps[0]}"
+    retry_steps=("${retry_steps[@]:1}")
+    if [[ "$sleep_seconds" =~ ^[0-9]+$ ]] && [[ "$sleep_seconds" -gt 0 ]]; then
+      log "Google Drive mount not ready after attempt ${attempt}; retrying in ${sleep_seconds}s."
+      /bin/sleep "$sleep_seconds"
+    else
+      break
+    fi
+    attempt=$((attempt + 1))
   done
 
   move_last_status="blocked"
-  move_last_detail="Google Drive mount did not become ready"
+  move_last_detail="Google Drive mount did not become ready after retries (${GDRIVE_MOUNT_RETRY_SECONDS:-5,15,60,180,360,600})"
+  ntfy_notify "mount_failed" "DDump: mount failed" "${move_last_detail}"
   return 1
 }
 
@@ -3066,6 +3121,16 @@ for vol_path in /Volumes/*; do
   fi
   /bin/mkdir -p "$dest_dir"
   last_dest_dir="$dest_dir"
+  if [[ "$ENABLE_POST_EJECT_MOVE" == "1" ]]; then
+    preflight_move_root="$(effective_post_move_root)"
+    if path_uses_gdrive_mount "$preflight_move_root"; then
+      if ! ensure_gdrive_mount_for_post_move "$preflight_move_root"; then
+        log "Preflight mount check failed for ${vol_name}: ${move_last_detail}. Continuing with staging import."
+      else
+        log "Preflight mount check passed for ${vol_name}."
+      fi
+    fi
+  fi
   if [[ "$manual_selection_for_volume" == "1" ]]; then
     if ! check_staging_space_ready "$dest_dir" "$staging_required_kb" "$staging_required_label"; then
       summary_errors_total=$((summary_errors_total + 1))
