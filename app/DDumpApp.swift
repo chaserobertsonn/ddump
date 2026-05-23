@@ -1011,7 +1011,7 @@ struct DetectionSettings: View {
       extensions = state.get("PHOTO_FILE_EXTENSIONS")
       ejectOnSuccess = (state.get("EJECT_ON_SUCCESS", default: "1") == "1")
       verifyHash = (state.get("VERIFY_COPY_HASH", default: "0") == "1")
-      candidateMode = state.get("CANDIDATE_MODE", default: "all")
+      candidateMode = state.get("CANDIDATE_MODE", default: "lookback")
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr")
       promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "1") == "1")

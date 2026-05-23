@@ -181,6 +181,8 @@ add_missing_key 'REQUIRE_PHOTOS_OR_TRUSTED' '"1"' "Silent-skip non-photo volumes
 add_missing_key 'PHOTO_FILE_EXTENSIONS' '"jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr"' "File extensions that count as photos for detection."
 add_missing_key 'VIDEO_FILE_EXTENSIONS' '"mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"' "Extensions treated as video when SPLIT_PHOTO_VIDEO is enabled."
 add_missing_key 'PHOTO_RECENCY_HOURS' '"24"'
+add_missing_key 'CANDIDATE_MODE' '"lookback"' "Import candidate scan mode: lookback keeps the scan limited to recent files."
+add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only files newer than this many hours are considered."
 add_missing_key 'USE_NOTIFICATIONS' '"1"' "Native macOS notifications instead of Terminal monitor."
 add_missing_key 'NOTIFICATION_TIMEOUT_SECONDS' '"60"'
 add_missing_key 'FOLDER_NAMING_STRATEGY' '"cluster"' "How to name shoot folders: smart | calendar | sequential | custom | cluster | camera."
@@ -224,6 +226,11 @@ fi
 if grep -q '^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$/FOLDER_NAME_SEQUENTIAL_PREFIX="DDump "/' "$USER_CONFIG"
   echo "Updated FOLDER_NAME_SEQUENTIAL_PREFIX from \"Dump \" to \"DDump \"."
+fi
+
+if grep -q '^CANDIDATE_MODE="all"$' "$USER_CONFIG"; then
+  /usr/bin/sed -i '' 's/^CANDIDATE_MODE="all"$/CANDIDATE_MODE="lookback"/' "$USER_CONFIG"
+  echo "Updated CANDIDATE_MODE from \"all\" to \"lookback\" (recent-file import only)."
 fi
 
 # Default-off legacy UI

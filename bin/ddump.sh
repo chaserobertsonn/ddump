@@ -209,7 +209,7 @@ trap cleanup EXIT
 # Defaults (overridden by config.env then user config.env)
 DEST_ROOT="$HOME/Temp"
 LOOKBACK_HOURS="24"
-CANDIDATE_MODE="all"
+CANDIDATE_MODE="lookback"
 SOURCE_SUBDIR="DCIM"
 TRUSTED_NAME_PREFIXES="DFP_"
 PROMPT_TO_REMEMBER_UNKNOWN="1"
@@ -1556,23 +1556,14 @@ wait_for_min_eject_grace() {
 find_candidates() {
   local source_root="$1"
   local out_file="$2"
-
-  case "$CANDIDATE_MODE" in
-    all)
-      /usr/bin/find "$source_root" -type f -print0 >"$out_file" || true
-      ;;
-    lookback)
-      local hours
-      hours="$(sanitize_positive_int "${LOOKBACK_HOURS:-24}" "24")"
-      /usr/bin/find "$source_root" -type f -print0 2>/dev/null \
-        | /usr/bin/perl -0ne 'BEGIN { $hours = shift @ARGV; $cutoff = time - ($hours * 3600) } chomp; print $_, "\0" if -f $_ && (stat($_))[9] >= $cutoff' "$hours" \
-        >"$out_file" || true
-      ;;
-    *)
-      log "Invalid CANDIDATE_MODE='${CANDIDATE_MODE}'. Expected 'all' or 'lookback'. Falling back to 'all'."
-      /usr/bin/find "$source_root" -type f -print0 >"$out_file" || true
-      ;;
-  esac
+  local hours
+  hours="$(sanitize_positive_int "${LOOKBACK_HOURS:-24}" "24")"
+  if [[ "${CANDIDATE_MODE:-lookback}" != "lookback" ]]; then
+    log "CANDIDATE_MODE='${CANDIDATE_MODE}' overridden to lookback for safety."
+  fi
+  /usr/bin/find "$source_root" -type f -print0 2>/dev/null \
+    | /usr/bin/perl -0ne 'BEGIN { $hours = shift @ARGV; $cutoff = time - ($hours * 3600) } chomp; print $_, "\0" if -f $_ && (stat($_))[9] >= $cutoff' "$hours" \
+    >"$out_file" || true
 }
 
 has_allowed_extension() {
@@ -2964,12 +2955,14 @@ for vol_path in /Volumes/*; do
   fi
   /bin/mkdir -p "$dest_dir"
   last_dest_dir="$dest_dir"
-  if ! check_staging_space_ready "$dest_dir" "$staging_required_kb" "$staging_required_label"; then
-    summary_errors_total=$((summary_errors_total + 1))
-    /bin/rm -f "$manual_candidates_file"
-    /bin/rm -f "$source_roots_file"
-    /bin/rm -f "$no_eject_hold_file"
-    continue
+  if [[ "$manual_selection_for_volume" == "1" ]]; then
+    if ! check_staging_space_ready "$dest_dir" "$staging_required_kb" "$staging_required_label"; then
+      summary_errors_total=$((summary_errors_total + 1))
+      /bin/rm -f "$manual_candidates_file"
+      /bin/rm -f "$source_roots_file"
+      /bin/rm -f "$no_eject_hold_file"
+      continue
+    fi
   fi
 
   imported_this_volume=0
@@ -3025,6 +3018,18 @@ for vol_path in /Volumes/*; do
       fi
       continue
     fi
+
+    if [[ "$manual_selection_for_volume" != "1" ]]; then
+      root_required_kb=""
+      if root_required_kb="$(manual_required_kb_for_candidates "$temp_candidates_file" 2>/dev/null)"; then
+        if ! check_staging_space_ready "$dest_dir" "$root_required_kb" "lookback candidate files + ${MANUAL_SELECTION_SAFETY_GB:-2}GB safety"; then
+          summary_errors_total=$((summary_errors_total + 1))
+          /bin/rm -f "$temp_candidates_file"
+          continue
+        fi
+      fi
+    fi
+
     has_candidates_this_volume=1
     candidate_count_this_root="$(count_candidates_in_file "$temp_candidates_file")"
     if [[ "$candidate_count_this_root" =~ ^[0-9]+$ ]]; then
