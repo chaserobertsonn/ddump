@@ -162,7 +162,7 @@ if grep -q '^AUTO_TRUST_PREFIX=' "$USER_CONFIG"; then
 fi
 
 # v1 keys that still apply
-add_missing_key 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '"0"' "Prompt for folder selection the first time a trusted card UUID is seen."
+add_missing_key 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '"1"' "Prompt for folder selection the first time a trusted card UUID is seen."
 add_missing_key 'PROMPT_FOR_UNKNOWN_CARD_ACTION' '"1"'
 add_missing_key 'SKIP_INTERNAL_VOLUMES' '"1"'
 add_missing_key 'IGNORE_VOLUME_NAMES' '"Macintosh HD,Recovery"'
@@ -171,6 +171,9 @@ add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
 add_missing_key 'SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION' '"1"'
 add_missing_key 'USE_FAST_SEEN_INDEX' '"1"'
 add_missing_key 'MIN_FREE_SPACE_GB' '"100"' "Minimum local staging free space required before import; 0 disables."
+add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper command for starting/refreshing shared Finder mounts."
+add_missing_key 'FINDERSERVER_TIMER_CHECK_SECONDS' '"300"' "During upload, check timer this often."
+add_missing_key 'FINDERSERVER_TIMER_MIN_SECONDS' '"300"' "If timer is at/below this value, refresh it."
 
 # v2 keys (new)
 add_missing_key 'TRUSTED_NAME_PREFIXES' '"DFP_"' "Volume name prefixes that auto-trust (comma-separated)."
@@ -185,7 +188,7 @@ add_missing_key 'FOLDER_NAMING_FALLBACK' '"cluster"'
 add_missing_key 'SMART_SAMPLE_PATH' '""' "Real shoot folder path used by smart naming to infer the daily Drive structure."
 add_missing_key 'SMART_ASSIGN_EXISTING_FOLDERS' '"1"' "Smart naming maps clusters into existing folders under today's Drive date folder."
 add_missing_key 'SPLIT_PHOTO_VIDEO' '"0"' "Optional smart-mode split: videos go to the sibling 2 — Video date ladder."
-add_missing_key 'FOLDER_NAME_SEQUENTIAL_PREFIX' '"Dump "'
+add_missing_key 'FOLDER_NAME_SEQUENTIAL_PREFIX' '"DDump "'
 add_missing_key 'FOLDER_NAME_CUSTOM_VALUES' '""'
 add_missing_key 'FOLDER_NAME_UNCATEGORIZED' '"Uncategorized"'
 add_missing_key 'CLUSTER_GAP_MINUTES' '"45"'
@@ -206,6 +209,16 @@ add_missing_key 'SLACK_NOTIFY_ON_ERROR' '"1"'
 if grep -q '^VERIFY_COPY_HASH="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^VERIFY_COPY_HASH="1"$/VERIFY_COPY_HASH="0"/' "$USER_CONFIG"
   echo "Updated VERIFY_COPY_HASH to 0 (size verification remains enabled; full hash verify is optional)."
+fi
+
+if grep -q '^DAILY_FOLDER_FORMAT="%Y-%m-%d-dump"$' "$USER_CONFIG"; then
+  /usr/bin/sed -i '' 's/^DAILY_FOLDER_FORMAT="%Y-%m-%d-dump"$/DAILY_FOLDER_FORMAT="%Y-%m-%d-ddump"/' "$USER_CONFIG"
+  echo "Updated DAILY_FOLDER_FORMAT to use -ddump suffix."
+fi
+
+if grep -q '^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$' "$USER_CONFIG"; then
+  /usr/bin/sed -i '' 's/^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$/FOLDER_NAME_SEQUENTIAL_PREFIX="DDump "/' "$USER_CONFIG"
+  echo "Updated FOLDER_NAME_SEQUENTIAL_PREFIX from \"Dump \" to \"DDump \"."
 fi
 
 # Default-off legacy UI

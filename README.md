@@ -9,13 +9,18 @@ The project started as DFP Dump and was renamed to DDump so it can be configured
 - macOS LaunchAgent starts DDump on card mount and every few minutes for pending upload retries.
 - Photo-volume detection silently ignores non-photo mounts like installers.
 - Trust controls support volume-name prefixes, remembered UUIDs, one-time imports, skips, and blocklisting.
+- New cards can prompt for source-folder selection so imports do not have to scan an entire card.
 - Local staging protects card reads from cloud upload failures.
 - Pending upload recovery retries blocked uploads on later launches.
+- Manual backfill import from the Mac app can target specific files/folders on a mounted card (including older than lookback windows).
+- During uploads, DDump can drive `finderserver` and refresh its auto-off timer so mounts do not drop mid-transfer.
+- Upload retries now reconcile destination content before re-copying, so reconnect runs resume from what is already present.
+- Per-volume upload completion is verified against SQLite tracking; incomplete rows are marked for reinsert-first recovery.
 - Folder naming strategies:
   - `smart`: infer the date-folder structure from a sample path and map clusters into existing shoot folders.
   - `calendar`: match capture times to Google Calendar events through `gcalcli`.
   - `cluster`: group files by capture-time gaps.
-  - `sequential`: create `Dump 1`, `Dump 2`, etc.
+  - `sequential`: create `DDump 1`, `DDump 2`, etc.
   - `custom`: use configured names in order.
   - `camera`: keep camera folder names.
 - Post-move uses `rsync` copy plus file-count/byte verification before removing local staged folders.

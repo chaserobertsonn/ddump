@@ -27,6 +27,7 @@ enum DDumpPaths {
   static var pendingDir: URL { appSupport.appendingPathComponent("state/pending_uploads") }
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
   static var controlDir: URL { appSupport.appendingPathComponent("state/control") }
+  static var manualSelectionFile: URL { appSupport.appendingPathComponent("state/manual_selection.paths") }
   static var lockDir: URL { appSupport.appendingPathComponent("state/run.lock") }
   static var pauseFlag: URL { controlDir.appendingPathComponent("pause.flag") }
   static var stopFlag: URL { controlDir.appendingPathComponent("stop_after_file.flag") }
@@ -128,6 +129,9 @@ final class AppState: ObservableObject {
   init() {
     refreshStatus()
     refreshConfig()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+      self?.ensureUploadServerForAppSession()
+    }
     timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
       self?.refreshStatus()
       self?.refreshControlFlags()
@@ -190,7 +194,8 @@ final class AppState: ObservableObject {
       .map { urls in
         urls.filter { url in
           let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-          return isDir && url.lastPathComponent.hasSuffix("-dump")
+          let name = url.lastPathComponent
+          return isDir && (name.hasSuffix("-ddump") || name.hasSuffix("-dump"))
         }.count
       } ?? 0
 
@@ -295,7 +300,8 @@ final class AppState: ObservableObject {
     let cutoff = Date().addingTimeInterval(-Double(max(days, 1)) * 24 * 60 * 60)
     let urls = (try? fm.contentsOfDirectory(at: stagingURL, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey])) ?? []
     let candidates = urls.filter { url in
-      guard url.lastPathComponent.hasSuffix("-dump") else { return false }
+      let name = url.lastPathComponent
+      guard name.hasSuffix("-ddump") || name.hasSuffix("-dump") else { return false }
       let vals = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
       return (vals?.isDirectory == true) && ((vals?.contentModificationDate ?? Date()) < cutoff)
     }
@@ -319,6 +325,108 @@ final class AppState: ObservableObject {
     }
     lastUtilityMessage = "Moved \(removed) old staging folder(s) to Trash."
     refreshHealth()
+  }
+
+  func ensureUploadServerForAppSession() {
+    let uploadRoot = uploadRootForUI
+    guard uploadRoot.contains("/GoogleDrive") else { return }
+
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+if /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "; then
+  exit 0
+fi
+if [ -x "${HOME}/.local/bin/finderserver" ]; then
+  "${HOME}/.local/bin/finderserver" on >/dev/null 2>&1 || true
+fi
+uid="$(/usr/bin/id -u)"
+plist="${HOME}/Library/LaunchAgents/com.chase.rclone-gdrive.plist"
+label="com.chase.rclone-gdrive"
+/bin/mkdir -p "${HOME}/GoogleDrive"
+if [ -f "$plist" ]; then
+  /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+  /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+fi
+for i in {1..30}; do
+  if /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "; then
+    exit 0
+  fi
+  /bin/sleep 1
+done
+exit 1
+"""]
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not start upload server: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      if task.terminationStatus == 0 {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Upload server is on and ready."
+        }
+      } else {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Upload server did not become ready."
+        }
+      }
+    }
+  }
+
+  func startManualSelectionImport() {
+    guard !runActive else {
+      lastUtilityMessage = "DDump is already running. Stop or let it finish first."
+      return
+    }
+    guard FileManager.default.fileExists(atPath: DDumpPaths.scriptFile.path) else {
+      lastUtilityMessage = "DDump script not installed."
+      return
+    }
+
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = true
+    panel.allowsMultipleSelection = true
+    panel.canCreateDirectories = false
+    panel.directoryURL = URL(fileURLWithPath: "/Volumes")
+    panel.prompt = "Import Selected"
+    panel.message = "Pick files or folders from a mounted card."
+    guard panel.runModal() == .OK else { return }
+
+    let selected = panel.urls.map(\.path).filter { !$0.isEmpty }
+    guard !selected.isEmpty else {
+      lastUtilityMessage = "No files or folders selected."
+      return
+    }
+
+    do {
+      try FileManager.default.createDirectory(
+        at: DDumpPaths.controlDir, withIntermediateDirectories: true)
+      let payload = selected.joined(separator: "\n") + "\n"
+      try payload.write(to: DDumpPaths.manualSelectionFile, atomically: true, encoding: .utf8)
+    } catch {
+      lastUtilityMessage = "Could not save manual selection: \(error.localizedDescription)"
+      return
+    }
+
+    let task = Process()
+    task.launchPath = "/bin/bash"
+    task.arguments = [DDumpPaths.scriptFile.path]
+    var env = ProcessInfo.processInfo.environment
+    env["DDUMP_MANUAL_SELECTION_FILE"] = DDumpPaths.manualSelectionFile.path
+    env["DDUMP_MANUAL_SELECTION_SAFETY_GB"] = "2"
+    task.environment = env
+    do {
+      try task.run()
+      lastUtilityMessage = "Manual import started for \(selected.count) selected item(s)."
+    } catch {
+      lastUtilityMessage = "Could not start manual import: \(error.localizedDescription)"
+    }
   }
 
 }
@@ -587,6 +695,13 @@ struct HealthPanel: View {
           Label("Safe Cleanup", systemImage: "trash")
         }
         .disabled(state.runActive)
+
+        Button {
+          state.startManualSelectionImport()
+        } label: {
+          Label("Manual Select Import…", systemImage: "slider.horizontal.3")
+        }
+        .disabled(state.runActive)
       }
       .font(.caption)
 
@@ -709,7 +824,7 @@ struct NamingSettings: View {
   @EnvironmentObject var state: AppState
   @State private var strategy: String = "cluster"
   @State private var fallback: String = "cluster"
-  @State private var seqPrefix: String = "Dump "
+  @State private var seqPrefix: String = "DDump "
   @State private var customValues: String = ""
   @State private var clusterGap: String = "45"
   @State private var smartSamplePath: String = ""
@@ -744,7 +859,7 @@ struct NamingSettings: View {
       }
 
       Section("Sequential strategy") {
-        TextField("Folder prefix (e.g. \"Dump \")", text: $seqPrefix, onCommit: {
+        TextField("Folder prefix (e.g. \"DDump \")", text: $seqPrefix, onCommit: {
           state.set("FOLDER_NAME_SEQUENTIAL_PREFIX", seqPrefix)
         })
       }
@@ -777,7 +892,7 @@ struct NamingSettings: View {
     .onAppear {
       strategy = state.get("FOLDER_NAMING_STRATEGY", default: "cluster")
       fallback = state.get("FOLDER_NAMING_FALLBACK", default: "cluster")
-      seqPrefix = state.get("FOLDER_NAME_SEQUENTIAL_PREFIX", default: "Dump ")
+      seqPrefix = state.get("FOLDER_NAME_SEQUENTIAL_PREFIX", default: "DDump ")
       customValues = state.get("FOLDER_NAME_CUSTOM_VALUES")
       clusterGap = state.get("CLUSTER_GAP_MINUTES", default: "45")
       smartSamplePath = state.get("SMART_SAMPLE_PATH")
@@ -797,6 +912,7 @@ struct DetectionSettings: View {
   @State private var candidateMode: String = "all"
   @State private var lookbackHours: String = "24"
   @State private var videoExtensions: String = ""
+  @State private var promptSourceFoldersOnNewCard: Bool = true
 
   var body: some View {
     Form {
@@ -818,6 +934,11 @@ struct DetectionSettings: View {
       }
 
       Section("Scan window") {
+        Toggle("Prompt to choose folders when a new card is first seen", isOn: $promptSourceFoldersOnNewCard)
+          .onChange(of: promptSourceFoldersOnNewCard) { _, v in
+            state.set("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", v ? "1" : "0")
+          }
+
         Picker("Candidate mode", selection: $candidateMode) {
           Text("All files on card").tag("all")
           Text("Only last N hours (faster)").tag("lookback")
@@ -864,6 +985,7 @@ struct DetectionSettings: View {
       candidateMode = state.get("CANDIDATE_MODE", default: "all")
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr")
+      promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "1") == "1")
     }
   }
 }

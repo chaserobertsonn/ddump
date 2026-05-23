@@ -171,6 +171,7 @@ if ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
   exit 0
 fi
 cleanup() {
+  stop_finderserver_timer_guard 2>/dev/null || true
   /bin/rm -f "${PAUSE_FLAG:-}" "${STOP_AFTER_FILE_FLAG:-}" "${KEEP_MOUNTED_FLAG:-}" "${EJECT_NOW_FLAG:-}" 2>/dev/null || true
   /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
 }
@@ -187,9 +188,9 @@ PROMPT_FOR_UNKNOWN_CARD_ACTION="1"
 SKIP_INTERNAL_VOLUMES="1"
 IGNORE_VOLUME_NAMES="Macintosh HD,Recovery"
 IGNORE_NO_UUID_VOLUMES="1"
-PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE="0"
+PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE="1"
 CREATE_DAILY_FOLDER="1"
-DAILY_FOLDER_FORMAT="%Y-%m-%d-dump"
+DAILY_FOLDER_FORMAT="%Y-%m-%d-ddump"
 EJECT_ON_SUCCESS="1"
 PROMPT_NO_EJECT_ON_START="0"
 EJECT_GRACE_SECONDS="60"
@@ -228,7 +229,7 @@ FOLDER_NAMING_FALLBACK="cluster"
 SMART_SAMPLE_PATH=""
 SMART_ASSIGN_EXISTING_FOLDERS="1"
 SPLIT_PHOTO_VIDEO="0"
-FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "
+FOLDER_NAME_SEQUENTIAL_PREFIX="DDump "
 FOLDER_NAME_CUSTOM_VALUES=""
 FOLDER_NAME_UNCATEGORIZED="Uncategorized"
 CLUSTER_GAP_MINUTES="45"
@@ -249,6 +250,12 @@ PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
 STOP_AFTER_FILE_FLAG="${CONTROL_DIR}/stop_after_file.flag"
 KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 EJECT_NOW_FLAG="${CONTROL_DIR}/eject_now.flag"
+MANUAL_SELECTION_FILE="${DDUMP_MANUAL_SELECTION_FILE:-}"
+MANUAL_SELECTION_SAFETY_GB="${DDUMP_MANUAL_SELECTION_SAFETY_GB:-2}"
+FINDERSERVER_BIN="${HOME}/.local/bin/finderserver"
+FINDERSERVER_TIMER_CHECK_SECONDS="300"
+FINDERSERVER_TIMER_MIN_SECONDS="300"
+FINDERSERVER_GUARD_PID_FILE="${STATE_DIR}/finderserver-guard.pid"
 
 if [[ -f "$DEFAULT_CONFIG_PATH" ]]; then
   # shellcheck disable=SC1090
@@ -258,6 +265,17 @@ fi
 if [[ -f "$USER_CONFIG_PATH" ]]; then
   # shellcheck disable=SC1090
   source "$USER_CONFIG_PATH"
+fi
+
+manual_selection_active=0
+if [[ -n "$MANUAL_SELECTION_FILE" ]]; then
+  if [[ -f "$MANUAL_SELECTION_FILE" ]]; then
+    manual_selection_active=1
+    log "Manual selection mode enabled via DDUMP_MANUAL_SELECTION_FILE=${MANUAL_SELECTION_FILE}"
+  else
+    log "Manual selection file not found: ${MANUAL_SELECTION_FILE} (continuing with normal scan mode)"
+    MANUAL_SELECTION_FILE=""
+  fi
 fi
 
 mkdir -p "$(dirname "$TRUSTED_UUID_FILE")" "$(dirname "$MANIFEST_FILE")"
@@ -613,6 +631,110 @@ gdrive_mount_active() {
   /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "
 }
 
+finderserver_available() {
+  if [[ -x "$FINDERSERVER_BIN" ]]; then
+    return 0
+  fi
+  command -v finderserver >/dev/null 2>&1
+}
+
+run_finderserver() {
+  local subcmd="${1:-status}"
+  if [[ -x "$FINDERSERVER_BIN" ]]; then
+    "$FINDERSERVER_BIN" "$subcmd"
+    return $?
+  fi
+  if command -v finderserver >/dev/null 2>&1; then
+    finderserver "$subcmd"
+    return $?
+  fi
+  return 127
+}
+
+finderserver_timer_remaining_seconds() {
+  local status_out remaining
+  if ! status_out="$(run_finderserver status 2>/dev/null || true)"; then
+    return 1
+  fi
+  if [[ "$status_out" =~ auto-off\ timer:\ ([0-9]+)s\ remaining ]]; then
+    remaining="${BASH_REMATCH[1]}"
+    printf '%s' "$remaining"
+    return 0
+  fi
+  if [[ "$status_out" =~ auto-off\ timer:\ due\ now ]]; then
+    printf '0'
+    return 0
+  fi
+  return 1
+}
+
+refresh_finderserver_timer_if_low() {
+  finderserver_available || return 0
+  local min_left now_left
+  min_left="$(sanitize_positive_int "${FINDERSERVER_TIMER_MIN_SECONDS:-300}" "300")"
+  if ! now_left="$(finderserver_timer_remaining_seconds 2>/dev/null || true)"; then
+    return 0
+  fi
+  if [[ "$now_left" =~ ^[0-9]+$ ]] && [[ "$now_left" -le "$min_left" ]]; then
+    if run_finderserver on >/dev/null 2>&1; then
+      log "Refreshed finderserver timer during upload (remaining=${now_left}s)."
+    else
+      log "Failed to refresh finderserver timer during upload."
+    fi
+  fi
+}
+
+start_finderserver_timer_guard() {
+  finderserver_available || return 0
+  local check_every min_left
+  check_every="$(sanitize_positive_int "${FINDERSERVER_TIMER_CHECK_SECONDS:-300}" "300")"
+  min_left="$(sanitize_positive_int "${FINDERSERVER_TIMER_MIN_SECONDS:-300}" "300")"
+  if [[ "$check_every" -lt 30 ]]; then
+    check_every=30
+  fi
+  if [[ "$min_left" -lt 60 ]]; then
+    min_left=60
+  fi
+
+  if [[ -f "$FINDERSERVER_GUARD_PID_FILE" ]]; then
+    local existing_pid
+    existing_pid="$(cat "$FINDERSERVER_GUARD_PID_FILE" 2>/dev/null || true)"
+    if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      return 0
+    fi
+    /bin/rm -f "$FINDERSERVER_GUARD_PID_FILE"
+  fi
+
+  (
+    while true; do
+      /bin/sleep "$check_every"
+      local status_out remaining
+      status_out="$(run_finderserver status 2>/dev/null || true)"
+      if [[ "$status_out" =~ auto-off\ timer:\ ([0-9]+)s\ remaining ]]; then
+        remaining="${BASH_REMATCH[1]}"
+      elif [[ "$status_out" =~ auto-off\ timer:\ due\ now ]]; then
+        remaining="0"
+      else
+        continue
+      fi
+      if [[ "$remaining" =~ ^[0-9]+$ ]] && [[ "$remaining" -le "$min_left" ]]; then
+        run_finderserver on >/dev/null 2>&1 || true
+      fi
+    done
+  ) >/dev/null 2>&1 &
+  /bin/echo "$!" >"$FINDERSERVER_GUARD_PID_FILE"
+}
+
+stop_finderserver_timer_guard() {
+  [[ -f "$FINDERSERVER_GUARD_PID_FILE" ]] || return 0
+  local guard_pid
+  guard_pid="$(cat "$FINDERSERVER_GUARD_PID_FILE" 2>/dev/null || true)"
+  if [[ "$guard_pid" =~ ^[0-9]+$ ]]; then
+    kill "$guard_pid" >/dev/null 2>&1 || true
+  fi
+  /bin/rm -f "$FINDERSERVER_GUARD_PID_FILE"
+}
+
 ensure_gdrive_mount_for_post_move() {
   local target_root="$1"
   path_uses_gdrive_mount "$target_root" || return 0
@@ -630,6 +752,12 @@ ensure_gdrive_mount_for_post_move() {
   fi
 
   /bin/mkdir -p "$mount_dir"
+
+  if finderserver_available; then
+    if ! run_finderserver on >/dev/null 2>&1; then
+      log "finderserver on failed; falling back to launchctl mount start."
+    fi
+  fi
   /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
   /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
   ddump_started_gdrive_mount=1
@@ -637,6 +765,8 @@ ensure_gdrive_mount_for_post_move() {
   local i
   for i in {1..30}; do
     if gdrive_mount_active; then
+      refresh_finderserver_timer_if_low
+      start_finderserver_timer_guard
       return 0
     fi
     /bin/sleep 1
@@ -649,6 +779,7 @@ ensure_gdrive_mount_for_post_move() {
 
 stop_gdrive_mount_if_started() {
   [[ "${ddump_started_gdrive_mount:-0}" == "1" ]] || return 0
+  stop_finderserver_timer_guard
   local uid label mount_dir
   uid="$(/usr/bin/id -u)"
   label="com.chase.rclone-gdrive"
@@ -712,6 +843,20 @@ copy_path_to_post_target() {
   fi
 
   local src_stats dest_stats
+  src_stats="$(path_content_stats "$src_path")"
+  dest_stats="$(path_content_stats "$dest_path")"
+  [[ "$src_stats" == "$dest_stats" ]]
+}
+
+queue_entry_already_uploaded() {
+  local src_path="$1"
+  local target_dir="$2"
+  local base_name dest_path src_stats dest_stats
+  [[ -e "$src_path" ]] || return 1
+  [[ -d "$target_dir" ]] || return 1
+  base_name="$(basename "$src_path")"
+  dest_path="${target_dir}/${base_name}"
+  [[ -e "$dest_path" ]] || return 1
   src_stats="$(path_content_stats "$src_path")"
   dest_stats="$(path_content_stats "$dest_path")"
   [[ "$src_stats" == "$dest_stats" ]]
@@ -843,15 +988,26 @@ move_queued_paths_to_post_target() {
     base_name="$(basename "$src_path")"
     dest_path="${target_dir}/${base_name}"
     db_upsert_upload_job "$src_path" "$target_dir" "uploading" "0" "0" ""
+    db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
+
+    if [[ "$split_video_enabled" != "1" ]] && queue_entry_already_uploaded "$src_path" "$target_dir"; then
+      /bin/rm -rf "$src_path"
+      db_update_upload_job_status "$src_path" "uploaded" "0" "0" "already complete on destination"
+      db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+      moved_count=$((moved_count + 1))
+      continue
+    fi
 
     if [[ "$split_video_enabled" == "1" && -d "$src_path" ]]; then
       if copy_bucket_split_photo_video "$src_path" "$dest_path" "${video_target_dir}/${base_name}"; then
         /bin/rm -rf "$src_path"
         db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+        db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
         moved_count=$((moved_count + 1))
       else
         failed_count=$((failed_count + 1))
         db_update_upload_job_status "$src_path" "failed" "0" "0" "photo/video split copy failed"
+        db_mark_media_status_by_local_prefix "$src_path" "organized" "photo/video split copy failed"
         log "Post-move failed (photo/video split): ${src_path}"
       fi
       continue
@@ -863,15 +1019,23 @@ move_queued_paths_to_post_target() {
         if copy_path_to_post_target "$src_path" "$dest_path"; then
           /bin/rm -rf "$src_path"
           db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+          db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+          moved_count=$((moved_count + 1))
+        elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
+          /bin/rm -rf "$src_path"
+          db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
+          db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
           moved_count=$((moved_count + 1))
         else
           failed_count=$((failed_count + 1))
           db_update_upload_job_status "$src_path" "failed" "0" "0" "merge copy failed"
+          db_mark_media_status_by_local_prefix "$src_path" "organized" "merge copy failed"
           log "Post-move failed (merge): ${src_path} -> ${dest_path}"
         fi
       else
         failed_count=$((failed_count + 1))
         db_update_upload_job_status "$src_path" "failed" "0" "0" "destination exists and cannot merge"
+        db_mark_media_status_by_local_prefix "$src_path" "organized" "destination exists and cannot merge"
         log "Post-move skipped due to existing destination: ${dest_path}"
       fi
       continue
@@ -880,10 +1044,17 @@ move_queued_paths_to_post_target() {
     if copy_path_to_post_target "$src_path" "$dest_path"; then
       /bin/rm -rf "$src_path"
       db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+      db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+      moved_count=$((moved_count + 1))
+    elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
+      /bin/rm -rf "$src_path"
+      db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
+      db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
       moved_count=$((moved_count + 1))
     else
       failed_count=$((failed_count + 1))
       db_update_upload_job_status "$src_path" "failed" "0" "0" "copy to destination failed"
+      db_mark_media_status_by_local_prefix "$src_path" "organized" "copy to destination failed"
       log "Post-move failed: ${src_path} -> ${dest_path}"
     fi
   done <"$queue_file"
@@ -927,15 +1098,88 @@ sanitize_positive_int() {
   printf '%s' "$raw"
 }
 
-check_staging_space_ready() {
-  local dest_root="$1"
-  local min_gb
-  min_gb="$(sanitize_positive_int "${MIN_FREE_SPACE_GB:-100}" "100")"
-  if [[ "$min_gb" -eq 0 ]]; then
-    return 0
+sum_candidate_sizes_bytes() {
+  local candidate_file="$1"
+  local total_bytes=0
+  local src_file file_size
+  while IFS= read -r -d '' src_file; do
+    [[ -f "$src_file" ]] || continue
+    file_size="$(/usr/bin/stat -f '%z' "$src_file" 2>/dev/null || /bin/echo 0)"
+    if [[ "$file_size" =~ ^[0-9]+$ ]]; then
+      total_bytes=$(( total_bytes + file_size ))
+    fi
+  done <"$candidate_file"
+  printf '%s' "$total_bytes"
+}
+
+manual_required_kb_for_candidates() {
+  local candidate_file="$1"
+  local total_bytes safety_gb safety_bytes required_bytes
+  total_bytes="$(sum_candidate_sizes_bytes "$candidate_file")"
+  if ! [[ "$total_bytes" =~ ^[0-9]+$ ]] || [[ "$total_bytes" -le 0 ]]; then
+    return 1
+  fi
+  safety_gb="$(sanitize_positive_int "${MANUAL_SELECTION_SAFETY_GB:-2}" "2")"
+  safety_bytes=$(( safety_gb * 1024 * 1024 * 1024 ))
+  required_bytes=$(( total_bytes + safety_bytes ))
+  printf '%s' $(( (required_bytes + 1023) / 1024 ))
+}
+
+build_manual_candidates_for_volume() {
+  local vol_name="$1"
+  local vol_path="$2"
+  local out_file="$3"
+  [[ -n "$MANUAL_SELECTION_FILE" ]] || return 1
+  [[ -f "$MANUAL_SELECTION_FILE" ]] || return 1
+
+  : >"$out_file"
+  local selected_path normalized_path had_candidates
+  had_candidates=1
+  while IFS= read -r selected_path || [[ -n "$selected_path" ]]; do
+    selected_path="$(trim "$selected_path")"
+    [[ -n "$selected_path" ]] || continue
+    normalized_path="${selected_path%/}"
+    [[ -n "$normalized_path" ]] || continue
+
+    if [[ "$normalized_path" != "$vol_path" && "$normalized_path" != "${vol_path}/"* ]]; then
+      continue
+    fi
+
+    if [[ -d "$normalized_path" ]]; then
+      /usr/bin/find "$normalized_path" -type f -print0 >>"$out_file" 2>/dev/null || true
+      had_candidates=0
+      continue
+    fi
+
+    if [[ -f "$normalized_path" ]]; then
+      /usr/bin/printf '%s\0' "$normalized_path" >>"$out_file"
+      had_candidates=0
+      continue
+    fi
+  done <"$MANUAL_SELECTION_FILE"
+
+  if [[ "$had_candidates" -ne 0 ]]; then
+    log "Manual selection had no paths for ${vol_name}."
+    return 1
   fi
 
-  local free_kb min_kb
+  if [[ -s "$out_file" ]]; then
+    local dedup_file
+    dedup_file="$(/usr/bin/mktemp "${STATE_DIR}/manual-candidates-dedup.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+    /usr/bin/perl -0ne 'chomp; next if $seen{$_}++; print $_, "\0";' "$out_file" >"$dedup_file" 2>/dev/null || true
+    /bin/mv "$dedup_file" "$out_file"
+  fi
+
+  return 0
+}
+
+check_staging_space_ready() {
+  local dest_root="$1"
+  local required_kb_override="${2:-}"
+  local required_label_override="${3:-}"
+  local min_gb
+  min_gb="$(sanitize_positive_int "${MIN_FREE_SPACE_GB:-100}" "100")"
+  local min_kb required_kb required_label free_kb
   free_kb="$(/bin/df -Pk "$dest_root" 2>/dev/null | /usr/bin/awk 'NR == 2 { print $4 }')"
   if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
     log "Could not determine free space for ${dest_root}."
@@ -944,9 +1188,27 @@ check_staging_space_ready() {
   fi
 
   min_kb=$(( min_gb * 1024 * 1024 ))
-  if [[ "$free_kb" -lt "$min_kb" ]]; then
-    log "Staging disk too full: dest=${dest_root}, free_kb=${free_kb}, required_kb=${min_kb}"
-    notify "DDump" "Not enough local free space for safe import (${min_gb}GB required)." warn
+  required_kb="$min_kb"
+  required_label="${min_gb}GB required"
+
+  if [[ "$required_kb_override" =~ ^[0-9]+$ ]] && [[ "$required_kb_override" -gt 0 ]]; then
+    if [[ "$required_kb" -eq 0 || "$required_kb_override" -lt "$required_kb" ]]; then
+      required_kb="$required_kb_override"
+      if [[ -n "$required_label_override" ]]; then
+        required_label="$required_label_override"
+      else
+        required_label="$(( (required_kb + 1048575) / 1048576 ))GB required"
+      fi
+    fi
+  fi
+
+  if [[ "$required_kb" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "$free_kb" -lt "$required_kb" ]]; then
+    log "Staging disk too full: dest=${dest_root}, free_kb=${free_kb}, required_kb=${required_kb}"
+    notify "DDump" "Not enough local free space for safe import (${required_label})." warn
     return 1
   fi
   return 0
@@ -1660,6 +1922,78 @@ count_candidates_in_file() {
   /usr/bin/tr -cd '\0' <"$candidate_file" | /usr/bin/wc -c | /usr/bin/awk '{print $1}'
 }
 
+db_has_needs_reinsert_for_uuid() {
+  local uuid="$1"
+  db_available || return 1
+  local count
+  count="$(/usr/bin/sqlite3 "$DB_FILE" "PRAGMA busy_timeout=5000; SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND status='needs_reinsert';" 2>>"$LOG_FILE" || /bin/echo 0)"
+  [[ "${count:-0}" -gt 0 ]]
+}
+
+prioritize_needs_reinsert_candidates() {
+  local uuid="$1"
+  local source_root_rel="$2"
+  local candidate_file="$3"
+  db_available || return 0
+  [[ -n "$uuid" ]] || return 0
+  [[ -s "$candidate_file" ]] || return 0
+
+  local needs_file priority_file normal_file merged_file
+  needs_file="$(/usr/bin/mktemp "${STATE_DIR}/needs-reinsert.${run_id}.XXXXXX")"
+  priority_file="$(/usr/bin/mktemp "${STATE_DIR}/priority-first.${run_id}.XXXXXX")"
+  normal_file="$(/usr/bin/mktemp "${STATE_DIR}/priority-rest.${run_id}.XXXXXX")"
+  merged_file="$(/usr/bin/mktemp "${STATE_DIR}/priority-merged.${run_id}.XXXXXX")"
+
+  /usr/bin/sqlite3 "$DB_FILE" "PRAGMA busy_timeout=5000; SELECT source_path FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND source_root_rel=$(sql_quote "$source_root_rel") AND status='needs_reinsert' AND source_path IS NOT NULL ORDER BY updated_at ASC;" >"$needs_file" 2>>"$LOG_FILE" || true
+
+  if [[ ! -s "$needs_file" ]]; then
+    /bin/rm -f "$needs_file" "$priority_file" "$normal_file" "$merged_file"
+    return 0
+  fi
+
+  DDUMP_NEEDS_REINSERT_LIST="$needs_file" \
+    /usr/bin/perl -0ne '
+      BEGIN {
+        my $list = $ENV{"DDUMP_NEEDS_REINSERT_LIST"} // "";
+        if ($list ne "" && open(my $fh, "<", $list)) {
+          while (my $line = <$fh>) {
+            chomp $line;
+            $need{$line} = 1 if $line ne "";
+          }
+          close $fh;
+        }
+      }
+      chomp;
+      next if $_ eq "";
+      if ($need{$_}) {
+        print $_, "\0";
+      }
+    ' "$candidate_file" >"$priority_file"
+
+  DDUMP_NEEDS_REINSERT_LIST="$needs_file" \
+    /usr/bin/perl -0ne '
+      BEGIN {
+        my $list = $ENV{"DDUMP_NEEDS_REINSERT_LIST"} // "";
+        if ($list ne "" && open(my $fh, "<", $list)) {
+          while (my $line = <$fh>) {
+            chomp $line;
+            $need{$line} = 1 if $line ne "";
+          }
+          close $fh;
+        }
+      }
+      chomp;
+      next if $_ eq "";
+      if (!$need{$_}) {
+        print $_, "\0";
+      }
+    ' "$candidate_file" >"$normal_file"
+
+  cat "$priority_file" "$normal_file" >"$merged_file"
+  /bin/mv "$merged_file" "$candidate_file"
+  /bin/rm -f "$needs_file" "$priority_file" "$normal_file"
+}
+
 wait_if_paused_or_stop_requested() {
   while [[ -f "$PAUSE_FLAG" ]]; do
     set_status_phase "paused" "Paused. Press 'r' in monitor window to resume."
@@ -1763,6 +2097,72 @@ db_mark_media_needs_reinsert_by_local_path() {
   local local_path="$1"
   local error="${2:-local staged file missing}"
   db_exec "UPDATE media_files SET status='needs_reinsert', last_error=$(sql_quote "$error"), updated_at=CURRENT_TIMESTAMP, last_run_id=$(sql_quote "$run_id") WHERE local_path=$(sql_quote "$local_path");" >/dev/null || true
+}
+
+db_move_media_local_path() {
+  local old_path="$1"
+  local new_path="$2"
+  db_exec "UPDATE media_files
+SET local_path=$(sql_quote "$new_path"), status='organized', updated_at=CURRENT_TIMESTAMP, last_run_id=$(sql_quote "$run_id")
+WHERE local_path=$(sql_quote "$old_path");" >/dev/null || true
+}
+
+db_mark_media_status_by_local_prefix() {
+  local base_path="$1"
+  local status="$2"
+  local err="${3:-}"
+  db_exec "UPDATE media_files
+SET status=$(sql_quote "$status"), last_error=$(sql_quote "$err"), updated_at=CURRENT_TIMESTAMP, last_run_id=$(sql_quote "$run_id")
+WHERE local_path=$(sql_quote "$base_path") OR local_path LIKE $(sql_quote "${base_path}/%");" >/dev/null || true
+}
+
+db_incomplete_count_for_volume_run() {
+  local uuid="$1"
+  db_available || { printf '0'; return 0; }
+  /usr/bin/sqlite3 "$DB_FILE" "PRAGMA busy_timeout=5000;
+SELECT COUNT(*) FROM media_files
+WHERE source_uuid=$(sql_quote "$uuid")
+  AND last_run_id=$(sql_quote "$run_id")
+  AND status NOT IN ('uploaded','legacy_seen','skipped_duplicate','skipped_extension');" 2>>"$LOG_FILE" || /bin/echo 0
+}
+
+db_mark_incomplete_volume_run_needs_reinsert() {
+  local uuid="$1"
+  local reason="${2:-upload verification incomplete}"
+  db_exec "UPDATE media_files
+SET status='needs_reinsert', last_error=$(sql_quote "$reason"), updated_at=CURRENT_TIMESTAMP, last_run_id=$(sql_quote "$run_id")
+WHERE source_uuid=$(sql_quote "$uuid")
+  AND last_run_id=$(sql_quote "$run_id")
+  AND status IN ('candidate','copy_failed','verify_failed','copied','organized','upload_pending');" >/dev/null || true
+}
+
+verify_volume_upload_completeness() {
+  local uuid="$1"
+  local vol_name="$2"
+
+  [[ -n "$uuid" ]] || return 0
+
+  if [[ "$ENABLE_POST_EJECT_MOVE" != "1" ]]; then
+    return 0
+  fi
+
+  local incomplete_count
+  incomplete_count="$(db_incomplete_count_for_volume_run "$uuid" 2>/dev/null || /bin/echo 0)"
+  incomplete_count="${incomplete_count:-0}"
+  if ! [[ "$incomplete_count" =~ ^[0-9]+$ ]]; then
+    incomplete_count=0
+  fi
+
+  if [[ "$incomplete_count" -gt 0 ]]; then
+    db_mark_incomplete_volume_run_needs_reinsert "$uuid" "not confirmed on upload destination; reinsert card for recovery"
+    summary_errors_total=$((summary_errors_total + 1))
+    log "Upload completeness check failed for ${vol_name}: ${incomplete_count} file(s) not confirmed on destination."
+    notify "DDump" "⚠️ ${vol_name}: ${incomplete_count} file(s) not confirmed on server. Reinsert card to recover missing files." warn
+    return 1
+  fi
+
+  log "Upload completeness check passed for ${vol_name}: all SQLite-tracked files confirmed."
+  return 0
 }
 
 # ----- Folder-naming strategy helpers ----------------------------------------
@@ -2184,6 +2584,7 @@ rebucket_imported_files() {
     fi
 
     if /bin/mv "$src_path" "$target"; then
+      db_move_media_local_path "$src_path" "$target"
       /bin/echo "$bucket_dir" >> "$bucket_set"
     else
       log "Rebucket failed: ${src_path} -> ${target}"
@@ -2481,12 +2882,41 @@ for vol_path in /Volumes/*; do
     continue
   fi
 
-  source_roots_file="$(/usr/bin/mktemp "${STATE_DIR}/source-roots.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
-  if ! resolve_source_roots_for_volume "$vol_name" "$vol_path" "$uuid" "$source_roots_file"; then
-    log "Skipping trusted volume ${vol_name}: no source folders configured."
-    notify "DDump" "${vol_name}: no source folders selected, skipped."
-    /bin/rm -f "$source_roots_file"
-    continue
+  reinsert_priority_notice_sent=0
+  if [[ -n "$uuid" ]] && db_has_needs_reinsert_for_uuid "$uuid"; then
+    reinsert_priority_notice_sent=1
+    notify "DDump" "${vol_name}: recovering previously missing files first, then new files." info
+    log "Volume ${vol_name} has files marked needs_reinsert; prioritizing those first."
+  fi
+
+  manual_selection_for_volume=0
+  manual_candidates_file=""
+  source_roots_file=""
+  staging_required_kb=""
+  staging_required_label=""
+  if [[ "$manual_selection_active" == "1" ]]; then
+    manual_candidates_file="$(/usr/bin/mktemp "${STATE_DIR}/manual-candidates.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+    if build_manual_candidates_for_volume "$vol_name" "$vol_path" "$manual_candidates_file"; then
+      manual_selection_for_volume=1
+      source_roots_file="$(/usr/bin/mktemp "${STATE_DIR}/source-roots.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+      /bin/echo "$vol_path" >"$source_roots_file"
+      if manual_required="$(manual_required_kb_for_candidates "$manual_candidates_file" 2>/dev/null)"; then
+        staging_required_kb="$manual_required"
+        staging_required_label="selected files + ${MANUAL_SELECTION_SAFETY_GB:-2}GB safety"
+      fi
+      log "Manual selection active for ${vol_name}; only selected files/folders will be imported."
+    else
+      /bin/rm -f "$manual_candidates_file"
+      continue
+    fi
+  else
+    source_roots_file="$(/usr/bin/mktemp "${STATE_DIR}/source-roots.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+    if ! resolve_source_roots_for_volume "$vol_name" "$vol_path" "$uuid" "$source_roots_file"; then
+      log "Skipping trusted volume ${vol_name}: no source folders configured."
+      notify "DDump" "${vol_name}: no source folders selected, skipped."
+      /bin/rm -f "$source_roots_file"
+      continue
+    fi
   fi
 
   processed_volume_count=$((processed_volume_count + 1))
@@ -2500,8 +2930,9 @@ for vol_path in /Volumes/*; do
   fi
   /bin/mkdir -p "$dest_dir"
   last_dest_dir="$dest_dir"
-  if ! check_staging_space_ready "$dest_dir"; then
+  if ! check_staging_space_ready "$dest_dir" "$staging_required_kb" "$staging_required_label"; then
     summary_errors_total=$((summary_errors_total + 1))
+    /bin/rm -f "$manual_candidates_file"
     /bin/rm -f "$source_roots_file"
     /bin/rm -f "$no_eject_hold_file"
     continue
@@ -2519,7 +2950,9 @@ for vol_path in /Volumes/*; do
   pending_imports_file="${PENDING_DIR}/pending.$(pending_key_for_volume "$uuid" "$vol_name").${run_id}.tsv"
 
   # Tell the user something is happening right now.
-  if [[ "$vol_photo_total" =~ ^[0-9]+$ && "$vol_photo_total" -gt 0 ]]; then
+  if [[ "$manual_selection_for_volume" == "1" ]]; then
+    notify "DDump" "📷 ${vol_name}: importing manual selection..." info
+  elif [[ "$vol_photo_total" =~ ^[0-9]+$ && "$vol_photo_total" -gt 0 ]]; then
     notify "DDump" "📷 ${vol_name}: scanning ${vol_photo_total} files (${vol_photo_recent} from last ${PHOTO_RECENCY_HOURS:-24}h)..." info
   else
     notify "DDump" "📷 ${vol_name}: scanning..." info
@@ -2540,11 +2973,19 @@ for vol_path in /Volumes/*; do
       source_root_rel="."
     fi
 
-    temp_candidates_file="$(/usr/bin/mktemp "${STATE_DIR}/candidates.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
-    find_candidates "$source_root" "$temp_candidates_file"
+    temp_candidates_file=""
+    if [[ "$manual_selection_for_volume" == "1" ]]; then
+      temp_candidates_file="$manual_candidates_file"
+    else
+      temp_candidates_file="$(/usr/bin/mktemp "${STATE_DIR}/candidates.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+      find_candidates "$source_root" "$temp_candidates_file"
+      prioritize_needs_reinsert_candidates "$uuid" "$source_root_rel" "$temp_candidates_file"
+    fi
 
     if [[ ! -s "$temp_candidates_file" ]]; then
-      /bin/rm -f "$temp_candidates_file"
+      if [[ "$manual_selection_for_volume" != "1" ]]; then
+        /bin/rm -f "$temp_candidates_file"
+      fi
       continue
     fi
     has_candidates_this_volume=1
@@ -2569,9 +3010,15 @@ for vol_path in /Volumes/*; do
         set_status_phase "importing" "Importing from ${vol_name}."
       fi
 
+      file_size="$(/usr/bin/stat -f '%z' "$src_file")"
+      file_mtime="$(/usr/bin/stat -f '%m' "$src_file")"
+      rel_path="${src_file#"${source_root}/"}"
+      db_upsert_candidate_file "$uuid" "$vol_name" "$source_root_rel" "$rel_path" "$src_file" "$file_size" "$file_mtime"
+
       if ! has_allowed_extension "$src_file" "$FILE_EXTENSIONS"; then
         skipped_extension_this_volume=$((skipped_extension_this_volume + 1))
         record_missed_file "$vol_name" "skipped_extension" "$src_file" "extension filtered by FILE_EXTENSIONS"
+        db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "skipped_extension" "" "" "extension filtered by FILE_EXTENSIONS"
         processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
         current_status_processed="$processed_candidates_this_volume"
         current_status_imported="$imported_this_volume"
@@ -2580,11 +3027,6 @@ for vol_path in /Volumes/*; do
         write_status
         continue
       fi
-
-      file_size="$(/usr/bin/stat -f '%z' "$src_file")"
-      file_mtime="$(/usr/bin/stat -f '%m' "$src_file")"
-      rel_path="${src_file#"${source_root}/"}"
-      db_upsert_candidate_file "$uuid" "$vol_name" "$source_root_rel" "$rel_path" "$src_file" "$file_size" "$file_mtime"
 
       if [[ -n "$uuid" ]] && db_file_has_local_copy "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime"; then
         skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
@@ -2627,6 +3069,7 @@ for vol_path in /Volumes/*; do
         if [[ "$USE_FAST_SEEN_INDEX" == "1" && -n "$uuid" ]]; then
           record_fast_seen_key "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "$fingerprint"
         fi
+        db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "skipped_duplicate" "" "$fingerprint" "already imported by fingerprint"
         processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
         current_status_processed="$processed_candidates_this_volume"
         current_status_imported="$imported_this_volume"
@@ -2697,12 +3140,18 @@ for vol_path in /Volumes/*; do
       write_status
     done <"$temp_candidates_file"
 
-    /bin/rm -f "$temp_candidates_file"
+    if [[ "$manual_selection_for_volume" != "1" ]]; then
+      /bin/rm -f "$temp_candidates_file"
+    else
+      break
+    fi
   done <"$source_roots_file"
 
   if [[ "$has_candidates_this_volume" -ne 1 ]]; then
     /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_timestamp" "$vol_name" "$uuid" "0" "0" "0" "success" >>"$RUN_HISTORY_FILE"
-    if [[ "$CANDIDATE_MODE" == "lookback" ]]; then
+    if [[ "$manual_selection_for_volume" == "1" ]]; then
+      log "No candidate files matched manual selection on ${vol_name}."
+    elif [[ "$CANDIDATE_MODE" == "lookback" ]]; then
       log "No candidate files in last ${LOOKBACK_HOURS}h on ${vol_name} (selected folders)."
     else
       log "No candidate files on ${vol_name} (selected folders)."
@@ -2729,6 +3178,7 @@ for vol_path in /Volumes/*; do
       fi
     fi
     notify "DDump" "${vol_name}: no new files, ${ejected_msg}" info
+    /bin/rm -f "$manual_candidates_file"
     /bin/rm -f "$post_move_queue_file"
     /bin/rm -f "$imported_files_file"
     /bin/rm -f "$source_roots_file"
@@ -2821,11 +3271,17 @@ for vol_path in /Volumes/*; do
     status="partial"
     notify "DDump" "⚠️ ${vol_name}: import had errors, card not ejected." warn
   fi
+  if [[ "$failed_copy" == "0" && "$status" == "success" && "$imported_this_volume" -gt 0 ]]; then
+    if ! verify_volume_upload_completeness "$uuid" "$vol_name"; then
+      status="partial"
+    fi
+  fi
   /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_timestamp" "$vol_name" "$uuid" "$imported_this_volume" "$skipped_existing_this_volume" "$skipped_extension_this_volume" "$status" >>"$RUN_HISTORY_FILE"
   log "Volume ${vol_name}: final_status=${status}, imported=${imported_this_volume}, skipped_known=${skipped_existing_this_volume}, skipped_ext=${skipped_extension_this_volume}, post_move=${move_last_status:-none}"
   if [[ -f "$pending_imports_file" && ! -s "$pending_imports_file" ]]; then
     /bin/rm -f "$pending_imports_file"
   fi
+  /bin/rm -f "$manual_candidates_file"
   /bin/rm -f "$post_move_queue_file"
   /bin/rm -f "$imported_files_file"
   /bin/rm -f "$source_roots_file"
