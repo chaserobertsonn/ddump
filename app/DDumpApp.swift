@@ -143,6 +143,10 @@ final class AppState: ObservableObject {
   @Published var cloudRcloneReady: Bool = false
   @Published var cloudRemoteConfigured: Bool = false
   @Published var cloudDiagnosticMessage: String = ""
+  @Published var cloudActionInProgress: Bool = false
+  @Published var cloudActionMessage: String = ""
+  @Published var cloudLastCheckedAt: String = ""
+  @Published var networkOnline: Bool = false
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
@@ -166,7 +170,7 @@ final class AppState: ObservableObject {
       self?.refreshHealth()
       self?.statusTick += 1
       if (self?.statusTick ?? 0) % 5 == 0 {
-        self?.refreshCloudMountStatus()
+        self?.refreshCloudMountStatus(showProgress: false)
       }
     }
     // Keep Google Drive mounted while the DDump app is open.
@@ -174,7 +178,7 @@ final class AppState: ObservableObject {
     mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
       self?.ensureUploadServerForAppSession()
     }
-    refreshCloudMountStatus()
+    refreshCloudMountStatus(showProgress: false)
   }
 
   func refreshStatus() {
@@ -363,19 +367,22 @@ final class AppState: ObservableObject {
     ejectQueued = false
   }
 
-  func retryPendingUploads() {
+  @discardableResult
+  func retryPendingUploads(userMessagePrefix: String = "Retry") -> Bool {
     guard FileManager.default.fileExists(atPath: DDumpPaths.scriptFile.path) else {
       lastUtilityMessage = "DDump script not installed."
-      return
+      return false
     }
     let task = Process()
     task.launchPath = "/bin/bash"
     task.arguments = [DDumpPaths.scriptFile.path]
     do {
       try task.run()
-      lastUtilityMessage = "Retry started. DDump will upload pending folders first."
+      lastUtilityMessage = "\(userMessagePrefix) started. DDump will upload pending folders first."
+      return true
     } catch {
       lastUtilityMessage = "Could not start retry: \(error.localizedDescription)"
+      return false
     }
   }
 
@@ -417,14 +424,30 @@ final class AppState: ObservableObject {
   func ensureUploadServerForAppSession() {
     guard gdriveMountEnabledForUI else { return }
     guard pathUsesGDriveMount(uploadRootForUI) else { return }
-    startCloudMount(userMessagePrefix: "Upload server")
+    startCloudMount(userMessagePrefix: "Upload server", showProgress: false)
   }
 
-  func startCloudMount(userMessagePrefix: String = "Cloud mount") {
+  private func setCloudAction(_ running: Bool, _ message: String) {
+    DispatchQueue.main.async {
+      self.cloudActionInProgress = running
+      self.cloudActionMessage = message
+    }
+  }
+
+  private func nowTimestamp() -> String {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return f.string(from: Date())
+  }
+
+  func startCloudMount(userMessagePrefix: String = "Cloud mount", showProgress: Bool = false, completion: ((Bool) -> Void)? = nil) {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
-    let retryCSV = get("GDRIVE_MOUNT_RETRY_SECONDS", default: "5,15,60,180,360,600")
+    let retryCSV = get("GDRIVE_MOUNT_RETRY_SECONDS", default: "15,30,60,180")
     let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
+    if showProgress {
+      setCloudAction(true, "Starting cloud mount…")
+    }
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
@@ -502,18 +525,29 @@ exit 1
         try task.run()
       } catch {
         DispatchQueue.main.async {
+          if showProgress {
+            self.cloudActionInProgress = false
+            self.cloudActionMessage = ""
+          }
           self.lastUtilityMessage = "Could not start cloud mount: \(error.localizedDescription)"
+          completion?(false)
         }
         return
       }
       task.waitUntilExit()
+      let ok = task.terminationStatus == 0
       DispatchQueue.main.async {
-        if task.terminationStatus == 0 {
+        if showProgress {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+        }
+        if ok {
           self.lastUtilityMessage = "\(userMessagePrefix) is on and ready."
         } else {
           self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
         }
-        self.refreshCloudMountStatus()
+        self.refreshCloudMountStatus(showProgress: false)
+        completion?(ok)
       }
     }
   }
@@ -521,6 +555,7 @@ exit 1
   func hardRestartCloudMount() {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
+    setCloudAction(true, "Hard resetting cloud mount…")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
@@ -537,6 +572,14 @@ fi
 if [ -x "${HOME}/.local/bin/finderserver" ]; then
   "${HOME}/.local/bin/finderserver" on >/dev/null 2>&1 || true
 fi
+/bin/rm -rf "${HOME}/Library/Application Support/DDump/state/rclone-mount.lock" >/dev/null 2>&1 || true
+/bin/rm -rf "${HOME}/Library/Application Support/DDump/state/cloud-mount-start.lock" >/dev/null 2>&1 || true
+stale_pids="$(/usr/bin/pgrep -f "rclone (mount|nfsmount).* ${mount_point}" 2>/dev/null || true)"
+if [ -n "${stale_pids}" ]; then
+  /bin/kill -TERM ${stale_pids} >/dev/null 2>&1 || true
+  /bin/sleep 1
+  /bin/kill -KILL ${stale_pids} >/dev/null 2>&1 || true
+fi
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
   /usr/sbin/diskutil unmount force "${mount_point}" >/dev/null 2>&1 || /sbin/umount -f "${mount_point}" >/dev/null 2>&1 || true
 fi
@@ -552,6 +595,8 @@ exit 0
         try task.run()
       } catch {
         DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
           self.lastUtilityMessage = "Could not hard-restart cloud mount: \(error.localizedDescription)"
         }
         return
@@ -559,7 +604,7 @@ exit 0
       task.waitUntilExit()
       DispatchQueue.main.async {
         self.lastUtilityMessage = "Hard restart requested. Retrying mount..."
-        self.startCloudMount(userMessagePrefix: "Cloud hard restart")
+        self.startCloudMount(userMessagePrefix: "Cloud hard restart", showProgress: true)
       }
     }
   }
@@ -567,6 +612,7 @@ exit 0
   func stopCloudMount() {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
+    setCloudAction(true, "Stopping cloud mount…")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
@@ -586,23 +632,30 @@ exit 0
         try task.run()
       } catch {
         DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
           self.lastUtilityMessage = "Could not stop cloud mount: \(error.localizedDescription)"
         }
         return
       }
       task.waitUntilExit()
       DispatchQueue.main.async {
+        self.cloudActionInProgress = false
+        self.cloudActionMessage = ""
         self.lastUtilityMessage = "Cloud mount stop requested."
-        self.refreshCloudMountStatus()
+        self.refreshCloudMountStatus(showProgress: false)
       }
     }
   }
 
-  func refreshCloudMountStatus() {
+  func refreshCloudMountStatus(showProgress: Bool = false) {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
     let remote = gdriveRemoteForUI
     let rcloneBin = rcloneBinForUI
+    if showProgress {
+      setCloudAction(true, "Refreshing mount diagnostics…")
+    }
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
@@ -647,12 +700,27 @@ else
   echo "mount_active=0"
 fi
 
+if /usr/sbin/scutil -r 1.1.1.1 2>/dev/null | /usr/bin/grep -q "Reachable"; then
+  echo "network_online=1"
+else
+  echo "network_online=0"
+fi
+
 uid="$(/usr/bin/id -u)"
 legacy_label="com.chase.rclone-gdrive"
+if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${mount_point}" >/dev/null 2>&1; then
+  rclone_proc=1
+else
+  rclone_proc=0
+fi
+
 if /bin/launchctl print "gui/${uid}/${mount_label}" >/dev/null 2>&1; then
   service_loaded=1
   echo "service_loaded=1"
 elif /bin/launchctl print "gui/${uid}/${legacy_label}" >/dev/null 2>&1; then
+  service_loaded=1
+  echo "service_loaded=1"
+elif [ "${rclone_proc:-0}" = "1" ]; then
   service_loaded=1
   echo "service_loaded=1"
 else
@@ -665,19 +733,20 @@ if [ "${rclone_ready:-0}" = "0" ]; then
   diag="rclone binary not found"
 elif [ "${remote_configured:-0}" = "0" ]; then
   diag="rclone remote '${remote}' is not configured"
+elif [ "${mount_active:-0}" = "1" ]; then
+  diag="mount active and ready"
 elif [ "${service_loaded:-0}" = "0" ]; then
   diag="mount service is not loaded"
-elif [ "${mount_active:-0}" = "0" ]; then
+else
   last_log="$(tail -n 1 "${HOME}/Library/Application Support/DDump/logs/rclone-gdrive.log" 2>/dev/null || true)"
   if [ -n "$last_log" ]; then
     diag="service running but mount inactive; last mount log: ${last_log}"
   else
     diag="service running but mount inactive"
   fi
-else
-  diag="mount active and ready"
 fi
 echo "diag_reason=$diag"
+echo "checked_at=$(/bin/date '+%Y-%m-%d %H:%M:%S')"
 """]
       let pipe = Pipe()
       task.standardOutput = pipe
@@ -685,17 +754,46 @@ echo "diag_reason=$diag"
       do {
         try task.run()
       } catch {
+        DispatchQueue.main.async {
+          if showProgress {
+            self.cloudActionInProgress = false
+            self.cloudActionMessage = ""
+          }
+        }
         return
       }
       task.waitUntilExit()
       let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
       let parsed = parseShellEnv(out)
       DispatchQueue.main.async {
+        if showProgress {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+        }
         self.cloudMountActive = parsed["mount_active"] == "1"
         self.cloudServiceLoaded = parsed["service_loaded"] == "1"
         self.cloudRcloneReady = parsed["rclone_ready"] == "1"
         self.cloudRemoteConfigured = parsed["remote_configured"] == "1"
         self.cloudDiagnosticMessage = parsed["diag_reason"] ?? ""
+        self.networkOnline = parsed["network_online"] == "1"
+        self.cloudLastCheckedAt = parsed["checked_at"] ?? self.nowTimestamp()
+      }
+    }
+  }
+
+  func resumePendingUploadsNow() {
+    setCloudAction(true, "Checking mount and resuming uploads…")
+    startCloudMount(userMessagePrefix: "Cloud mount", showProgress: false) { ready in
+      DispatchQueue.main.async {
+        self.cloudActionInProgress = false
+        self.cloudActionMessage = ""
+        if !ready {
+          self.lastUtilityMessage = "Cloud mount is not ready yet. DDump will auto-resume when network/mount recover."
+          return
+        }
+        if self.retryPendingUploads(userMessagePrefix: "Resume now") {
+          self.lastUtilityMessage = "Resume now started."
+        }
       }
     }
   }
@@ -2021,6 +2119,27 @@ struct CloudSettings: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 20) {
+        if state.cloudActionInProgress {
+          HStack(spacing: 10) {
+            ProgressView()
+              .controlSize(.small)
+              .tint(.ddumpPeach)
+            Text(state.cloudActionMessage.isEmpty ? "Working…" : state.cloudActionMessage)
+              .font(DDumpFont.ui(12, weight: .medium))
+              .foregroundColor(.ddumpFG2)
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .fill(Color.ddumpSurface2)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
+        }
+
         sectionHeader("Connection", caption: "rclone-backed upload mount")
 
         VStack(spacing: 0) {
@@ -2076,19 +2195,20 @@ struct CloudSettings: View {
             .stroke(Color.ddumpLine1, lineWidth: 1)
         )
 
-        sectionHeader("Status")
+        sectionHeader("Status", caption: state.cloudLastCheckedAt.isEmpty ? nil : "Last check \(state.cloudLastCheckedAt)")
         VStack(spacing: 10) {
           statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
           statusCard(state.cloudRemoteConfigured, okText: "Remote configured", failText: "Remote not configured", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Open rclone setup and create the configured remote.")
           statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
           statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
+          statusCard(state.networkOnline, okText: "Network reachable", failText: "Network unavailable", icon: "wifi", hint: state.networkOnline ? "" : "DDump waits and retries automatically when connection returns.")
         }
 
         sectionHeader("Actions")
         VStack(alignment: .leading, spacing: 10) {
           HStack(spacing: 10) {
             Button {
-              state.startCloudMount()
+              state.startCloudMount(showProgress: true)
             } label: {
               Label("Start mount", systemImage: "play.circle")
             }
@@ -2102,12 +2222,13 @@ struct CloudSettings: View {
             .buttonStyle(DDumpSecondaryButtonStyle())
 
             Button {
-              state.refreshCloudMountStatus()
+              state.refreshCloudMountStatus(showProgress: true)
             } label: {
               Label("Re-check status", systemImage: "arrow.clockwise")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
           }
+          .disabled(state.cloudActionInProgress)
 
           HStack(spacing: 10) {
             Button {
@@ -2130,7 +2251,15 @@ struct CloudSettings: View {
               Label("Open mount folder", systemImage: "folder")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.resumePendingUploadsNow()
+            } label: {
+              Label("Resume uploads now", systemImage: "arrow.up.circle")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
           }
+          .disabled(state.cloudActionInProgress)
         }
 
         sectionHeader("Offline resume")
@@ -2180,7 +2309,7 @@ struct CloudSettings: View {
             .foregroundColor(.ddumpFG2)
             .textSelection(.enabled)
           Button {
-            state.refreshCloudMountStatus()
+            state.refreshCloudMountStatus(showProgress: true)
           } label: {
             Label("Run diagnostics now", systemImage: "stethoscope")
           }

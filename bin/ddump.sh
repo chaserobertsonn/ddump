@@ -298,7 +298,7 @@ GDRIVE_MOUNT_POINT="${HOME}/GoogleDrive"
 GDRIVE_REMOTE="combined:"
 RCLONE_BIN="${HOME}/bin/rclone"
 GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
-GDRIVE_MOUNT_RETRY_SECONDS="5,15,60,180,360,600"
+GDRIVE_MOUNT_RETRY_SECONDS="15,30,60,180"
 GDRIVE_MOUNT_WAIT_SECONDS="30"
 NTFY_TOPIC="dfp-chase-scheduler"
 NTFY_NOTIFY_STAGING_STARTED="0"
@@ -729,7 +729,7 @@ gdrive_mount_plist_path() {
 }
 
 sanitize_retry_schedule_csv() {
-  local raw="${1:-5,15,60,180,360,600}"
+  local raw="${1:-15,30,60,180}"
   local cleaned=""
   local part=""
   IFS=',' read -r -a _retry_parts <<<"$raw"
@@ -743,9 +743,13 @@ sanitize_retry_schedule_csv() {
     fi
   done
   if [[ -z "$cleaned" ]]; then
-    cleaned="5,15,60,180,360,600"
+    cleaned="15,30,60,180"
   fi
   printf '%s' "$cleaned"
+}
+
+ddump_ui_app_running() {
+  /usr/bin/pgrep -f '/DDump.app/Contents/MacOS/DDump' >/dev/null 2>&1
 }
 
 finderserver_available() {
@@ -871,7 +875,7 @@ ensure_gdrive_mount_for_post_move() {
   if [[ "$wait_seconds" -lt 10 ]]; then
     wait_seconds=10
   fi
-  retry_csv="$(sanitize_retry_schedule_csv "${GDRIVE_MOUNT_RETRY_SECONDS:-5,15,60,180,360,600}")"
+  retry_csv="$(sanitize_retry_schedule_csv "${GDRIVE_MOUNT_RETRY_SECONDS:-15,30,60,180}")"
   if [[ ! -f "$plist" ]]; then
     move_last_status="blocked"
     move_last_detail="Google Drive mount agent missing: ${plist}"
@@ -925,7 +929,7 @@ ensure_gdrive_mount_for_post_move() {
   done
 
   move_last_status="blocked"
-  move_last_detail="Google Drive mount did not become ready after retries (${GDRIVE_MOUNT_RETRY_SECONDS:-5,15,60,180,360,600})"
+  move_last_detail="Google Drive mount did not become ready after retries (${GDRIVE_MOUNT_RETRY_SECONDS:-15,30,60,180})"
   ntfy_notify "mount_failed" "DDump: mount failed" "${move_last_detail}"
   return 1
 }
@@ -933,6 +937,10 @@ ensure_gdrive_mount_for_post_move() {
 stop_gdrive_mount_if_started() {
   [[ "${ddump_started_gdrive_mount:-0}" == "1" ]] || return 0
   stop_finderserver_timer_guard
+  if ddump_ui_app_running; then
+    log "Keeping Google Drive mounted because DDump app is open."
+    return 0
+  fi
   local uid label mount_dir
   uid="$(/usr/bin/id -u)"
   label="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"

@@ -165,6 +165,19 @@ add_missing_key() {
   fi
 }
 
+replace_key_if_exact() {
+  # If a key currently matches old_value exactly, replace it with new_value.
+  local key="$1"
+  local old_value="$2"
+  local new_value="$3"
+  local current
+  current="$(/usr/bin/awk -F= -v k="$key" '$1 == k { v=$2 } END { gsub(/^"|"$/, "", v); print v }' "$USER_CONFIG")"
+  if [[ "$current" == "$old_value" ]]; then
+    /usr/bin/sed -i '' "s|^${key}=.*|${key}=\"${new_value}\"|" "$USER_CONFIG"
+    echo "Updated ${key} default: ${old_value} → ${new_value}"
+  fi
+}
+
 normalize_escaped_home_path() {
   # Convert a literal "\$HOME/..." in config values back to "$HOME/..."
   # so shell scripts can expand it at runtime.
@@ -216,8 +229,9 @@ add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDu
 add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
 add_missing_key 'RCLONE_MOUNT_COMMAND' '"auto"' "Mount command: auto (prefer nfsmount), mount, or nfsmount."
 add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent label for DDump's mount helper."
-add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"5,15,60,180,360,600"' "Mount retry backoff schedule in seconds."
+add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"15,30,60,180"' "Mount retry backoff schedule in seconds."
 add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt waits for readiness."
+replace_key_if_exact 'GDRIVE_MOUNT_RETRY_SECONDS' '5,15,60,180,360,600' '15,30,60,180'
 
 # v2 keys (new)
 add_missing_key 'TRUSTED_NAME_PREFIXES' '"DFP_"' "Volume name prefixes that auto-trust (comma-separated)."

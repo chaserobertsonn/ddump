@@ -120,8 +120,13 @@ if [[ "$MOUNT_COMMAND" != "mount" && "$MOUNT_COMMAND" != "nfsmount" ]]; then
   exit 1
 fi
 
+# If a healthy mount already exists, keep it and exit cleanly.
 if mount | grep -q " on $MOUNT "; then
-  echo "$(date)  stale mount found, force-unmounting" >> "$LOG"
+  if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" >/dev/null 2>&1; then
+    echo "$(date)  mount already active at $MOUNT; leaving existing session in place" >> "$LOG"
+    exit 0
+  fi
+  echo "$(date)  stale mount found (no matching rclone process), force-unmounting" >> "$LOG"
   diskutil unmount force "$MOUNT" >/dev/null 2>&1 || true
   umount -f "$MOUNT" >/dev/null 2>&1 || true
   sleep 2
