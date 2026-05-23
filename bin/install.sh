@@ -160,9 +160,21 @@ normalize_escaped_home_path() {
   # Convert a literal "\$HOME/..." in config values back to "$HOME/..."
   # so shell scripts can expand it at runtime.
   local key="$1"
-  if /usr/bin/grep -q "^${key}=\"\\\\\\$HOME/" "$USER_CONFIG"; then
-    /usr/bin/sed -i '' "s|^${key}=\"\\\\\\\\\\$HOME/|${key}=\"\\$HOME/|" "$USER_CONFIG"
+  local tmp changed line
+  tmp="$(mktemp)"
+  changed=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == ${key}"=\"\\\$HOME/"* ]]; then
+      line="${line/${key}=\"\\\$HOME\//${key}=\"\$HOME/}"
+      changed=1
+    fi
+    printf '%s\n' "$line" >> "$tmp"
+  done < "$USER_CONFIG"
+  if [[ "$changed" == "1" ]]; then
+    mv "$tmp" "$USER_CONFIG"
     echo "Normalized escaped home path in ${key}."
+  else
+    rm -f "$tmp"
   fi
 }
 

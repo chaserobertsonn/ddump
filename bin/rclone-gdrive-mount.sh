@@ -45,19 +45,40 @@ RCLONE_BIN="$(expand_user_path "${RCLONE_BIN:-$HOME/bin/rclone}")"
 MOUNT="$GDRIVE_MOUNT_POINT"
 REMOTE="$GDRIVE_REMOTE"
 LOCK_DIR="$STATE_DIR/rclone-mount.lock"
+LOCK_PID_FILE="$LOCK_DIR/pid"
 
 if ! /bin/mkdir "$LOCK_DIR" >/dev/null 2>&1; then
-  lock_mtime="$(/usr/bin/stat -f '%m' "$LOCK_DIR" 2>/dev/null || echo 0)"
-  now_epoch="$(date +%s)"
-  if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( now_epoch - lock_mtime > 900 )); then
+  stale_lock=0
+  lock_pid="$(/bin/cat "$LOCK_PID_FILE" 2>/dev/null || true)"
+  if [[ -z "${lock_pid}" ]]; then
+    stale_lock=1
+  elif ! [[ "${lock_pid}" =~ ^[0-9]+$ ]]; then
+    stale_lock=1
+  elif ! /bin/kill -0 "$lock_pid" >/dev/null 2>&1; then
+    stale_lock=1
+  fi
+
+  if (( stale_lock == 0 )); then
+    lock_mtime="$(/usr/bin/stat -f '%m' "$LOCK_DIR" 2>/dev/null || echo 0)"
+    now_epoch="$(date +%s)"
+    if [[ "$lock_mtime" =~ ^[0-9]+$ ]] && (( now_epoch - lock_mtime > 120 )); then
+      stale_lock=1
+    fi
+  fi
+
+  if (( stale_lock == 1 )); then
+    /bin/rm -f "$LOCK_PID_FILE" >/dev/null 2>&1 || true
     /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
   fi
+
   if ! /bin/mkdir "$LOCK_DIR" >/dev/null 2>&1; then
     echo "$(date)  mount skipped: another mount attempt is already in progress" >> "$LOG"
     exit 0
   fi
 fi
+/bin/echo "$$" > "$LOCK_PID_FILE"
 cleanup_lock() {
+  /bin/rm -f "$LOCK_PID_FILE" >/dev/null 2>&1 || true
   /bin/rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
 }
 trap cleanup_lock EXIT
