@@ -796,7 +796,7 @@ struct RunChecklistPanel: View {
     if state.runActive && ["starting", "scanning", "importing", "paused"].contains(state.phase) {
       return .active
     }
-    if runFinished && state.imported > 0 {
+    if runFinished && (state.imported > 0 || state.skipped > 0 || state.total > 0) {
       return .done
     }
     if runFinished && (summaryMetric("errors") ?? 0) > 0 && state.imported == 0 {
@@ -808,6 +808,9 @@ struct RunChecklistPanel: View {
   private var step2State: StepState {
     if !ejectEnabled {
       return .done
+    }
+    if step1State != .done {
+      return .pending
     }
     if runFinished {
       if (summaryMetric("kept_mounted") ?? 0) > 0 {
@@ -825,10 +828,13 @@ struct RunChecklistPanel: View {
     if !postMoveEnabled {
       return .done
     }
+    if step2State != .done {
+      return .pending
+    }
     if runFinished {
       let moveFail = summaryMetric("post_move_fail") ?? 0
       let moveBlocked = summaryMetric("post_move_blocked") ?? 0
-      if moveFail == 0 && moveBlocked == 0 {
+      if moveFail == 0 && moveBlocked == 0 && state.pendingUploadCount == 0 {
         return .done
       }
       return .blocked
@@ -841,7 +847,10 @@ struct RunChecklistPanel: View {
 
   private var step4State: StepState {
     guard runFinished else { return .pending }
-    return (summaryMetric("errors") ?? 0) == 0 ? .done : .blocked
+    if step1State == .done && step2State == .done && step3State == .done && (summaryMetric("errors") ?? 0) == 0 {
+      return .done
+    }
+    return .blocked
   }
 
   private func icon(for step: StepState) -> String {
