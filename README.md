@@ -16,6 +16,7 @@ The project started as DFP Dump and was renamed to DDump so it can be configured
 - During uploads, DDump can drive `finderserver` and refresh its auto-off timer so mounts do not drop mid-transfer.
 - Upload retries now reconcile destination content before re-copying, so reconnect runs resume from what is already present.
 - Per-volume upload completion is verified against SQLite tracking; incomplete rows are marked for reinsert-first recovery.
+- Optional `ntfy` push alerts can notify key milestones (staging start, eject, upload start, upload complete).
 - Folder naming strategies:
   - `smart`: infer the date-folder structure from a sample path and map clusters into existing shoot folders.
   - `calendar`: match capture times to Google Calendar events through `gcalcli`.
@@ -64,6 +65,7 @@ Main settings:
 - `VERIFY_COPY_HASH`: optional slower post-copy SHA-256 verification.
 - `HASH_BEFORE_COPY`: optional slower pre-copy hash for global duplicate checks.
 - `SLACK_WEBHOOK_URL`: optional Slack incoming webhook for admin-only run notifications.
+- `NTFY_TOPIC`: optional ntfy topic for push notifications.
 
 ## Calendar Naming
 

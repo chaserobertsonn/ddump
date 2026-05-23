@@ -82,6 +82,35 @@ slack_notify() {
   fi
 }
 
+ntfy_notify() {
+  local event_key="$1"
+  local title="$2"
+  local text="$3"
+  local topic="${NTFY_TOPIC:-}"
+  [[ -n "$topic" ]] || return 0
+
+  local enabled_key=""
+  case "$event_key" in
+    staging_started) enabled_key="${NTFY_NOTIFY_STAGING_STARTED:-0}" ;;
+    card_ejected) enabled_key="${NTFY_NOTIFY_CARD_EJECTED:-1}" ;;
+    upload_started) enabled_key="${NTFY_NOTIFY_UPLOAD_STARTED:-0}" ;;
+    upload_complete) enabled_key="${NTFY_NOTIFY_UPLOAD_COMPLETE:-1}" ;;
+    *) enabled_key="0" ;;
+  esac
+  [[ "$enabled_key" == "1" ]] || return 0
+
+  local body
+  body="$(printf '%s\n%s\n%s' "$title" "$event_key" "$text")"
+  if ! /usr/bin/curl -fsS -m 10 \
+    -H "Title: ${title}" \
+    -H "Tags: camera" \
+    --data-binary "$body" \
+    "https://ntfy.sh/${topic}" >/dev/null 2>&1; then
+    log "ntfy notification failed for event=${event_key} topic=${topic}"
+    return 1
+  fi
+}
+
 is_trusted_name_prefix() {
   local vol_name="$1"
   local raw_list="${TRUSTED_NAME_PREFIXES:-}"
@@ -256,6 +285,11 @@ FINDERSERVER_BIN="${HOME}/.local/bin/finderserver"
 FINDERSERVER_TIMER_CHECK_SECONDS="300"
 FINDERSERVER_TIMER_MIN_SECONDS="300"
 FINDERSERVER_GUARD_PID_FILE="${STATE_DIR}/finderserver-guard.pid"
+NTFY_TOPIC="dfp-chase-scheduler"
+NTFY_NOTIFY_STAGING_STARTED="0"
+NTFY_NOTIFY_CARD_EJECTED="1"
+NTFY_NOTIFY_UPLOAD_STARTED="0"
+NTFY_NOTIFY_UPLOAD_COMPLETE="1"
 
 if [[ -f "$DEFAULT_CONFIG_PATH" ]]; then
   # shellcheck disable=SC1090
@@ -2952,10 +2986,13 @@ for vol_path in /Volumes/*; do
   # Tell the user something is happening right now.
   if [[ "$manual_selection_for_volume" == "1" ]]; then
     notify "DDump" "📷 ${vol_name}: importing manual selection..." info
+    ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: manual-selection staging started."
   elif [[ "$vol_photo_total" =~ ^[0-9]+$ && "$vol_photo_total" -gt 0 ]]; then
     notify "DDump" "📷 ${vol_name}: scanning ${vol_photo_total} files (${vol_photo_recent} from last ${PHOTO_RECENCY_HOURS:-24}h)..." info
+    ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: staging started (detected ${vol_photo_total} files)."
   else
     notify "DDump" "📷 ${vol_name}: scanning..." info
+    ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: staging started."
   fi
 
   # Open the DDump app so the user sees a live progress window.
@@ -3171,6 +3208,7 @@ for vol_path in /Volumes/*; do
       elif /usr/sbin/diskutil eject "$vol_path" >/dev/null 2>&1; then
         log "Ejected volume: ${vol_name}"
         ejected_msg="card ejected."
+        ntfy_notify "card_ejected" "DDump: card ejected" "${vol_name}: card ejected after no-new-files check."
       else
         log "Failed to eject volume: ${vol_name}"
         ejected_msg="could not eject card."
@@ -3216,6 +3254,7 @@ for vol_path in /Volumes/*; do
     elif /usr/sbin/diskutil eject "$vol_path" >/dev/null 2>&1; then
       log "Ejected volume: ${vol_name}"
       did_eject_msg="card ejected."
+      ntfy_notify "card_ejected" "DDump: card ejected" "${vol_name}: card ejected after import."
     else
       log "Failed to eject volume: ${vol_name}"
       failed_copy=1
@@ -3229,6 +3268,7 @@ for vol_path in /Volumes/*; do
     # then queue the bucket folders for post-move.
     if [[ "$imported_this_volume" -gt 0 ]]; then
       notify "DDump" "📂 ${vol_name}: copy done (${imported_this_volume} files). Uploading to Drive..." info
+      ntfy_notify "upload_started" "DDump: upload started" "${vol_name}: upload started for ${imported_this_volume} file(s)."
     fi
     rebucket_ok=1
     if ! rebucket_imported_files "$imported_files_file" "$dest_dir" "$post_move_queue_file"; then
@@ -3251,6 +3291,7 @@ for vol_path in /Volumes/*; do
       friendly_target_short="${friendly_target##*/GoogleDrive/}"
       /bin/rm -f "$pending_imports_file"
       notify "DDump" "✅ ${vol_name}: ${imported_this_volume} files uploaded to ${friendly_target_short}" done
+      ntfy_notify "upload_complete" "DDump: upload complete" "${vol_name}: uploaded ${imported_this_volume} file(s) to ${friendly_target_short}."
     else
       status="partial"
       if [[ "$rebucket_ok" == "1" ]]; then

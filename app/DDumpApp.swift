@@ -913,6 +913,11 @@ struct DetectionSettings: View {
   @State private var lookbackHours: String = "24"
   @State private var videoExtensions: String = ""
   @State private var promptSourceFoldersOnNewCard: Bool = true
+  @State private var ntfyTopic: String = "dfp-chase-scheduler"
+  @State private var ntfyStagingStarted: Bool = false
+  @State private var ntfyCardEjected: Bool = true
+  @State private var ntfyUploadStarted: Bool = false
+  @State private var ntfyUploadComplete: Bool = true
 
   var body: some View {
     Form {
@@ -974,6 +979,30 @@ struct DetectionSettings: View {
           state.set("VIDEO_FILE_EXTENSIONS", videoExtensions)
         })
       }
+
+      Section("ntfy alerts") {
+        TextField("Topic (e.g. dfp-chase-scheduler)",
+                  text: $ntfyTopic, onCommit: {
+          state.set("NTFY_TOPIC", ntfyTopic)
+        })
+
+        Toggle("Staging started", isOn: $ntfyStagingStarted)
+          .onChange(of: ntfyStagingStarted) { _, v in
+            state.set("NTFY_NOTIFY_STAGING_STARTED", v ? "1" : "0")
+          }
+        Toggle("Card ejected", isOn: $ntfyCardEjected)
+          .onChange(of: ntfyCardEjected) { _, v in
+            state.set("NTFY_NOTIFY_CARD_EJECTED", v ? "1" : "0")
+          }
+        Toggle("Upload started", isOn: $ntfyUploadStarted)
+          .onChange(of: ntfyUploadStarted) { _, v in
+            state.set("NTFY_NOTIFY_UPLOAD_STARTED", v ? "1" : "0")
+          }
+        Toggle("Upload complete", isOn: $ntfyUploadComplete)
+          .onChange(of: ntfyUploadComplete) { _, v in
+            state.set("NTFY_NOTIFY_UPLOAD_COMPLETE", v ? "1" : "0")
+          }
+      }
     }
     .formStyle(.grouped)
     .onAppear {
@@ -986,6 +1015,11 @@ struct DetectionSettings: View {
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr")
       promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "1") == "1")
+      ntfyTopic = state.get("NTFY_TOPIC", default: "dfp-chase-scheduler")
+      ntfyStagingStarted = (state.get("NTFY_NOTIFY_STAGING_STARTED", default: "0") == "1")
+      ntfyCardEjected = (state.get("NTFY_NOTIFY_CARD_EJECTED", default: "1") == "1")
+      ntfyUploadStarted = (state.get("NTFY_NOTIFY_UPLOAD_STARTED", default: "0") == "1")
+      ntfyUploadComplete = (state.get("NTFY_NOTIFY_UPLOAD_COMPLETE", default: "1") == "1")
     }
   }
 }

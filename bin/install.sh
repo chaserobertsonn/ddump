@@ -205,6 +205,11 @@ add_missing_key 'SAFE_CLEANUP_DAYS' '"7"' "Mac app cleanup only offers staging f
 add_missing_key 'SLACK_WEBHOOK_URL' '""' "Optional Slack incoming-webhook URL for admin-only run notifications."
 add_missing_key 'SLACK_NOTIFY_ON_COMPLETE' '"0"'
 add_missing_key 'SLACK_NOTIFY_ON_ERROR' '"1"'
+add_missing_key 'NTFY_TOPIC' '"dfp-chase-scheduler"' "Optional ntfy topic for push alerts."
+add_missing_key 'NTFY_NOTIFY_STAGING_STARTED' '"0"'
+add_missing_key 'NTFY_NOTIFY_CARD_EJECTED' '"1"'
+add_missing_key 'NTFY_NOTIFY_UPLOAD_STARTED' '"0"'
+add_missing_key 'NTFY_NOTIFY_UPLOAD_COMPLETE' '"1"'
 
 if grep -q '^VERIFY_COPY_HASH="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^VERIFY_COPY_HASH="1"$/VERIFY_COPY_HASH="0"/' "$USER_CONFIG"
