@@ -1005,11 +1005,7 @@ move_queued_paths_to_post_target() {
     return 1
   fi
   if ! check_directory_write_probe "$target_dir"; then
-    move_last_status="blocked"
-    move_last_detail="target dir not writable: ${target_dir}"
-    log "Post-move blocked for ${vol_name}: ${move_last_detail}"
-    notify "DDump" "${vol_name}: post-move blocked (target not writable)."
-    return 1
+    log "Post-move preflight write probe failed for ${vol_name}; continuing and attempting real copy anyway: ${target_dir}"
   fi
 
   local moved_count=0
