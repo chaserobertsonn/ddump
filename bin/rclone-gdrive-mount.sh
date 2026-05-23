@@ -19,6 +19,16 @@ RCLONE_BIN="$HOME/bin/rclone"
 RCLONE_MOUNT_COMMAND="auto"
 LOG="$LOG_DIR/rclone-gdrive.log"
 
+expand_user_path() {
+  local raw="$1"
+  # Config values written from the app may contain escaped $HOME;
+  # normalize both "$HOME/..." and "~/..." forms.
+  raw="${raw/#\\\$HOME/$HOME}"
+  raw="${raw/#\$HOME/$HOME}"
+  raw="${raw/#\~/$HOME}"
+  printf '%s' "$raw"
+}
+
 if [[ -f "$DEFAULT_CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$DEFAULT_CONFIG_FILE"
@@ -30,6 +40,8 @@ fi
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$STATE_DIR"
+GDRIVE_MOUNT_POINT="$(expand_user_path "${GDRIVE_MOUNT_POINT:-$HOME/GoogleDrive}")"
+RCLONE_BIN="$(expand_user_path "${RCLONE_BIN:-$HOME/bin/rclone}")"
 MOUNT="$GDRIVE_MOUNT_POINT"
 REMOTE="$GDRIVE_REMOTE"
 LOCK_DIR="$STATE_DIR/rclone-mount.lock"
@@ -73,7 +85,9 @@ mkdir -p "$MOUNT"
 
 MOUNT_COMMAND="${RCLONE_MOUNT_COMMAND:-auto}"
 if [[ "$MOUNT_COMMAND" == "auto" || -z "$MOUNT_COMMAND" ]]; then
-  if "$RCLONE" help 2>/dev/null | /usr/bin/grep -qE '^[[:space:]]+nfsmount[[:space:]]'; then
+  # Probing the subcommand directly is more reliable than parsing `rclone help`
+  # output, which can include formatting/escape sequences.
+  if "$RCLONE" nfsmount --help >/dev/null 2>&1; then
     MOUNT_COMMAND="nfsmount"
   else
     MOUNT_COMMAND="mount"
@@ -90,6 +104,18 @@ if mount | grep -q " on $MOUNT "; then
   diskutil unmount force "$MOUNT" >/dev/null 2>&1 || true
   umount -f "$MOUNT" >/dev/null 2>&1 || true
   sleep 2
+fi
+
+# If an older mount process is still pinned to this mountpoint, clear it first.
+stale_pids="$(/usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" 2>/dev/null || true)"
+if [[ -n "${stale_pids}" ]]; then
+  echo "$(date)  stale rclone process(es) found for $MOUNT: ${stale_pids}" >> "$LOG"
+  /bin/kill -TERM ${stale_pids} >/dev/null 2>&1 || true
+  /bin/sleep 2
+  /bin/kill -KILL ${stale_pids} >/dev/null 2>&1 || true
+  diskutil unmount force "$MOUNT" >/dev/null 2>&1 || true
+  umount -f "$MOUNT" >/dev/null 2>&1 || true
+  sleep 1
 fi
 
 if find "$MOUNT" -mindepth 1 -maxdepth 1 \

@@ -156,6 +156,16 @@ add_missing_key() {
   fi
 }
 
+normalize_escaped_home_path() {
+  # Convert a literal "\$HOME/..." in config values back to "$HOME/..."
+  # so shell scripts can expand it at runtime.
+  local key="$1"
+  if /usr/bin/grep -q "^${key}=\"\\\\\\$HOME/" "$USER_CONFIG"; then
+    /usr/bin/sed -i '' "s|^${key}=\"\\\\\\\\\\$HOME/|${key}=\"\\$HOME/|" "$USER_CONFIG"
+    echo "Normalized escaped home path in ${key}."
+  fi
+}
+
 # v1 → v2 key renames
 migrate_key "TRUSTED_NAME_PREFIX" "TRUSTED_NAME_PREFIXES"
 migrate_key "REQUIRE_DCIM_OR_TRUSTED" "REQUIRE_PHOTOS_OR_TRUSTED"
@@ -239,6 +249,10 @@ add_missing_key 'NETWORK_RESUME_COOLDOWN_SECONDS' '"120"' "Minimum seconds betwe
 add_missing_key 'APP_COLOR_SCHEME' '"system"' "App appearance: system | light | dark."
 add_missing_key 'APP_ICON_DEFAULT_LIGHT' '""' "Stored icon preset ID used when app appearance is light."
 add_missing_key 'APP_ICON_DEFAULT_DARK' '""' "Stored icon preset ID used when app appearance is dark."
+
+normalize_escaped_home_path 'RCLONE_BIN'
+normalize_escaped_home_path 'FINDERSERVER_BIN'
+normalize_escaped_home_path 'DB_FILE'
 
 if grep -q '^VERIFY_COPY_HASH="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^VERIFY_COPY_HASH="1"$/VERIFY_COPY_HASH="0"/' "$USER_CONFIG"
