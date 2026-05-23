@@ -1326,6 +1326,12 @@ check_post_move_ready() {
     return 1
   fi
 
+  if path_uses_gdrive_mount "$ready_root" && ! gdrive_mount_active; then
+    move_last_status="blocked"
+    move_last_detail="Google Drive mount not active"
+    return 1
+  fi
+
   if [[ ! -d "$ready_root" ]]; then
     move_last_status="blocked"
     move_last_detail="post-move root missing: $ready_root"
