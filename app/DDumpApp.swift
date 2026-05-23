@@ -125,6 +125,12 @@ final class AppState: ObservableObject {
   @Published var lastUtilityMessage: String = ""
 
   private var timer: Timer?
+  private var mountKeepaliveTimer: Timer?
+
+  deinit {
+    timer?.invalidate()
+    mountKeepaliveTimer?.invalidate()
+  }
 
   init() {
     refreshStatus()
@@ -137,6 +143,11 @@ final class AppState: ObservableObject {
       self?.refreshControlFlags()
       self?.refreshLockState()
       self?.refreshHealth()
+    }
+    // Keep Google Drive mounted while the DDump app is open.
+    // When DDump closes, this refresh stops and finderserver's normal timer can unmount.
+    mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
+      self?.ensureUploadServerForAppSession()
     }
   }
 
