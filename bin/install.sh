@@ -183,6 +183,7 @@ add_missing_key 'GDRIVE_MOUNT_ENABLED' '"1"' "Enable DDump-managed rclone mount 
 add_missing_key 'GDRIVE_MOUNT_POINT' '"$HOME/GoogleDrive"' "Mounted cloud folder path used for uploads."
 add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDump."
 add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
+add_missing_key 'RCLONE_MOUNT_COMMAND' '"auto"' "Mount command: auto (prefer nfsmount), mount, or nfsmount."
 add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent label for DDump's mount helper."
 add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"5,15,60,180,360,600"' "Mount retry backoff schedule in seconds."
 add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt waits for readiness."

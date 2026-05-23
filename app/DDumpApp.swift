@@ -636,7 +636,11 @@ else
 fi
 
 uid="$(/usr/bin/id -u)"
+legacy_label="com.chase.rclone-gdrive"
 if /bin/launchctl print "gui/${uid}/${mount_label}" >/dev/null 2>&1; then
+  service_loaded=1
+  echo "service_loaded=1"
+elif /bin/launchctl print "gui/${uid}/${legacy_label}" >/dev/null 2>&1; then
   service_loaded=1
   echo "service_loaded=1"
 else

@@ -16,6 +16,7 @@ GDRIVE_MOUNT_ENABLED="1"
 GDRIVE_MOUNT_POINT="$HOME/GoogleDrive"
 GDRIVE_REMOTE="combined:"
 RCLONE_BIN="$HOME/bin/rclone"
+RCLONE_MOUNT_COMMAND="auto"
 LOG="$LOG_DIR/rclone-gdrive.log"
 
 if [[ -f "$DEFAULT_CONFIG_FILE" ]]; then
@@ -70,6 +71,20 @@ fi
 
 mkdir -p "$MOUNT"
 
+MOUNT_COMMAND="${RCLONE_MOUNT_COMMAND:-auto}"
+if [[ "$MOUNT_COMMAND" == "auto" || -z "$MOUNT_COMMAND" ]]; then
+  if "$RCLONE" help 2>/dev/null | /usr/bin/grep -qE '^[[:space:]]+nfsmount[[:space:]]'; then
+    MOUNT_COMMAND="nfsmount"
+  else
+    MOUNT_COMMAND="mount"
+  fi
+fi
+
+if [[ "$MOUNT_COMMAND" != "mount" && "$MOUNT_COMMAND" != "nfsmount" ]]; then
+  echo "$(date)  mount failed: invalid RCLONE_MOUNT_COMMAND=${MOUNT_COMMAND} (expected auto|mount|nfsmount)" >> "$LOG"
+  exit 1
+fi
+
 if mount | grep -q " on $MOUNT "; then
   echo "$(date)  stale mount found, force-unmounting" >> "$LOG"
   diskutil unmount force "$MOUNT" >/dev/null 2>&1 || true
@@ -86,8 +101,8 @@ if find "$MOUNT" -mindepth 1 -maxdepth 1 \
   exit 1
 fi
 
-echo "$(date)  starting rclone mount remote=$REMOTE mount=$MOUNT binary=$RCLONE" >> "$LOG"
-exec "$RCLONE" mount "$REMOTE" "$MOUNT" \
+echo "$(date)  starting rclone ${MOUNT_COMMAND} remote=$REMOTE mount=$MOUNT binary=$RCLONE" >> "$LOG"
+exec "$RCLONE" "$MOUNT_COMMAND" "$REMOTE" "$MOUNT" \
   --vfs-cache-mode writes \
   --vfs-cache-max-size 8G \
   --vfs-cache-max-age 6h \
