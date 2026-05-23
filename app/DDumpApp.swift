@@ -161,7 +161,7 @@ final class AppState: ObservableObject {
     refreshStatus()
     refreshConfig()
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-      self?.ensureUploadServerForAppSession()
+      self?.ensureUploadServerForAppSession(showProgress: true, reason: "App launch")
     }
     timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
       self?.refreshStatus()
@@ -175,8 +175,8 @@ final class AppState: ObservableObject {
     }
     // Keep Google Drive mounted while the DDump app is open.
     // When DDump closes, this refresh stops and finderserver's normal timer can unmount.
-    mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
-      self?.ensureUploadServerForAppSession()
+    mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+      self?.ensureUploadServerForAppSession(showProgress: false, reason: "App keepalive")
     }
     refreshCloudMountStatus(showProgress: false)
   }
@@ -421,10 +421,9 @@ final class AppState: ObservableObject {
     refreshHealth()
   }
 
-  func ensureUploadServerForAppSession() {
+  func ensureUploadServerForAppSession(showProgress: Bool = false, reason: String = "Upload server") {
     guard gdriveMountEnabledForUI else { return }
-    guard pathUsesGDriveMount(uploadRootForUI) else { return }
-    startCloudMount(userMessagePrefix: "Upload server", showProgress: false)
+    startCloudMount(userMessagePrefix: reason, showProgress: showProgress)
   }
 
   private func setCloudAction(_ running: Bool, _ message: String) {
@@ -445,6 +444,9 @@ final class AppState: ObservableObject {
     let mountLabel = gdriveMountLabelForUI
     let retryCSV = get("GDRIVE_MOUNT_RETRY_SECONDS", default: "15,30,60,180")
     let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
+    DispatchQueue.main.async {
+      self.lastUtilityMessage = "\(userMessagePrefix) starting…"
+    }
     if showProgress {
       setCloudAction(true, "Starting cloud mount…")
     }
@@ -555,6 +557,7 @@ exit 1
   func hardRestartCloudMount() {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
+    lastUtilityMessage = "Hard reset requested…"
     setCloudAction(true, "Hard resetting cloud mount…")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
@@ -612,6 +615,7 @@ exit 0
   func stopCloudMount() {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
+    lastUtilityMessage = "Stopping cloud mount…"
     setCloudAction(true, "Stopping cloud mount…")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
@@ -779,6 +783,20 @@ echo "checked_at=$(/bin/date '+%Y-%m-%d %H:%M:%S')"
         self.cloudLastCheckedAt = parsed["checked_at"] ?? self.nowTimestamp()
       }
     }
+  }
+
+  func openNetworkVolumePrivacySettings() {
+    let candidates = [
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+      "x-apple.systempreferences:com.apple.preference.security?Privacy"
+    ]
+    for raw in candidates {
+      if let u = URL(string: raw), NSWorkspace.shared.open(u) {
+        lastUtilityMessage = "Opened macOS privacy settings."
+        return
+      }
+    }
+    lastUtilityMessage = "Could not open privacy settings automatically."
   }
 
   func resumePendingUploadsNow() {
@@ -1418,6 +1436,27 @@ struct HealthPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
+      if state.cloudActionInProgress {
+        HStack(spacing: 10) {
+          ProgressView()
+            .controlSize(.small)
+            .tint(.ddumpPeach)
+          Text(state.cloudActionMessage.isEmpty ? "Working…" : state.cloudActionMessage)
+            .font(DDumpFont.ui(12, weight: .medium))
+            .foregroundColor(.ddumpFG2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.ddumpSurface2)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
+      }
+
       HStack(spacing: 16) {
         Label("\(state.localFreeGB)GB free locally", systemImage: "internaldrive")
         Label("\(state.pendingUploadCount) pending upload\(state.pendingUploadCount == 1 ? "" : "s")", systemImage: "arrow.triangle.2.circlepath")
@@ -2258,6 +2297,13 @@ struct CloudSettings: View {
               Label("Resume uploads now", systemImage: "arrow.up.circle")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.openNetworkVolumePrivacySettings()
+            } label: {
+              Label("Open privacy settings", systemImage: "hand.raised")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
           }
           .disabled(state.cloudActionInProgress)
         }
@@ -2335,6 +2381,9 @@ struct CloudSettings: View {
             Text("Run the DDump installer, open this tab, connect the remote once in Terminal, then set your upload destination inside the mounted cloud folder.")
               .font(DDumpFont.ui(12))
               .foregroundColor(.ddumpFG2)
+            Text("macOS requires you to allow network-volume access once per app identity. There is no system-level ‘approve all’ button.")
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG3)
           }
         }
         .padding(12)
