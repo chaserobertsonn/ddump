@@ -507,6 +507,8 @@ struct ContentView: View {
         ProgressDetail()
       }
 
+      RunChecklistPanel()
+
       HealthPanel()
 
       // Control buttons — always visible; disabled when no run active
@@ -753,6 +755,141 @@ struct ProgressDetail: View {
       }
       .font(.caption)
     }
+  }
+}
+
+struct RunChecklistPanel: View {
+  @EnvironmentObject var state: AppState
+
+  enum StepState {
+    case pending
+    case active
+    case done
+    case blocked
+  }
+
+  private var runFinished: Bool {
+    state.phase == "complete" || state.phase == "stopped"
+  }
+
+  private var postMoveEnabled: Bool {
+    state.get("ENABLE_POST_EJECT_MOVE", default: "1") == "1"
+  }
+
+  private var ejectEnabled: Bool {
+    state.get("EJECT_ON_SUCCESS", default: "1") == "1"
+  }
+
+  private func summaryMetric(_ key: String) -> Int? {
+    let pattern = "\(key)=([0-9]+)"
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let full = state.message as NSString
+    let range = NSRange(location: 0, length: full.length)
+    guard let match = regex.firstMatch(in: state.message, range: range), match.numberOfRanges > 1 else {
+      return nil
+    }
+    let metric = full.substring(with: match.range(at: 1))
+    return Int(metric)
+  }
+
+  private var step1State: StepState {
+    if state.runActive && ["starting", "scanning", "importing", "paused"].contains(state.phase) {
+      return .active
+    }
+    if runFinished && state.imported > 0 {
+      return .done
+    }
+    if runFinished && (summaryMetric("errors") ?? 0) > 0 && state.imported == 0 {
+      return .blocked
+    }
+    return .pending
+  }
+
+  private var step2State: StepState {
+    if !ejectEnabled {
+      return .done
+    }
+    if runFinished {
+      if (summaryMetric("kept_mounted") ?? 0) > 0 {
+        return .blocked
+      }
+      return .done
+    }
+    if state.runActive && state.imported > 0 {
+      return .active
+    }
+    return .pending
+  }
+
+  private var step3State: StepState {
+    if !postMoveEnabled {
+      return .done
+    }
+    if runFinished {
+      let moveFail = summaryMetric("post_move_fail") ?? 0
+      let moveBlocked = summaryMetric("post_move_blocked") ?? 0
+      if moveFail == 0 && moveBlocked == 0 {
+        return .done
+      }
+      return .blocked
+    }
+    if state.runActive && state.imported > 0 {
+      return .active
+    }
+    return .pending
+  }
+
+  private var step4State: StepState {
+    guard runFinished else { return .pending }
+    return (summaryMetric("errors") ?? 0) == 0 ? .done : .blocked
+  }
+
+  private func icon(for step: StepState) -> String {
+    switch step {
+    case .pending: return "circle"
+    case .active: return "clock.arrow.circlepath"
+    case .done: return "checkmark.circle.fill"
+    case .blocked: return "exclamationmark.circle.fill"
+    }
+  }
+
+  private func color(for step: StepState) -> Color {
+    switch step {
+    case .pending: return .secondary
+    case .active: return .blue
+    case .done: return .green
+    case .blocked: return .orange
+    }
+  }
+
+  private func row(_ title: String, step: StepState, linkTitle: String? = nil, linkPath: String? = nil) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: icon(for: step))
+        .foregroundColor(color(for: step))
+      Text(title)
+        .foregroundColor(step == .done ? .green : .primary)
+      Spacer()
+      if let linkTitle, let linkPath, !linkPath.isEmpty {
+        Button(linkTitle) {
+          openInFinder(linkPath)
+        }
+        .buttonStyle(.link)
+      }
+    }
+    .font(.callout)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Checklist").font(.headline)
+      row("1. Transfer to staging folder", step: step1State, linkTitle: "Open staging", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
+      row("2. Eject card", step: step2State)
+      row("3. Transfer to destination folder", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI)
+      row("4. All complete!", step: step4State)
+    }
+    .padding(10)
+    .background(Color(NSColor.controlBackgroundColor))
+    .clipShape(RoundedRectangle(cornerRadius: 10))
   }
 }
 
