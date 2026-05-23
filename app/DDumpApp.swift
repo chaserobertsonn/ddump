@@ -25,6 +25,8 @@ enum DDumpPaths {
   static var logFile: URL { appSupport.appendingPathComponent("logs/ddump.log") }
   static var reportsDir: URL { appSupport.appendingPathComponent("reports") }
   static var pendingDir: URL { appSupport.appendingPathComponent("state/pending_uploads") }
+  static var iconLibraryDir: URL { appSupport.appendingPathComponent("icons") }
+  static var iconPresetManifest: URL { iconLibraryDir.appendingPathComponent("presets.json") }
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
   static var controlDir: URL { appSupport.appendingPathComponent("state/control") }
   static var manualSelectionFile: URL { appSupport.appendingPathComponent("state/manual_selection.paths") }
@@ -233,6 +235,18 @@ final class AppState: ObservableObject {
 
   func get(_ key: String, default def: String = "") -> String {
     config[key] ?? def
+  }
+
+  var sqliteMemoryEnabled: Bool {
+    get("DB_ENABLED", default: "0") == "1"
+  }
+
+  func preferredColorScheme() -> ColorScheme? {
+    switch get("APP_COLOR_SCHEME", default: "system").lowercased() {
+    case "light": return .light
+    case "dark": return .dark
+    default: return nil
+    }
   }
 
   var uploadRootForUI: String {
@@ -740,6 +754,15 @@ func openInFinder(_ path: String) {
   }
 }
 
+struct InfoHint: View {
+  let text: String
+  var body: some View {
+    Image(systemName: "info.circle")
+      .foregroundColor(.secondary)
+      .help(text)
+  }
+}
+
 // MARK: - Main window
 
 struct ContentView: View {
@@ -1224,16 +1247,29 @@ struct SettingsView: View {
 struct DestinationSettings: View {
   @EnvironmentObject var state: AppState
   @State private var localStaging: String = ""
+  @State private var enablePostMove: Bool = true
   @State private var uploadRoot: String = ""
+  @State private var uploadRoots: String = ""
+  @State private var fallbackRoot: String = ""
 
   var body: some View {
     Form {
       Section {
+        Toggle("Enable transfer to destination folders", isOn: $enablePostMove)
+          .onChange(of: enablePostMove) { _, v in
+            state.set("ENABLE_POST_EJECT_MOVE", v ? "1" : "0")
+          }
         TextField("Local staging folder", text: $localStaging, onCommit: {
           state.set("DEST_ROOT", localStaging)
         })
-        TextField("Upload destination", text: $uploadRoot, onCommit: {
+        TextField("Primary destination", text: $uploadRoot, onCommit: {
           state.set("POST_MOVE_ROOT", uploadRoot)
+        })
+        TextField("Additional destinations (comma-separated)", text: $uploadRoots, onCommit: {
+          state.set("POST_MOVE_ROOTS", uploadRoots)
+        })
+        TextField("Fallback destination if primary is unavailable", text: $fallbackRoot, onCommit: {
+          state.set("POST_MOVE_FALLBACK_ROOT", fallbackRoot)
         })
         HStack {
           Button("Browse local…") {
@@ -1243,82 +1279,130 @@ struct DestinationSettings: View {
             }
           }
           Button("Browse upload…") {
-            if let picked = pickFolder(prompt: "Choose upload destination") {
+            if let picked = pickFolder(prompt: "Choose primary upload destination") {
               uploadRoot = picked
               state.set("POST_MOVE_ROOT", picked)
+            }
+          }
+          Button("Browse fallback…") {
+            if let picked = pickFolder(prompt: "Choose fallback destination") {
+              fallbackRoot = picked
+              state.set("POST_MOVE_FALLBACK_ROOT", picked)
             }
           }
         }
       } header: {
         Text("Folders")
       } footer: {
-        Text("Files go: SD card → staging → upload destination.")
+        Text("Files go: SD card → staging. Then DDump copies to the destination(s). Disable destination transfer to keep staging-only backups.")
           .font(.caption).foregroundColor(.secondary)
       }
     }
     .formStyle(.grouped)
     .onAppear {
       localStaging = state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp")
+      enablePostMove = state.get("ENABLE_POST_EJECT_MOVE", default: "1") == "1"
       uploadRoot = state.get("POST_MOVE_ROOT")
+      uploadRoots = state.get("POST_MOVE_ROOTS")
+      fallbackRoot = state.get("POST_MOVE_FALLBACK_ROOT")
     }
   }
 }
 
 struct NamingSettings: View {
   @EnvironmentObject var state: AppState
-  @State private var strategy: String = "cluster"
-  @State private var fallback: String = "cluster"
-  @State private var seqPrefix: String = "DDump "
+  @State private var strategy: String = "sequential"
+  @State private var fallback: String = "sequential"
+  @State private var seqPrefix: String = "Shoot-"
   @State private var customValues: String = ""
   @State private var clusterGap: String = "45"
+  @State private var clusterGroupingEnabled: Bool = true
+  @State private var clusterAttachMinutes: String = "120"
   @State private var smartSamplePath: String = ""
   @State private var smartAssignExisting: Bool = true
   @State private var splitPhotoVideo: Bool = false
 
-  let strategies = ["smart", "cluster", "calendar", "sequential", "custom", "camera"]
+  let strategies = ["sequential", "custom", "calendar", "smart", "camera"]
 
   var body: some View {
     Form {
       Section("Folder naming") {
-        Picker("Strategy", selection: $strategy) {
-          ForEach(strategies, id: \.self) { Text($0).tag($0) }
+        HStack(spacing: 6) {
+          Text("Strategy")
+          InfoHint(text: "Sequential: Shoot-1, Shoot-2. Custom: picks from your list. Calendar: event titles. Smart: infer from sample path. Camera: keep camera folder names.")
+          Spacer()
+          Picker("", selection: $strategy) {
+            ForEach(strategies, id: \.self) { Text($0).tag($0) }
+          }
+          .labelsHidden()
+          .frame(width: 220)
         }
         .onChange(of: strategy) { _, v in state.set("FOLDER_NAMING_STRATEGY", v) }
 
-        Picker("Fallback", selection: $fallback) {
-          ForEach(strategies.filter { $0 != "calendar" && $0 != "smart" }, id: \.self) { Text($0).tag($0) }
+        HStack(spacing: 6) {
+          Text("Fallback")
+          InfoHint(text: "Used when the primary naming mode cannot decide a folder name.")
+          Spacer()
+          Picker("", selection: $fallback) {
+            ForEach(strategies.filter { $0 != "calendar" && $0 != "smart" }, id: \.self) { Text($0).tag($0) }
+          }
+          .labelsHidden()
+          .frame(width: 220)
         }
         .onChange(of: fallback) { _, v in state.set("FOLDER_NAMING_FALLBACK", v) }
       }
 
-      Section("Cluster strategy") {
+      Section("Time grouping") {
+        Toggle("Enable clustering before naming", isOn: $clusterGroupingEnabled)
+          .onChange(of: clusterGroupingEnabled) { _, v in
+            state.set("CLUSTER_GROUPING_ENABLED", v ? "1" : "0")
+          }
         HStack {
           Text("New cluster after gap (minutes)")
+          InfoHint(text: "If two files are farther apart than this, DDump starts a new shoot cluster.")
           Spacer()
           TextField("45", text: $clusterGap)
             .frame(width: 80)
             .multilineTextAlignment(.trailing)
             .onSubmit { state.set("CLUSTER_GAP_MINUTES", clusterGap) }
         }
+        HStack {
+          Text("Attach to existing shoot within (minutes)")
+          InfoHint(text: "Across separate card inserts, clusters within this window join the same shoot bucket. Useful for multi-camera and drone workflow.")
+          Spacer()
+          TextField("120", text: $clusterAttachMinutes)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("CLUSTER_ATTACH_MINUTES", clusterAttachMinutes) }
+        }
       }
 
       Section("Sequential strategy") {
-        TextField("Folder prefix (e.g. \"DDump \")", text: $seqPrefix, onCommit: {
-          state.set("FOLDER_NAME_SEQUENTIAL_PREFIX", seqPrefix)
-        })
+        HStack(spacing: 6) {
+          TextField("Folder prefix (e.g. \"Shoot-\")", text: $seqPrefix, onCommit: {
+            state.set("FOLDER_NAME_SEQUENTIAL_PREFIX", seqPrefix)
+          })
+          InfoHint(text: "Sequential uses this prefix plus number: Shoot-1, Shoot-2, ...")
+        }
       }
 
       Section("Custom strategy") {
-        TextField("Comma-separated names (e.g. \"Wedding,Reception\")",
-                  text: $customValues, onCommit: {
-          state.set("FOLDER_NAME_CUSTOM_VALUES", customValues)
-        })
+        HStack(spacing: 6) {
+          TextField("Comma-separated names (e.g. \"Bride Prep,Ceremony,Reception\")",
+                    text: $customValues, onCommit: {
+            state.set("FOLDER_NAME_CUSTOM_VALUES", customValues)
+          })
+          InfoHint(text: "DDump picks the next unused name from this list.")
+        }
       }
 
       Section("Smart strategy") {
-        TextField("Sample shoot folder path", text: $smartSamplePath, onCommit: {
-          state.set("SMART_SAMPLE_PATH", smartSamplePath)
-        })
+        HStack(spacing: 6) {
+          TextField("Sample shoot folder path", text: $smartSamplePath, onCommit: {
+            state.set("SMART_SAMPLE_PATH", smartSamplePath)
+          })
+          InfoHint(text: "Paste one real destination path. DDump reuses its year/month/day folder pattern automatically.")
+        }
         Toggle("Use existing folders under today's Drive date folder", isOn: $smartAssignExisting)
           .onChange(of: smartAssignExisting) { _, v in
             state.set("SMART_ASSIGN_EXISTING_FOLDERS", v ? "1" : "0")
@@ -1327,18 +1411,17 @@ struct NamingSettings: View {
           .onChange(of: splitPhotoVideo) { _, v in
             state.set("SPLIT_PHOTO_VIDEO", v ? "1" : "0")
           }
-        Text("Paste one real path containing YYYY/YYYY.MM/YYYY.MM.DD/Shoot Name. DDump then updates the year, month, and day automatically.")
-          .font(.caption)
-          .foregroundColor(.secondary)
       }
     }
     .formStyle(.grouped)
     .onAppear {
-      strategy = state.get("FOLDER_NAMING_STRATEGY", default: "cluster")
-      fallback = state.get("FOLDER_NAMING_FALLBACK", default: "cluster")
-      seqPrefix = state.get("FOLDER_NAME_SEQUENTIAL_PREFIX", default: "DDump ")
+      strategy = state.get("FOLDER_NAMING_STRATEGY", default: "sequential")
+      fallback = state.get("FOLDER_NAMING_FALLBACK", default: "sequential")
+      seqPrefix = state.get("FOLDER_NAME_SEQUENTIAL_PREFIX", default: "Shoot-")
       customValues = state.get("FOLDER_NAME_CUSTOM_VALUES")
       clusterGap = state.get("CLUSTER_GAP_MINUTES", default: "45")
+      clusterGroupingEnabled = (state.get("CLUSTER_GROUPING_ENABLED", default: "1") == "1")
+      clusterAttachMinutes = state.get("CLUSTER_ATTACH_MINUTES", default: "120")
       smartSamplePath = state.get("SMART_SAMPLE_PATH")
       smartAssignExisting = (state.get("SMART_ASSIGN_EXISTING_FOLDERS", default: "1") == "1")
       splitPhotoVideo = (state.get("SPLIT_PHOTO_VIDEO", default: "0") == "1")
@@ -1352,50 +1435,73 @@ struct DetectionSettings: View {
   @State private var requirePhotos: Bool = true
   @State private var extensions: String = ""
   @State private var ejectOnSuccess: Bool = true
+  @State private var ejectGraceSeconds: String = "60"
   @State private var verifyHash: Bool = false
-  @State private var candidateMode: String = "all"
   @State private var lookbackHours: String = "24"
   @State private var videoExtensions: String = ""
   @State private var promptSourceFoldersOnNewCard: Bool = true
+  @State private var sqliteMemoryEnabled: Bool = false
   @State private var ntfyTopic: String = "dfp-chase-scheduler"
   @State private var ntfyStagingStarted: Bool = false
   @State private var ntfyCardEjected: Bool = true
   @State private var ntfyUploadStarted: Bool = false
   @State private var ntfyUploadComplete: Bool = true
+  @State private var ntfyMountFailed: Bool = true
+  @State private var ntfyCardAlmostFull: Bool = true
+  @State private var ntfyIntegrityWarning: Bool = true
+  @State private var cardAlmostFullAlertEnabled: Bool = true
+  @State private var notificationTimeoutSeconds: String = "60"
 
   var body: some View {
     Form {
+      Section("Memory") {
+        Toggle("Use SQLite memory (beta)", isOn: $sqliteMemoryEnabled)
+          .onChange(of: sqliteMemoryEnabled) { _, v in state.set("DB_ENABLED", v ? "1" : "0") }
+        Text("Default OFF. When off, staging folders are the memory: DDump imports from the lookback window only if files are not already in staging.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+      }
+
       Section("Cards") {
-        TextField("Auto-trust name prefixes (comma-separated)",
-                  text: $prefixes, onCommit: {
-          state.set("TRUSTED_NAME_PREFIXES", prefixes)
-        })
-
+        HStack(spacing: 6) {
+          TextField("Auto-trust name prefixes (comma-separated)",
+                    text: $prefixes, onCommit: { state.set("TRUSTED_NAME_PREFIXES", prefixes) })
+          InfoHint(text: "Cards with these names auto-import without confirmation.")
+        }
         Toggle("Require photos or trusted card", isOn: $requirePhotos)
-          .onChange(of: requirePhotos) { _, v in
-            state.set("REQUIRE_PHOTOS_OR_TRUSTED", v ? "1" : "0")
-          }
-
+          .onChange(of: requirePhotos) { _, v in state.set("REQUIRE_PHOTOS_OR_TRUSTED", v ? "1" : "0") }
         Toggle("Eject card on successful import", isOn: $ejectOnSuccess)
-          .onChange(of: ejectOnSuccess) { _, v in
-            state.set("EJECT_ON_SUCCESS", v ? "1" : "0")
+          .onChange(of: ejectOnSuccess) { _, v in state.set("EJECT_ON_SUCCESS", v ? "1" : "0") }
+        HStack {
+          Text("Eject safety delay (seconds)")
+          InfoHint(text: "DDump waits at least this long before ejecting, so you can tap Do Not Eject.")
+          Spacer()
+          TextField("60", text: $ejectGraceSeconds)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("EJECT_GRACE_SECONDS", ejectGraceSeconds) }
+        }
+        Toggle("Alert when card is almost full for another similar shoot", isOn: $cardAlmostFullAlertEnabled)
+          .onChange(of: cardAlmostFullAlertEnabled) { _, v in
+            state.set("CARD_ALMOST_FULL_ALERT_ENABLED", v ? "1" : "0")
           }
       }
 
       Section("Scan window") {
         Toggle("Prompt to choose folders when a new card is first seen", isOn: $promptSourceFoldersOnNewCard)
-          .onChange(of: promptSourceFoldersOnNewCard) { _, v in
-            state.set("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", v ? "1" : "0")
-          }
+          .onChange(of: promptSourceFoldersOnNewCard) { _, v in state.set("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", v ? "1" : "0") }
 
-        Picker("Candidate mode", selection: $candidateMode) {
-          Text("All files on card").tag("all")
-          Text("Only last N hours (faster)").tag("lookback")
+        HStack(spacing: 6) {
+          Text("Candidate mode")
+          InfoHint(text: "Safety lock: DDump only scans files from the last N hours, never the full card.")
+          Spacer()
+          Text("Only last N hours")
+            .foregroundColor(.secondary)
         }
-        .onChange(of: candidateMode) { _, v in state.set("CANDIDATE_MODE", v) }
 
         HStack {
-          Text("Lookback hours (for lookback mode)")
+          Text("Lookback hours")
+          InfoHint(text: "How far back DDump scans on each card insert.")
           Spacer()
           TextField("24", text: $lookbackHours)
             .frame(width: 80)
@@ -1406,46 +1512,38 @@ struct DetectionSettings: View {
 
       Section("Verification") {
         Toggle("Verify each copied file with SHA-256 hash", isOn: $verifyHash)
-          .onChange(of: verifyHash) { _, v in
-            state.set("VERIFY_COPY_HASH", v ? "1" : "0")
-          }
-        Text("Optional slower paranoid check. Size verification stays on even when this is off.")
-          .font(.caption).foregroundColor(.secondary)
+          .onChange(of: verifyHash) { _, v in state.set("VERIFY_COPY_HASH", v ? "1" : "0") }
       }
 
       Section("File types") {
-        TextField("Recognized photo extensions",
-                  text: $extensions, onCommit: {
-          state.set("PHOTO_FILE_EXTENSIONS", extensions)
-        })
-        TextField("Video extensions for split mode",
-                  text: $videoExtensions, onCommit: {
-          state.set("VIDEO_FILE_EXTENSIONS", videoExtensions)
-        })
+        TextField("Recognized photo extensions", text: $extensions, onCommit: { state.set("PHOTO_FILE_EXTENSIONS", extensions) })
+        TextField("Video extensions for split mode", text: $videoExtensions, onCommit: { state.set("VIDEO_FILE_EXTENSIONS", videoExtensions) })
       }
 
       Section("ntfy alerts") {
-        TextField("Topic (e.g. dfp-chase-scheduler)",
-                  text: $ntfyTopic, onCommit: {
-          state.set("NTFY_TOPIC", ntfyTopic)
-        })
-
+        TextField("Topic (e.g. dfp-chase-scheduler)", text: $ntfyTopic, onCommit: { state.set("NTFY_TOPIC", ntfyTopic) })
+        HStack {
+          Text("Notification timeout (seconds)")
+          Spacer()
+          TextField("60", text: $notificationTimeoutSeconds)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("NOTIFICATION_TIMEOUT_SECONDS", notificationTimeoutSeconds) }
+        }
         Toggle("Staging started", isOn: $ntfyStagingStarted)
-          .onChange(of: ntfyStagingStarted) { _, v in
-            state.set("NTFY_NOTIFY_STAGING_STARTED", v ? "1" : "0")
-          }
+          .onChange(of: ntfyStagingStarted) { _, v in state.set("NTFY_NOTIFY_STAGING_STARTED", v ? "1" : "0") }
         Toggle("Card ejected", isOn: $ntfyCardEjected)
-          .onChange(of: ntfyCardEjected) { _, v in
-            state.set("NTFY_NOTIFY_CARD_EJECTED", v ? "1" : "0")
-          }
+          .onChange(of: ntfyCardEjected) { _, v in state.set("NTFY_NOTIFY_CARD_EJECTED", v ? "1" : "0") }
         Toggle("Upload started", isOn: $ntfyUploadStarted)
-          .onChange(of: ntfyUploadStarted) { _, v in
-            state.set("NTFY_NOTIFY_UPLOAD_STARTED", v ? "1" : "0")
-          }
+          .onChange(of: ntfyUploadStarted) { _, v in state.set("NTFY_NOTIFY_UPLOAD_STARTED", v ? "1" : "0") }
         Toggle("Upload complete", isOn: $ntfyUploadComplete)
-          .onChange(of: ntfyUploadComplete) { _, v in
-            state.set("NTFY_NOTIFY_UPLOAD_COMPLETE", v ? "1" : "0")
-          }
+          .onChange(of: ntfyUploadComplete) { _, v in state.set("NTFY_NOTIFY_UPLOAD_COMPLETE", v ? "1" : "0") }
+        Toggle("Mount failed", isOn: $ntfyMountFailed)
+          .onChange(of: ntfyMountFailed) { _, v in state.set("NTFY_NOTIFY_MOUNT_FAILED", v ? "1" : "0") }
+        Toggle("Card almost full", isOn: $ntfyCardAlmostFull)
+          .onChange(of: ntfyCardAlmostFull) { _, v in state.set("NTFY_NOTIFY_CARD_ALMOST_FULL", v ? "1" : "0") }
+        Toggle("Integrity warning", isOn: $ntfyIntegrityWarning)
+          .onChange(of: ntfyIntegrityWarning) { _, v in state.set("NTFY_NOTIFY_INTEGRITY_WARNING", v ? "1" : "0") }
       }
     }
     .formStyle(.grouped)
@@ -1454,20 +1552,26 @@ struct DetectionSettings: View {
       requirePhotos = (state.get("REQUIRE_PHOTOS_OR_TRUSTED", default: "1") == "1")
       extensions = state.get("PHOTO_FILE_EXTENSIONS")
       ejectOnSuccess = (state.get("EJECT_ON_SUCCESS", default: "1") == "1")
+      ejectGraceSeconds = state.get("EJECT_GRACE_SECONDS", default: "60")
       verifyHash = (state.get("VERIFY_COPY_HASH", default: "0") == "1")
-      candidateMode = state.get("CANDIDATE_MODE", default: "lookback")
+      state.set("CANDIDATE_MODE", "lookback")
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr")
       promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "1") == "1")
+      sqliteMemoryEnabled = state.sqliteMemoryEnabled
+      cardAlmostFullAlertEnabled = (state.get("CARD_ALMOST_FULL_ALERT_ENABLED", default: "1") == "1")
       ntfyTopic = state.get("NTFY_TOPIC", default: "dfp-chase-scheduler")
+      notificationTimeoutSeconds = state.get("NOTIFICATION_TIMEOUT_SECONDS", default: "60")
       ntfyStagingStarted = (state.get("NTFY_NOTIFY_STAGING_STARTED", default: "0") == "1")
       ntfyCardEjected = (state.get("NTFY_NOTIFY_CARD_EJECTED", default: "1") == "1")
       ntfyUploadStarted = (state.get("NTFY_NOTIFY_UPLOAD_STARTED", default: "0") == "1")
       ntfyUploadComplete = (state.get("NTFY_NOTIFY_UPLOAD_COMPLETE", default: "1") == "1")
+      ntfyMountFailed = (state.get("NTFY_NOTIFY_MOUNT_FAILED", default: "1") == "1")
+      ntfyCardAlmostFull = (state.get("NTFY_NOTIFY_CARD_ALMOST_FULL", default: "1") == "1")
+      ntfyIntegrityWarning = (state.get("NTFY_NOTIFY_INTEGRITY_WARNING", default: "1") == "1")
     }
   }
 }
-
 struct CloudSettings: View {
   @EnvironmentObject var state: AppState
   @State private var enabled: Bool = true
@@ -1475,6 +1579,9 @@ struct CloudSettings: View {
   @State private var remote: String = ""
   @State private var rcloneBin: String = ""
   @State private var mountLabel: String = ""
+  @State private var networkResumeEnabled: Bool = true
+  @State private var networkResumeCheckSeconds: String = "20"
+  @State private var networkResumeCooldownSeconds: String = "120"
 
   var body: some View {
     Form {
@@ -1500,6 +1607,29 @@ struct CloudSettings: View {
           state.set("GDRIVE_MOUNT_LABEL", mountLabel)
           state.refreshCloudMountStatus()
         })
+      }
+
+      Section("Offline resume") {
+        Toggle("Auto-retry pending uploads when internet reconnects", isOn: $networkResumeEnabled)
+          .onChange(of: networkResumeEnabled) { _, v in
+            state.set("NETWORK_RESUME_ENABLED", v ? "1" : "0")
+          }
+        HStack {
+          Text("Reconnect check interval (seconds)")
+          Spacer()
+          TextField("20", text: $networkResumeCheckSeconds)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("NETWORK_RESUME_CHECK_SECONDS", networkResumeCheckSeconds) }
+        }
+        HStack {
+          Text("Retry cooldown (seconds)")
+          Spacer()
+          TextField("120", text: $networkResumeCooldownSeconds)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("NETWORK_RESUME_COOLDOWN_SECONDS", networkResumeCooldownSeconds) }
+        }
       }
 
       Section("Status") {
@@ -1547,6 +1677,9 @@ struct CloudSettings: View {
       remote = state.get("GDRIVE_REMOTE", default: "combined:")
       rcloneBin = state.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
       mountLabel = state.get("GDRIVE_MOUNT_LABEL", default: "com.ddump.rclone-gdrive")
+      networkResumeEnabled = state.get("NETWORK_RESUME_ENABLED", default: "1") == "1"
+      networkResumeCheckSeconds = state.get("NETWORK_RESUME_CHECK_SECONDS", default: "20")
+      networkResumeCooldownSeconds = state.get("NETWORK_RESUME_COOLDOWN_SECONDS", default: "120")
       state.refreshCloudMountStatus()
     }
   }
@@ -1668,13 +1801,39 @@ struct CalendarSettings: View {
   }
 }
 
+struct IconPreset: Codable, Identifiable, Hashable {
+  let id: String
+  let name: String
+  let fileName: String
+  let createdAt: TimeInterval
+}
+
 struct AppearanceSettings: View {
   @EnvironmentObject var state: AppState
+  @Environment(\.colorScheme) var colorScheme
   @State private var notice: String = ""
   @State private var refreshTrigger: Int = 0
+  @State private var colorSchemeChoice: String = "system"
+  @State private var presets: [IconPreset] = []
+  @State private var selectedPresetID: String = ""
+  @State private var defaultLightPresetID: String = ""
+  @State private var defaultDarkPresetID: String = ""
+  @State private var lastAppliedSignature: String = ""
 
   var body: some View {
     Form {
+      Section("Theme") {
+        Picker("Appearance", selection: $colorSchemeChoice) {
+          Label("System", systemImage: "circle.lefthalf.filled").tag("system")
+          Label("Light", systemImage: "sun.max.fill").tag("light")
+          Label("Dark", systemImage: "moon.fill").tag("dark")
+        }
+        .onChange(of: colorSchemeChoice) { _, v in
+          state.set("APP_COLOR_SCHEME", v)
+          applyConfiguredDefaultIconForCurrentAppearance(force: true)
+        }
+      }
+
       Section {
         HStack(alignment: .top, spacing: 16) {
           let img = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
@@ -1683,11 +1842,40 @@ struct AppearanceSettings: View {
             .frame(width: 96, height: 96)
             .id(refreshTrigger)
           VStack(alignment: .leading, spacing: 8) {
-            Text("Pick an image to use as DDump's icon. PNG, JPG, or .icns work.")
+            Text("Upload and store icon presets. You can pick one now, and set separate defaults for light and dark mode.")
               .font(.callout).foregroundColor(.secondary)
+            Picker("Current icon", selection: $selectedPresetID) {
+              Text("Built-in DDump icon").tag("")
+              ForEach(presets) { preset in
+                Text(preset.name).tag(preset.id)
+              }
+            }
             HStack {
-              Button("Choose Image…") { chooseIcon() }
+              Button("Add Icon…") { chooseIcon() }
+              Button("Apply Now") { applySelectedPresetNow() }
+              Button("Remove Selected") { removeSelectedPreset() }
               Button("Reset") { resetIcon() }
+            }
+            Picker("Default for Light", selection: $defaultLightPresetID) {
+              Text("Built-in DDump icon").tag("")
+              ForEach(presets) { preset in
+                Text(preset.name).tag(preset.id)
+              }
+            }
+            .onChange(of: defaultLightPresetID) { _, v in
+              state.set("APP_ICON_DEFAULT_LIGHT", v)
+              applyConfiguredDefaultIconForCurrentAppearance(force: true)
+            }
+
+            Picker("Default for Dark", selection: $defaultDarkPresetID) {
+              Text("Built-in DDump icon").tag("")
+              ForEach(presets) { preset in
+                Text(preset.name).tag(preset.id)
+              }
+            }
+            .onChange(of: defaultDarkPresetID) { _, v in
+              state.set("APP_ICON_DEFAULT_DARK", v)
+              applyConfiguredDefaultIconForCurrentAppearance(force: true)
             }
             if !notice.isEmpty {
               Text(notice).font(.caption).foregroundColor(.secondary)
@@ -1697,11 +1885,23 @@ struct AppearanceSettings: View {
       } header: {
         Text("App icon")
       } footer: {
-        Text("Finder/Dock may take a moment to refresh.")
+        Text("Finder/Dock may take a moment to refresh after icon changes.")
           .font(.caption).foregroundColor(.secondary)
       }
     }
     .formStyle(.grouped)
+    .onAppear {
+      colorSchemeChoice = state.get("APP_COLOR_SCHEME", default: "system")
+      defaultLightPresetID = state.get("APP_ICON_DEFAULT_LIGHT")
+      defaultDarkPresetID = state.get("APP_ICON_DEFAULT_DARK")
+      loadPresets()
+      applyConfiguredDefaultIconForCurrentAppearance(force: false)
+    }
+    .onChange(of: colorScheme) { _, _ in
+      if colorSchemeChoice == "system" {
+        applyConfiguredDefaultIconForCurrentAppearance(force: true)
+      }
+    }
   }
 
   func chooseIcon() {
@@ -1711,8 +1911,141 @@ struct AppearanceSettings: View {
     panel.allowedContentTypes = [.image, .icns]
     panel.prompt = "Use as DDump icon"
     if panel.runModal() == .OK, let url = panel.url {
-      installIcon(from: url)
+      addPreset(from: url)
     }
+  }
+
+  func effectiveAppearanceMode() -> String {
+    switch colorSchemeChoice {
+    case "light":
+      return "light"
+    case "dark":
+      return "dark"
+    default:
+      return colorScheme == .dark ? "dark" : "light"
+    }
+  }
+
+  func presetURL(_ preset: IconPreset) -> URL {
+    DDumpPaths.iconLibraryDir.appendingPathComponent(preset.fileName)
+  }
+
+  func loadPresets() {
+    let fm = FileManager.default
+    try? fm.createDirectory(at: DDumpPaths.iconLibraryDir, withIntermediateDirectories: true)
+    guard let data = try? Data(contentsOf: DDumpPaths.iconPresetManifest),
+          let decoded = try? JSONDecoder().decode([IconPreset].self, from: data)
+    else {
+      presets = []
+      selectedPresetID = ""
+      return
+    }
+    let filtered = decoded.filter { fm.fileExists(atPath: presetURL($0).path) }
+    presets = filtered.sorted { $0.createdAt < $1.createdAt }
+    if filtered.count != decoded.count {
+      savePresets()
+    }
+    if !selectedPresetID.isEmpty && presets.first(where: { $0.id == selectedPresetID }) == nil {
+      selectedPresetID = ""
+    }
+    if !defaultLightPresetID.isEmpty && presets.first(where: { $0.id == defaultLightPresetID }) == nil {
+      defaultLightPresetID = ""
+      state.set("APP_ICON_DEFAULT_LIGHT", "")
+    }
+    if !defaultDarkPresetID.isEmpty && presets.first(where: { $0.id == defaultDarkPresetID }) == nil {
+      defaultDarkPresetID = ""
+      state.set("APP_ICON_DEFAULT_DARK", "")
+    }
+  }
+
+  func savePresets() {
+    if let data = try? JSONEncoder().encode(presets) {
+      try? data.write(to: DDumpPaths.iconPresetManifest, options: [.atomic])
+    }
+  }
+
+  func addPreset(from url: URL) {
+    let fm = FileManager.default
+    do {
+      try fm.createDirectory(at: DDumpPaths.iconLibraryDir, withIntermediateDirectories: true)
+      let id = UUID().uuidString
+      let fileName = "\(id).icns"
+      let out = DDumpPaths.iconLibraryDir.appendingPathComponent(fileName)
+      if url.pathExtension.lowercased() == "icns" {
+        try fm.copyItem(at: url, to: out)
+      } else if let img = NSImage(contentsOf: url) {
+        try writeICNS(image: img, to: out)
+      } else {
+        notice = "Could not read image."
+        return
+      }
+      let name = url.deletingPathExtension().lastPathComponent
+      let preset = IconPreset(id: id, name: name.isEmpty ? "Icon \(presets.count + 1)" : name, fileName: fileName, createdAt: Date().timeIntervalSince1970)
+      presets.append(preset)
+      selectedPresetID = preset.id
+      savePresets()
+      applySelectedPresetNow()
+      notice = "Icon preset added and applied."
+    } catch {
+      notice = "Failed to add icon: \(error.localizedDescription)"
+    }
+  }
+
+  func applySelectedPresetNow() {
+    if selectedPresetID.isEmpty {
+      resetIcon()
+      return
+    }
+    guard let preset = presets.first(where: { $0.id == selectedPresetID }) else {
+      notice = "Selected preset not found."
+      return
+    }
+    installIcon(from: presetURL(preset))
+  }
+
+  func removeSelectedPreset() {
+    guard !selectedPresetID.isEmpty,
+          let idx = presets.firstIndex(where: { $0.id == selectedPresetID })
+    else {
+      notice = "Select an icon preset to remove."
+      return
+    }
+    let preset = presets[idx]
+    try? FileManager.default.removeItem(at: presetURL(preset))
+    presets.remove(at: idx)
+    if defaultLightPresetID == preset.id {
+      defaultLightPresetID = ""
+      state.set("APP_ICON_DEFAULT_LIGHT", "")
+    }
+    if defaultDarkPresetID == preset.id {
+      defaultDarkPresetID = ""
+      state.set("APP_ICON_DEFAULT_DARK", "")
+    }
+    selectedPresetID = ""
+    savePresets()
+    notice = "Preset removed."
+    applyConfiguredDefaultIconForCurrentAppearance(force: true)
+  }
+
+  func applyConfiguredDefaultIconForCurrentAppearance(force: Bool) {
+    let mode = effectiveAppearanceMode()
+    let presetID = (mode == "dark") ? defaultDarkPresetID : defaultLightPresetID
+    let signature = "\(mode):\(presetID)"
+    if !force && signature == lastAppliedSignature {
+      return
+    }
+    lastAppliedSignature = signature
+    if presetID.isEmpty {
+      if force {
+        resetIcon()
+      }
+      return
+    }
+    guard let preset = presets.first(where: { $0.id == presetID }) else {
+      notice = "Default \(mode) icon preset is missing."
+      return
+    }
+    installIcon(from: presetURL(preset))
   }
 
   func installIcon(from url: URL) {
@@ -1753,6 +2086,7 @@ struct AppearanceSettings: View {
         try FileManager.default.copyItem(at: defaultIcon, to: target)
       }
       refreshTrigger += 1
+      selectedPresetID = ""
       notice = "Reset to default icon."
     } catch {
       notice = "Failed to reset icon: \(error.localizedDescription)"
@@ -1846,6 +2180,7 @@ struct DDumpApp: App {
       ContentView()
         .environmentObject(state)
         .background(WindowAccessor())
+        .preferredColorScheme(state.preferredColorScheme())
     }
     .windowResizability(.contentSize)
     // Settings are opened through ContentView's sheet. The native Settings scene

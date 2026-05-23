@@ -96,6 +96,8 @@ ntfy_notify() {
     upload_started) enabled_key="${NTFY_NOTIFY_UPLOAD_STARTED:-0}" ;;
     upload_complete) enabled_key="${NTFY_NOTIFY_UPLOAD_COMPLETE:-1}" ;;
     mount_failed) enabled_key="${NTFY_NOTIFY_MOUNT_FAILED:-1}" ;;
+    card_almost_full) enabled_key="${NTFY_NOTIFY_CARD_ALMOST_FULL:-1}" ;;
+    integrity_warning) enabled_key="${NTFY_NOTIFY_INTEGRITY_WARNING:-1}" ;;
     *) enabled_key="0" ;;
   esac
   [[ "$enabled_key" == "1" ]] || return 0
@@ -237,7 +239,7 @@ MIN_FREE_SPACE_GB="100"
 MISSED_REPORT_MAX_ROWS="5000"
 WRITE_DAILY_DIGEST="1"
 UPLOAD_RECEIPTS_ENABLED="1"
-DB_ENABLED="1"
+DB_ENABLED="0"
 DB_FILE="${STATE_DIR}/ddump.sqlite3"
 HASH_BEFORE_COPY="0"
 UPLOAD_RETRY_MINUTES="3,10,60,240"
@@ -251,19 +253,23 @@ VIDEO_FILE_EXTENSIONS="mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"
 PHOTO_RECENCY_HOURS="24"
 ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
+POST_MOVE_ROOTS=""
+POST_MOVE_FALLBACK_ROOT=""
 POST_MOVE_YEAR_FORMAT="%Y"
 POST_MOVE_MONTH_FORMAT="%Y.%m"
 POST_MOVE_DAY_FORMAT="%Y.%m.%d"
-FOLDER_NAMING_STRATEGY="cluster"
-FOLDER_NAMING_FALLBACK="cluster"
+FOLDER_NAMING_STRATEGY="sequential"
+FOLDER_NAMING_FALLBACK="sequential"
 SMART_SAMPLE_PATH=""
 SMART_ASSIGN_EXISTING_FOLDERS="1"
 SPLIT_PHOTO_VIDEO="0"
-FOLDER_NAME_SEQUENTIAL_PREFIX="DDump "
+FOLDER_NAME_SEQUENTIAL_PREFIX="Shoot-"
 FOLDER_NAME_CUSTOM_VALUES=""
 FOLDER_NAME_UNCATEGORIZED="Uncategorized"
 CLUSTER_GAP_MINUTES="45"
 CLUSTER_FOLDER_TEMPLATE="Cluster {n} {start}-{end}"
+CLUSTER_GROUPING_ENABLED="1"
+CLUSTER_ATTACH_MINUTES="120"
 CALENDAR_NAME=""
 CALENDAR_EVENT_PADDING_MIN="15"
 TRUSTED_UUID_FILE="${STATE_DIR}/trusted_uuids.txt"
@@ -273,6 +279,7 @@ SOURCE_ROOTS_FILE="${STATE_DIR}/source_roots.tsv"
 BLOCKED_UUID_FILE="${STATE_DIR}/blocked_uuids.txt"
 CARD_POLICY_FILE="${STATE_DIR}/card_policy.tsv"
 FAST_SEEN_FILE="${STATE_DIR}/fast_seen.tsv"
+SHOOT_CLUSTER_MAP_FILE="${STATE_DIR}/shoot_cluster_map.tsv"
 PENDING_DIR="${STATE_DIR}/pending_uploads"
 STATUS_FILE="${STATE_DIR}/run_status.env"
 CONTROL_DIR="${STATE_DIR}/control"
@@ -299,6 +306,10 @@ NTFY_NOTIFY_CARD_EJECTED="1"
 NTFY_NOTIFY_UPLOAD_STARTED="0"
 NTFY_NOTIFY_UPLOAD_COMPLETE="1"
 NTFY_NOTIFY_MOUNT_FAILED="1"
+NTFY_NOTIFY_CARD_ALMOST_FULL="1"
+NTFY_NOTIFY_INTEGRITY_WARNING="1"
+CARD_ALMOST_FULL_ALERT_ENABLED="1"
+APP_COLOR_SCHEME="system"
 
 if [[ -f "$DEFAULT_CONFIG_PATH" ]]; then
   # shellcheck disable=SC1090
@@ -329,6 +340,7 @@ mkdir -p "$(dirname "$TRUSTED_UUID_FILE")" "$(dirname "$MANIFEST_FILE")"
 [[ -f "$BLOCKED_UUID_FILE" ]] || : > "$BLOCKED_UUID_FILE"
 [[ -f "$CARD_POLICY_FILE" ]] || : > "$CARD_POLICY_FILE"
 [[ -f "$FAST_SEEN_FILE" ]] || : > "$FAST_SEEN_FILE"
+[[ -f "$SHOOT_CLUSTER_MAP_FILE" ]] || : > "$SHOOT_CLUSTER_MAP_FILE"
 mkdir -p "$CONTROL_DIR" "$PENDING_DIR"
 /bin/rm -f "$PAUSE_FLAG" "$STOP_AFTER_FILE_FLAG" "$KEEP_MOUNTED_FLAG" "$EJECT_NOW_FLAG" "$STATUS_FILE"
 
@@ -611,18 +623,32 @@ infer_smart_root_from_sample_path() {
 }
 
 effective_post_move_root() {
-  if [[ "${FOLDER_NAMING_STRATEGY:-cluster}" == "smart" ]]; then
+  if [[ "${FOLDER_NAMING_STRATEGY:-sequential}" == "smart" ]]; then
     local smart_root
     if smart_root="$(infer_smart_root_from_sample_path)"; then
       printf '%s' "$smart_root"
       return 0
     fi
   fi
-  printf '%s' "$POST_MOVE_ROOT"
+  local root fallback
+  root="${POST_MOVE_ROOT:-}"
+  fallback="${POST_MOVE_FALLBACK_ROOT:-}"
+  if [[ -n "$fallback" ]]; then
+    if [[ -z "$root" ]]; then
+      root="$fallback"
+    elif path_uses_gdrive_mount "$root" && ! gdrive_mount_active; then
+      root="$fallback"
+    elif [[ ! -d "$root" ]]; then
+      root="$fallback"
+    elif [[ ! -w "$root" ]]; then
+      root="$fallback"
+    fi
+  fi
+  printf '%s' "$root"
 }
 
 effective_video_post_move_root() {
-  [[ "${FOLDER_NAMING_STRATEGY:-cluster}" == "smart" ]] || return 1
+  [[ "${FOLDER_NAMING_STRATEGY:-sequential}" == "smart" ]] || return 1
   [[ "${SPLIT_PHOTO_VIDEO:-0}" == "1" ]] || return 1
 
   local photo_root
@@ -642,6 +668,12 @@ build_post_move_target_dir() {
   local root
   root="$(effective_post_move_root)"
   [[ -n "$root" ]] || return 1
+  build_post_move_target_dir_for_root "$root"
+}
+
+build_post_move_target_dir_for_root() {
+  local root="$1"
+  [[ -n "$root" ]] || return 1
   local year month day
   year="$(/bin/date +"$POST_MOVE_YEAR_FORMAT")"
   month="$(/bin/date +"$POST_MOVE_MONTH_FORMAT")"
@@ -659,6 +691,21 @@ build_video_post_move_target_dir() {
   month="$(/bin/date +"$POST_MOVE_MONTH_FORMAT")"
   day="$(/bin/date +"$POST_MOVE_DAY_FORMAT")"
   printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
+}
+
+collect_post_move_roots() {
+  local primary extras item
+  primary="$(effective_post_move_root)"
+  [[ -n "$primary" ]] && /bin/echo "$primary"
+  extras="${POST_MOVE_ROOTS:-}"
+  [[ -n "$extras" ]] || return 0
+  IFS=',' read -r -a _extra_roots <<<"$extras"
+  for item in "${_extra_roots[@]}"; do
+    item="$(trim "$item")"
+    [[ -n "$item" ]] || continue
+    [[ "$item" == "$primary" ]] && continue
+    /bin/echo "$item"
+  done
 }
 
 path_uses_gdrive_mount() {
@@ -1048,125 +1095,165 @@ move_queued_paths_to_post_target() {
     return 0
   fi
 
-  if ! ensure_gdrive_mount_for_post_move "$(effective_post_move_root)"; then
-    log "Post-move blocked for ${vol_name}: ${move_last_detail}"
-    notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
-    return 1
-  fi
-
-  if ! check_post_move_ready; then
-    move_last_target="$(effective_post_move_root)"
-    log "Post-move blocked for ${vol_name}: ${move_last_detail}"
-    notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
-    return 1
-  fi
-
-  local target_dir video_target_dir split_video_enabled
-  target_dir="$(build_post_move_target_dir)"
+  local split_video_enabled video_target_dir
   split_video_enabled=0
   video_target_dir=""
   if [[ "${SPLIT_PHOTO_VIDEO:-0}" == "1" ]] && video_target_dir="$(build_video_post_move_target_dir)"; then
     split_video_enabled=1
   fi
-  move_last_target="$target_dir"
-  if ! /bin/mkdir -p "$target_dir"; then
-    move_last_status="failed"
-    move_last_detail="cannot create target dir: ${target_dir}"
+
+  local roots_file
+  roots_file="$(/usr/bin/mktemp "${STATE_DIR}/post-roots.${run_id}.XXXXXX")"
+  collect_post_move_roots | /usr/bin/sort -u >"$roots_file"
+  if [[ ! -s "$roots_file" ]]; then
+    move_last_status="blocked"
+    move_last_detail="no destination roots configured"
     log "Post-move blocked for ${vol_name}: ${move_last_detail}"
-    notify "DDump" "${vol_name}: post-move blocked (target unavailable)."
+    notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
+    /bin/rm -f "$roots_file"
     return 1
   fi
-  if ! check_directory_write_probe "$target_dir"; then
-    log "Post-move preflight write probe failed for ${vol_name}; continuing and attempting real copy anyway: ${target_dir}"
-  fi
 
-  local copied_count=0
-  local failed_count=0
-  local src_path base_name dest_path
-  while IFS= read -r src_path || [[ -n "$src_path" ]]; do
-    [[ -n "$src_path" ]] || continue
-    [[ -e "$src_path" ]] || continue
+  local overall_copied=0
+  local overall_failed=0
+  local destination_count=0
+  local target_list=""
+  local primary_target=""
+  local root target_dir copied_count failed_count src_path base_name dest_path
+  while IFS= read -r root || [[ -n "$root" ]]; do
+    [[ -n "$root" ]] || continue
+    destination_count=$((destination_count + 1))
+    target_dir="$(build_post_move_target_dir_for_root "$root")"
+    if [[ -z "$primary_target" ]]; then
+      primary_target="$target_dir"
+    fi
+    if [[ -z "$target_list" ]]; then
+      target_list="$target_dir"
+    else
+      target_list="${target_list}, ${target_dir}"
+    fi
 
-    base_name="$(basename "$src_path")"
-    dest_path="${target_dir}/${base_name}"
-    db_upsert_upload_job "$src_path" "$target_dir" "uploading" "0" "0" ""
-    db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
-
-    if [[ "$split_video_enabled" != "1" ]] && queue_entry_already_uploaded "$src_path" "$target_dir"; then
-      db_update_upload_job_status "$src_path" "uploaded" "0" "0" "already complete on destination"
-      db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-      copied_count=$((copied_count + 1))
+    if ! ensure_gdrive_mount_for_post_move "$root"; then
+      overall_failed=$((overall_failed + 1))
+      log "Post-move blocked for ${vol_name}: ${move_last_detail}"
+      notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
       continue
     fi
 
-    if [[ "$split_video_enabled" == "1" && -d "$src_path" ]]; then
-      if copy_bucket_split_photo_video "$src_path" "$dest_path" "${video_target_dir}/${base_name}"; then
-        db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+    if [[ ! -d "$root" ]]; then
+      if ! /bin/mkdir -p "$root"; then
+        overall_failed=$((overall_failed + 1))
+        log "Post-move blocked for ${vol_name}: cannot create destination root ${root}"
+        continue
+      fi
+    fi
+    if [[ ! -w "$root" ]]; then
+      overall_failed=$((overall_failed + 1))
+      log "Post-move blocked for ${vol_name}: destination root not writable ${root}"
+      continue
+    fi
+
+    if ! /bin/mkdir -p "$target_dir"; then
+      overall_failed=$((overall_failed + 1))
+      log "Post-move blocked for ${vol_name}: cannot create target dir ${target_dir}"
+      continue
+    fi
+    if ! check_directory_write_probe "$target_dir"; then
+      log "Post-move preflight write probe failed for ${vol_name}; continuing anyway: ${target_dir}"
+    fi
+
+    copied_count=0
+    failed_count=0
+    while IFS= read -r src_path || [[ -n "$src_path" ]]; do
+      [[ -n "$src_path" ]] || continue
+      [[ -e "$src_path" ]] || continue
+
+      base_name="$(basename "$src_path")"
+      dest_path="${target_dir}/${base_name}"
+      db_upsert_upload_job "$src_path" "$target_dir" "uploading" "0" "0" ""
+      db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
+
+      if [[ "$split_video_enabled" != "1" ]] && queue_entry_already_uploaded "$src_path" "$target_dir"; then
+        db_update_upload_job_status "$src_path" "uploaded" "0" "0" "already complete on destination"
         db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
         copied_count=$((copied_count + 1))
-      else
-        failed_count=$((failed_count + 1))
-        db_update_upload_job_status "$src_path" "failed" "0" "0" "photo/video split copy failed"
-        db_mark_media_status_by_local_prefix "$src_path" "organized" "photo/video split copy failed"
-        log "Post-move failed (photo/video split): ${src_path}"
+        continue
       fi
-      continue
-    fi
 
-    if [[ -e "$dest_path" ]]; then
-      # Merge into existing folder/file destination to avoid clobbering.
-      if [[ -d "$src_path" && -d "$dest_path" ]]; then
-        if copy_path_to_post_target "$src_path" "$dest_path"; then
+      if [[ "$split_video_enabled" == "1" && -d "$src_path" ]]; then
+        if copy_bucket_split_photo_video "$src_path" "$dest_path" "${video_target_dir}/${base_name}"; then
           db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
-          db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-          copied_count=$((copied_count + 1))
-        elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
-          db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
           db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
           copied_count=$((copied_count + 1))
         else
           failed_count=$((failed_count + 1))
-          db_update_upload_job_status "$src_path" "failed" "0" "0" "merge copy failed"
-          db_mark_media_status_by_local_prefix "$src_path" "organized" "merge copy failed"
-          log "Post-move failed (merge): ${src_path} -> ${dest_path}"
+          db_update_upload_job_status "$src_path" "failed" "0" "0" "photo/video split copy failed"
+          db_mark_media_status_by_local_prefix "$src_path" "organized" "photo/video split copy failed"
+          log "Post-move failed (photo/video split): ${src_path} -> ${target_dir}"
         fi
+        continue
+      fi
+
+      if [[ -e "$dest_path" ]]; then
+        if [[ -d "$src_path" && -d "$dest_path" ]]; then
+          if copy_path_to_post_target "$src_path" "$dest_path"; then
+            db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+            db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+            copied_count=$((copied_count + 1))
+          elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
+            db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
+            db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+            copied_count=$((copied_count + 1))
+          else
+            failed_count=$((failed_count + 1))
+            db_update_upload_job_status "$src_path" "failed" "0" "0" "merge copy failed"
+            db_mark_media_status_by_local_prefix "$src_path" "organized" "merge copy failed"
+            log "Post-move failed (merge): ${src_path} -> ${dest_path}"
+          fi
+        else
+          failed_count=$((failed_count + 1))
+          db_update_upload_job_status "$src_path" "failed" "0" "0" "destination exists and cannot merge"
+          db_mark_media_status_by_local_prefix "$src_path" "organized" "destination exists and cannot merge"
+          log "Post-move skipped due to existing destination: ${dest_path}"
+        fi
+        continue
+      fi
+
+      if copy_path_to_post_target "$src_path" "$dest_path"; then
+        db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+        db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+        copied_count=$((copied_count + 1))
+      elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
+        db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
+        db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+        copied_count=$((copied_count + 1))
       else
         failed_count=$((failed_count + 1))
-        db_update_upload_job_status "$src_path" "failed" "0" "0" "destination exists and cannot merge"
-        db_mark_media_status_by_local_prefix "$src_path" "organized" "destination exists and cannot merge"
-        log "Post-move skipped due to existing destination: ${dest_path}"
+        db_update_upload_job_status "$src_path" "failed" "0" "0" "copy to destination failed"
+        db_mark_media_status_by_local_prefix "$src_path" "organized" "copy to destination failed"
+        log "Post-move failed: ${src_path} -> ${dest_path}"
       fi
-      continue
-    fi
+    done <"$queue_file"
 
-    if copy_path_to_post_target "$src_path" "$dest_path"; then
-      db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
-      db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-      copied_count=$((copied_count + 1))
-    elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
-      db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
-      db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-      copied_count=$((copied_count + 1))
-    else
-      failed_count=$((failed_count + 1))
-      db_update_upload_job_status "$src_path" "failed" "0" "0" "copy to destination failed"
-      db_mark_media_status_by_local_prefix "$src_path" "organized" "copy to destination failed"
-      log "Post-move failed: ${src_path} -> ${dest_path}"
-    fi
-  done <"$queue_file"
+    overall_copied=$((overall_copied + copied_count))
+    overall_failed=$((overall_failed + failed_count))
+    log "Post-transfer destination result for ${vol_name}: target=${target_dir}, copied=${copied_count}, failed=${failed_count}"
+  done <"$roots_file"
+  /bin/rm -f "$roots_file"
 
-  if [[ "$failed_count" -eq 0 ]]; then
-    log "Post-transfer complete for ${vol_name}: copied=${copied_count}, target=${target_dir}"
-    notify "DDump" "${vol_name}: copied ${copied_count} folder(s) to destination (staging kept)."
+  move_last_target="$primary_target"
+  if [[ "$overall_failed" -eq 0 ]]; then
+    log "Post-transfer complete for ${vol_name}: copied=${overall_copied}, destinations=${destination_count}, targets=${target_list}"
+    notify "DDump" "${vol_name}: copied ${overall_copied} item(s) to ${destination_count} destination(s) (staging kept)."
     move_last_status="success"
-    move_last_detail="copied=${copied_count}"
+    move_last_detail="copied=${overall_copied}, destinations=${destination_count}, targets=${target_list}"
     return 0
   fi
 
-  log "Post-transfer partial for ${vol_name}: copied=${copied_count}, failed=${failed_count}, target=${target_dir}"
-  notify "DDump" "${vol_name}: destination copy had ${failed_count} error(s)."
+  log "Post-transfer partial for ${vol_name}: copied=${overall_copied}, failed=${overall_failed}, destinations=${destination_count}, targets=${target_list}"
+  notify "DDump" "${vol_name}: destination copy had ${overall_failed} error(s)."
   move_last_status="partial"
-  move_last_detail="copied=${copied_count}, failed=${failed_count}"
+  move_last_detail="copied=${overall_copied}, failed=${overall_failed}, destinations=${destination_count}, targets=${target_list}"
   return 1
 }
 
@@ -1308,6 +1395,48 @@ check_staging_space_ready() {
     return 1
   fi
   return 0
+}
+
+bytes_to_human() {
+  local bytes="$1"
+  if ! [[ "$bytes" =~ ^[0-9]+$ ]]; then
+    printf '0B'
+    return
+  fi
+  /usr/bin/awk -v b="$bytes" '
+    function fmt(v, u) { if (v >= 100) return sprintf("%.0f%s", v, u); if (v >= 10) return sprintf("%.1f%s", v, u); return sprintf("%.2f%s", v, u); }
+    BEGIN {
+      if (b >= 1099511627776) { print fmt(b/1099511627776.0, "TB"); exit }
+      if (b >= 1073741824)    { print fmt(b/1073741824.0, "GB"); exit }
+      if (b >= 1048576)       { print fmt(b/1048576.0, "MB"); exit }
+      if (b >= 1024)          { print fmt(b/1024.0, "KB"); exit }
+      print b "B"
+    }'
+}
+
+check_card_almost_full_after_import() {
+  local vol_path="$1"
+  local vol_name="$2"
+  local imported_bytes="$3"
+
+  [[ "${CARD_ALMOST_FULL_ALERT_ENABLED:-1}" == "1" ]] || return 0
+  [[ "$imported_bytes" =~ ^[0-9]+$ ]] || return 0
+  [[ "$imported_bytes" -gt 0 ]] || return 0
+  [[ -d "$vol_path" ]] || return 0
+
+  local free_kb free_bytes imported_human free_human
+  free_kb="$(/bin/df -Pk "$vol_path" 2>/dev/null | /usr/bin/awk 'NR == 2 { print $4 }')"
+  if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  free_bytes=$((free_kb * 1024))
+  if [[ "$free_bytes" -lt "$imported_bytes" ]]; then
+    imported_human="$(bytes_to_human "$imported_bytes")"
+    free_human="$(bytes_to_human "$free_bytes")"
+    log "Card almost full warning: ${vol_name}, free=${free_human}, last_import=${imported_human}"
+    notify "DDump" "⚠️ ${vol_name}: only ${free_human} free. Last import was ${imported_human}; another shoot this size likely needs format/card swap." warn
+    ntfy_notify "card_almost_full" "DDump: card almost full" "${vol_name}: free ${free_human}, last import ${imported_human}. Another similar shoot may require format/card swap."
+  fi
 }
 
 record_missed_file() {
@@ -1664,6 +1793,31 @@ has_allowed_extension() {
   done
 
   return 1
+}
+
+staging_memory_has_candidate() {
+  # Staging folder is the default memory mode when DB is disabled.
+  # Check the expected relative path first, then a same-name+size fallback
+  # anywhere under the staging day folder (covers post-rebucket paths).
+  local dest_dir="$1"
+  local rel_path="$2"
+  local file_size="$3"
+  [[ -d "$dest_dir" ]] || return 1
+  [[ -n "$rel_path" ]] || return 1
+
+  local safe_rel_path expected_path expected_size base_name hit
+  safe_rel_path="${rel_path//:/_}"
+  expected_path="${dest_dir}/${safe_rel_path}"
+  if [[ -f "$expected_path" ]]; then
+    expected_size="$(file_size_bytes "$expected_path")"
+    if [[ "$expected_size" == "$file_size" ]]; then
+      return 0
+    fi
+  fi
+
+  base_name="$(basename "$safe_rel_path")"
+  hit="$(/usr/bin/find "$dest_dir" -type f -name "$base_name" -size "${file_size}c" -print -quit 2>/dev/null || true)"
+  [[ -n "$hit" ]]
 }
 
 get_volume_uuid() {
@@ -2271,6 +2425,52 @@ verify_volume_upload_completeness() {
 # (sequential, custom, cluster, calendar). The strategy decides the bucket
 # *name*; the rebucket step does the actual file moves.
 
+iso_to_epoch() {
+  local iso="$1"
+  /bin/date -j -f '%Y-%m-%dT%H:%M:%S' "$iso" '+%s' 2>/dev/null \
+    || /bin/date -d "$iso" '+%s' 2>/dev/null \
+    || true
+}
+
+resolve_sequential_bucket_for_cluster() {
+  local dest_dir="$1"
+  local prefix="$2"
+  local start_epoch="$3"
+  local end_epoch="$4"
+  local attach_min attach_sec day map_file tmp_file found bucket min_start max_end
+  attach_min="$(sanitize_positive_int "${CLUSTER_ATTACH_MINUTES:-120}" "120")"
+  attach_sec=$((attach_min * 60))
+  day="$(epoch_date_ymd "$start_epoch")"
+  map_file="$SHOOT_CLUSTER_MAP_FILE"
+  [[ -n "$day" ]] || { printf '%s%s' "$prefix" "$(next_sequential_number "$dest_dir" "$prefix")"; return 0; }
+
+  tmp_file="$(mktemp "${STATE_DIR}/cluster-map.${run_id}.XXXXXX")"
+  found=0
+  bucket=""
+  : >"$tmp_file"
+
+  while IFS=$'\t' read -r row_day row_bucket row_start row_end || [[ -n "$row_day$row_bucket$row_start$row_end" ]]; do
+    [[ -n "$row_day" && -n "$row_bucket" && "$row_start" =~ ^[0-9]+$ && "$row_end" =~ ^[0-9]+$ ]] || continue
+    if [[ "$row_day" == "$day" ]] && (( start_epoch <= row_end + attach_sec )) && (( end_epoch >= row_start - attach_sec )); then
+      found=1
+      bucket="$row_bucket"
+      if (( start_epoch < row_start )); then min_start="$start_epoch"; else min_start="$row_start"; fi
+      if (( end_epoch > row_end )); then max_end="$end_epoch"; else max_end="$row_end"; fi
+      /usr/bin/printf '%s\t%s\t%s\t%s\n' "$row_day" "$row_bucket" "$min_start" "$max_end" >>"$tmp_file"
+    else
+      /usr/bin/printf '%s\t%s\t%s\t%s\n' "$row_day" "$row_bucket" "$row_start" "$row_end" >>"$tmp_file"
+    fi
+  done <"$map_file"
+
+  if [[ "$found" -eq 0 ]]; then
+    bucket="${prefix}$(next_sequential_number "$dest_dir" "$prefix")"
+    /usr/bin/printf '%s\t%s\t%s\t%s\n' "$day" "$bucket" "$start_epoch" "$end_epoch" >>"$tmp_file"
+  fi
+
+  /bin/mv "$tmp_file" "$map_file"
+  printf '%s' "$bucket"
+}
+
 next_sequential_number() {
   local dest_dir="$1"
   local prefix="$2"
@@ -2293,15 +2493,58 @@ compute_buckets_sequential() {
   # stdin: list of imported file paths (newline-separated)
   # stdout: file_path<TAB>bucket_name
   local dest_dir="$1"
-  local prefix="${FOLDER_NAME_SEQUENTIAL_PREFIX:-Dump }"
-  local n
-  n="$(next_sequential_number "$dest_dir" "$prefix")"
-  local bucket="${prefix}${n}"
-  local f
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    printf '%s\t%s\n' "$f" "$bucket"
-  done
+  local prefix="${FOLDER_NAME_SEQUENTIAL_PREFIX:-Shoot-}"
+
+  if [[ "${CLUSTER_GROUPING_ENABLED:-1}" != "1" ]]; then
+    local n bucket f
+    n="$(next_sequential_number "$dest_dir" "$prefix")"
+    bucket="${prefix}${n}"
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      printf '%s\t%s\n' "$f" "$bucket"
+    done
+    return 0
+  fi
+
+  local cluster_script imported_list cluster_out file_path cid cstart_iso cend_iso
+  local cstart_epoch cend_epoch bucket
+  cluster_script="${APP_SUPPORT_DIR}/bin/ddump-cluster.sh"
+  imported_list="$(mktemp)"
+  cluster_out="$(mktemp)"
+  cat >"$imported_list"
+
+  if [[ ! -x "$cluster_script" ]]; then
+    local n fallback_bucket f
+    n="$(next_sequential_number "$dest_dir" "$prefix")"
+    fallback_bucket="${prefix}${n}"
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      printf '%s\t%s\n' "$f" "$fallback_bucket"
+    done <"$imported_list"
+    rm -f "$imported_list" "$cluster_out"
+    return 0
+  fi
+
+  /bin/bash "$cluster_script" --gap-minutes "${CLUSTER_GAP_MINUTES:-45}" <"$imported_list" >"$cluster_out"
+  while IFS=$'\t' read -r file_path cid cstart_iso cend_iso; do
+    [[ -n "$file_path" ]] || continue
+    if [[ "$cid" == "unknown" || -z "$cstart_iso" || -z "$cend_iso" ]]; then
+      bucket="${FOLDER_NAME_UNCATEGORIZED:-Uncategorized}"
+      printf '%s\t%s\n' "$file_path" "$bucket"
+      continue
+    fi
+    cstart_epoch="$(iso_to_epoch "$cstart_iso")"
+    cend_epoch="$(iso_to_epoch "$cend_iso")"
+    if [[ ! "$cstart_epoch" =~ ^[0-9]+$ || ! "$cend_epoch" =~ ^[0-9]+$ ]]; then
+      bucket="${prefix}$(next_sequential_number "$dest_dir" "$prefix")"
+      printf '%s\t%s\n' "$file_path" "$bucket"
+      continue
+    fi
+    bucket="$(resolve_sequential_bucket_for_cluster "$dest_dir" "$prefix" "$cstart_epoch" "$cend_epoch")"
+    printf '%s\t%s\n' "$file_path" "$bucket"
+  done <"$cluster_out"
+
+  rm -f "$imported_list" "$cluster_out"
 }
 
 compute_buckets_custom() {
@@ -2485,9 +2728,10 @@ compute_buckets_with_fallback() {
   local dest_dir="$2"
   case "$fallback" in
     sequential) compute_buckets_sequential "$dest_dir" ;;
-    custom) compute_buckets_custom "$dest_dir" || compute_buckets_cluster "$dest_dir" ;;
+    custom) compute_buckets_custom "$dest_dir" || compute_buckets_sequential "$dest_dir" ;;
     camera) compute_buckets_camera "$dest_dir" ;;
-    cluster|*) compute_buckets_cluster "$dest_dir" ;;
+    cluster) compute_buckets_cluster "$dest_dir" ;;
+    *) compute_buckets_sequential "$dest_dir" ;;
   esac
 }
 
@@ -2570,7 +2814,7 @@ compute_buckets_calendar() {
   fi
 
   if [[ -s "$unmatched_list" ]]; then
-    compute_buckets_with_fallback "${FOLDER_NAMING_FALLBACK:-cluster}" "$dest_dir" <"$unmatched_list" >"$fallback_tsv"
+    compute_buckets_with_fallback "${FOLDER_NAMING_FALLBACK:-sequential}" "$dest_dir" <"$unmatched_list" >"$fallback_tsv"
   fi
 
   if [[ ! -s "$matched_tsv" && ! -s "$fallback_tsv" ]]; then
@@ -2604,8 +2848,8 @@ rebucket_imported_files() {
   local imported_list="$1"
   local dest_dir="$2"
   local queue_file="$3"
-  local strategy="${FOLDER_NAMING_STRATEGY:-cluster}"
-  local fallback="${FOLDER_NAMING_FALLBACK:-cluster}"
+  local strategy="${FOLDER_NAMING_STRATEGY:-sequential}"
+  local fallback="${FOLDER_NAMING_FALLBACK:-sequential}"
 
   [[ -s "$imported_list" ]] || return 0
   if [[ "$strategy" == "camera" ]]; then
@@ -3142,6 +3386,7 @@ for vol_path in /Volumes/*; do
   fi
 
   imported_this_volume=0
+  imported_bytes_this_volume=0
   skipped_existing_this_volume=0
   skipped_extension_this_volume=0
   failed_copy=0
@@ -3231,6 +3476,8 @@ for vol_path in /Volumes/*; do
       file_size="$(/usr/bin/stat -f '%z' "$src_file")"
       file_mtime="$(/usr/bin/stat -f '%m' "$src_file")"
       rel_path="${src_file#"${source_root}/"}"
+      safe_rel_path="${rel_path//:/_}"
+      out_path="${dest_dir}/${safe_rel_path}"
       db_upsert_candidate_file "$uuid" "$vol_name" "$source_root_rel" "$rel_path" "$src_file" "$file_size" "$file_mtime"
 
       if ! has_allowed_extension "$src_file" "$FILE_EXTENSIONS"; then
@@ -3260,7 +3507,22 @@ for vol_path in /Volumes/*; do
         continue
       fi
 
+      if [[ "$force_recopy_for_uuid" != "1" ]] && [[ "${DB_ENABLED:-0}" != "1" ]]; then
+        if staging_memory_has_candidate "$dest_dir" "$rel_path" "$file_size"; then
+          skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
+          record_missed_file "$vol_name" "skipped_staging_memory" "$src_file" "matched existing file in staging memory"
+          processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+          current_status_processed="$processed_candidates_this_volume"
+          current_status_imported="$imported_this_volume"
+          current_status_skipped="$skipped_existing_this_volume"
+          current_status_failed="$failed_copy"
+          write_status
+          continue
+        fi
+      fi
+
       if [[ "$force_recopy_for_uuid" != "1" ]] \
+         && [[ "${DB_ENABLED:-0}" == "1" ]] \
          && [[ "$USE_FAST_SEEN_INDEX" == "1" && -n "$uuid" ]] \
          && fast_seen_key_exists "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" \
          && ! db_file_retry_needed "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime"; then
@@ -3299,9 +3561,6 @@ for vol_path in /Volumes/*; do
         write_status
         continue
       fi
-
-      safe_rel_path="${rel_path//:/_}"
-      out_path="${dest_dir}/${safe_rel_path}"
 
       /bin/mkdir -p "$(dirname "$out_path")"
 
@@ -3353,6 +3612,7 @@ for vol_path in /Volumes/*; do
         queue_path_unique "$post_move_queue_file" "${dest_dir}/${top_component}"
       fi
       imported_this_volume=$((imported_this_volume + 1))
+      imported_bytes_this_volume=$((imported_bytes_this_volume + file_size))
       processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
       current_status_processed="$processed_candidates_this_volume"
       current_status_imported="$imported_this_volume"
@@ -3507,6 +3767,7 @@ for vol_path in /Volumes/*; do
   fi
   /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_timestamp" "$vol_name" "$uuid" "$imported_this_volume" "$skipped_existing_this_volume" "$skipped_extension_this_volume" "$status" >>"$RUN_HISTORY_FILE"
   log "Volume ${vol_name}: final_status=${status}, imported=${imported_this_volume}, skipped_known=${skipped_existing_this_volume}, skipped_ext=${skipped_extension_this_volume}, post_move=${move_last_status:-none}"
+  check_card_almost_full_after_import "$vol_path" "$vol_name" "$imported_bytes_this_volume"
   if [[ -f "$pending_imports_file" && ! -s "$pending_imports_file" ]]; then
     /bin/rm -f "$pending_imports_file"
   fi
@@ -3523,6 +3784,9 @@ fi
 
 summary_message="Run complete. volumes=${processed_volume_count}, imported=${imported_file_count_total}, skipped_duplicate=${summary_skipped_existing_total}, skipped_extension=${summary_skipped_extension_total}, copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}, kept_mounted=${summary_kept_mounted_total}, post_move_blocked=${summary_post_move_blocked_total}, post_move_fail=${summary_post_move_fail_total}, errors=${summary_errors_total}"
 log "$summary_message"
+if [[ "$summary_copy_fail_total" -gt 0 || "$summary_verify_fail_total" -gt 0 ]]; then
+  ntfy_notify "integrity_warning" "DDump: integrity warning" "Run finished with copy/verify issues. copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}."
+fi
 if [[ "${SLACK_NOTIFY_ON_COMPLETE:-0}" == "1" ]]; then
   slack_notify "DDump complete: ${summary_message}" || true
 elif [[ "${SLACK_NOTIFY_ON_ERROR:-1}" == "1" && "$summary_errors_total" -gt 0 ]]; then

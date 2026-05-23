@@ -1,90 +1,155 @@
 # DDump
 
-DDump is a macOS SD-card and camera-card importer for photographers. It watches for mounted cards, copies new files to local staging, verifies the local copy, groups files into useful shoot folders, uploads those folders to a configured destination, and ejects the card only when the run is safe.
+DDump is a macOS photo-card ingest app for photographers who need a reliable path from SD card to local staging and cloud destination.
 
-The project started as DFP Dump and was renamed to DDump so it can be configured for non-DFP workflows.
+It is built for high-confidence transfer workflows:
 
-## Current Capabilities
+- Import only recent card files (lookback window) or a manual selection.
+- Stage locally first.
+- Verify local copies.
+- Organize into shoot folders.
+- Copy to one or more destinations.
+- Retry/resume when cloud/mount/network fails.
 
-- macOS LaunchAgent starts DDump on card mount and every few minutes for pending upload retries.
-- Photo-volume detection silently ignores non-photo mounts like installers.
-- Trust controls support volume-name prefixes, remembered UUIDs, one-time imports, skips, and blocklisting.
-- New cards can prompt for source-folder selection so imports do not have to scan an entire card.
-- Local staging protects card reads from cloud upload failures.
-- Pending upload recovery retries blocked uploads on later launches.
-- Manual backfill import from the Mac app can target specific files/folders on a mounted card (including older than lookback windows).
-- During uploads, DDump can drive `finderserver` and refresh its auto-off timer so mounts do not drop mid-transfer.
-- Upload retries now reconcile destination content before re-copying, so reconnect runs resume from what is already present.
-- Per-volume upload completion is verified against SQLite tracking; incomplete rows are marked for reinsert-first recovery.
-- Optional `ntfy` push alerts can notify key milestones (staging start, eject, upload start, upload complete).
-- Folder naming strategies:
-  - `smart`: infer the date-folder structure from a sample path and map clusters into existing shoot folders.
-  - `calendar`: match capture times to Google Calendar events through `gcalcli`.
-  - `cluster`: group files by capture-time gaps.
-  - `sequential`: create `DDump 1`, `DDump 2`, etc.
-  - `custom`: use configured names in order.
-  - `camera`: keep camera folder names.
-- Post-move uses `rsync` copy plus file-count/byte verification before removing local staged folders.
-- The Mac app shows progress, ETA, local disk health, pending uploads, safe cleanup, settings, pause/resume, stop-after-current-file, and eject-after-current-file.
-- Optional Slack webhook notifications can report complete/error run summaries.
+## Core Workflow
 
-## Install On Mac
+1. Card mounts.
+2. DDump checks trust + photo presence.
+3. DDump finds candidates (lookback-only by default).
+4. DDump copies to staging and verifies each file.
+5. DDump re-buckets staged files by your naming strategy.
+6. DDump copies staged buckets to destination(s).
+7. DDump verifies destination copy parity (file count + bytes).
+8. DDump records receipts/logs/state and handles eject rules.
+9. DDump retries incomplete uploads automatically, including after internet reconnect.
 
-From this project folder on the Mac:
+## Main Features
+
+### 1) Import safety and control
+
+- Lookback-only import scanning (default 24h).
+- Manual select import for specific folders/files from a mounted card.
+- Per-card saved source folder choices (avoids scanning whole card repeatedly).
+- Do Not Eject and Eject After This File controls.
+- Stop-after-file and Pause/Resume controls.
+- Minimum staging free-space guardrail before import.
+
+### 2) Reliability and resume behavior
+
+- Local staging-first architecture (cloud outage does not block card copy).
+- Pending upload queue with retry schedule.
+- Incomplete-session recovery runs before new card work.
+- Reinsert-priority handling for files marked missing/incomplete.
+- Destination reconciliation: skips re-copy if destination already matches source stats.
+- Optional SQLite state engine (beta), default OFF.
+- Staging-folder memory mode (default) to dedupe safely without DB.
+
+### 3) Cloud/mount robustness
+
+- Packaged rclone mount helper LaunchAgent.
+- Mount preflight checks before transfer.
+- Mount retry backoff schedule (`5,15,60,180,360,600` by default).
+- Finder-server timer guard during uploads to avoid unmount mid-transfer.
+- Hard restart mount action in app.
+- Cloud diagnostics in app (binary/remote/service/mount state + reason string).
+- Internet reconnect watcher: when network returns and pending uploads exist, DDump auto-triggers retry.
+
+### 4) Destination handling
+
+- Primary destination.
+- Additional destinations (comma-separated).
+- Fallback destination root.
+- Staging-only mode (disable destination transfer).
+- Post-transfer is copy-based (staging remains as backup).
+- Optional smart-mode video split to sibling Video path.
+
+### 5) Folder naming and grouping
+
+Strategies:
+
+- `sequential` (default): `Shoot-1`, `Shoot-2`, ...
+- `custom`: cycle through configured list.
+- `calendar`: match file capture times to Google Calendar events.
+- `smart`: infer date-ladder destination shape from a sample path.
+- `camera`: keep camera folder structure names.
+
+Grouping controls:
+
+- Cluster grouping toggle independent of naming strategy.
+- Cluster gap minutes.
+- Cross-card cluster attach window (keeps related camera/drone cards grouped).
+
+### 6) Verification and integrity
+
+- Local copy size verification (always available).
+- Optional local copy hash verification (SHA-256).
+- Optional pre-copy hashing mode.
+- Volume-level upload completeness verification against tracked rows.
+- Integrity warning alert channel (ntfy toggle).
+
+### 7) Notifications and operator feedback
+
+- Native macOS notification prompts + status messages.
+- Optional ntfy push events with per-event toggles.
+- Optional Slack completion/error summaries.
+- Main app checklist panel with progress states:
+  - Transfer to staging
+  - Eject card
+  - Transfer to destination
+  - All complete
+
+### 8) App UI and settings
+
+Tabs:
+
+- Destination
+- Naming
+- Detection
+- Cloud
+- Calendar
+- Appearance
+
+Includes:
+
+- Tooltips (`i` hints) for key settings.
+- Theme mode: light/dark/system.
+- Icon preset library with multiple stored icons.
+- Default icon selection for light mode and dark mode.
+
+## Install
+
+Run from this repository on macOS:
 
 ```bash
 ./bin/install.sh
 ```
 
-This installs:
+Installer sets up:
 
-- `~/Library/Application Support/DDump/bin/ddump.sh`
-- `~/Library/Application Support/DDump/config.env`
-- `~/Library/LaunchAgents/com.ddump.plist`
-- `~/Applications/DDump.app`
+- DDump scripts under `~/Library/Application Support/DDump/bin/`
+- App config at `~/Library/Application Support/DDump/config.env`
+- Main importer LaunchAgent `com.ddump`
+- Cloud mount LaunchAgent (`GDRIVE_MOUNT_LABEL`)
+- Network reconnect watcher LaunchAgent `com.ddump.network-watch`
+- macOS app bundle at `~/Applications/DDump.app`
 
-The installer preserves existing user config and only adds missing keys.
-
-## Configure
-
-Edit the user config:
+## Uninstall
 
 ```bash
-open -e ~/Library/Application\ Support/DDump/config.env
+./bin/uninstall.sh
 ```
 
-Main settings:
+Removes LaunchAgents; keeps app data by design.
 
-- `DEST_ROOT`: local staging folder.
-- `POST_MOVE_ROOT`: final upload root.
-- `FOLDER_NAMING_STRATEGY`: `smart`, `calendar`, `cluster`, `sequential`, `custom`, or `camera`.
-- `FOLDER_NAMING_FALLBACK`: fallback when the primary naming strategy cannot classify a file.
-- `TRUSTED_NAME_PREFIXES`: comma-separated volume prefixes that auto-trust.
-- `CANDIDATE_MODE`: `all` or `lookback`.
-- `MIN_FREE_SPACE_GB`: local free-space preflight threshold.
-- `VERIFY_COPY_HASH`: optional slower post-copy SHA-256 verification.
-- `HASH_BEFORE_COPY`: optional slower pre-copy hash for global duplicate checks.
-- `SLACK_WEBHOOK_URL`: optional Slack incoming webhook for admin-only run notifications.
-- `NTFY_TOPIC`: optional ntfy topic for push notifications.
+## Key Paths
 
-## Calendar Naming
-
-Calendar naming requires `gcalcli` on the Mac:
-
-```bash
-brew install gcalcli
-gcalcli list
-```
-
-Then set:
-
-```bash
-FOLDER_NAMING_STRATEGY="calendar"
-CALENDAR_NAME=""
-CALENDAR_EVENT_PADDING_MIN="15"
-```
-
-DDump matches each file's EXIF capture time, falling back to file modified time, against the calendar events for that date. Files outside a matching event window use `FOLDER_NAMING_FALLBACK`.
+- Config: `~/Library/Application Support/DDump/config.env`
+- Main log: `~/Library/Application Support/DDump/logs/ddump.log`
+- Network watcher log: `~/Library/Application Support/DDump/logs/ddump-network-watch.log`
+- State dir: `~/Library/Application Support/DDump/state/`
+- Pending uploads: `~/Library/Application Support/DDump/state/pending_uploads/`
+- Reports: `~/Library/Application Support/DDump/reports/`
+- SQLite DB (optional): `~/Library/Application Support/DDump/state/ddump.sqlite3`
 
 ## Useful Commands
 
@@ -94,49 +159,65 @@ Manual run:
 ~/Library/Application\ Support/DDump/bin/ddump.sh
 ```
 
-Control a running import:
+Runtime controls:
 
 ```bash
 ~/Library/Application\ Support/DDump/bin/ddump-control.sh status
 ~/Library/Application\ Support/DDump/bin/ddump-control.sh pause
 ~/Library/Application\ Support/DDump/bin/ddump-control.sh resume
 ~/Library/Application\ Support/DDump/bin/ddump-control.sh stop
+~/Library/Application\ Support/DDump/bin/ddump-control.sh keep-mounted
 ~/Library/Application\ Support/DDump/bin/ddump-control.sh eject-when-done
 ```
 
-Trust a card manually:
+Trust a card:
 
 ```bash
 ~/Library/Application\ Support/DDump/bin/ddump-trust.sh /Volumes/CARD_NAME
 ```
 
-## Logs And State
+Diagnostics snapshot:
 
-- Main log: `~/Library/Application Support/DDump/logs/ddump.log`
-- LaunchAgent stdout: `~/Library/Application Support/DDump/logs/launchd.out.log`
-- LaunchAgent stderr: `~/Library/Application Support/DDump/logs/launchd.err.log`
-- User config: `~/Library/Application Support/DDump/config.env`
-- SQLite state: `~/Library/Application Support/DDump/state/ddump.sqlite3`
-- Pending uploads: `~/Library/Application Support/DDump/state/pending_uploads/`
-- Reports: `~/Library/Application Support/DDump/reports/`
+```bash
+~/Library/Application\ Support/DDump/bin/ddump-debug-snapshot.sh
+```
 
-Pure no-card/no-work scheduler runs do not create missed-file reports or daily-digest entries.
+## Configuration Highlights
 
-## Development
+Important keys:
 
-Canonical source lives in this repository. The installed Mac copy is generated by `bin/install.sh`.
+- `DEST_ROOT`
+- `ENABLE_POST_EJECT_MOVE`
+- `POST_MOVE_ROOT`
+- `POST_MOVE_ROOTS`
+- `POST_MOVE_FALLBACK_ROOT`
+- `LOOKBACK_HOURS`
+- `FOLDER_NAMING_STRATEGY`
+- `FOLDER_NAMING_FALLBACK`
+- `CLUSTER_GROUPING_ENABLED`
+- `CLUSTER_GAP_MINUTES`
+- `CLUSTER_ATTACH_MINUTES`
+- `DB_ENABLED`
+- `GDRIVE_MOUNT_ENABLED`
+- `GDRIVE_MOUNT_RETRY_SECONDS`
+- `NETWORK_RESUME_ENABLED`
+- `NETWORK_RESUME_CHECK_SECONDS`
+- `NETWORK_RESUME_COOLDOWN_SECONDS`
+- `NTFY_TOPIC`
+- `NTFY_NOTIFY_*` toggles
 
-Run checks:
+## Current Defaults Worth Noting
+
+- Lookback mode is enforced for safe card ingest behavior.
+- SQLite memory is OFF by default (staging memory mode is default).
+- Card eject grace defaults to 60 seconds.
+- Default ntfy toggles prioritize card ejected + upload complete (plus mount/integrity/card-full guardrails enabled where configured).
+
+## Development Checks
 
 ```bash
 bash -n bin/*.sh
-swiftc -parse-as-library -o /private/tmp/DDumpApp-check app/DDumpApp.swift
+swiftc -parse-as-library -o /private/tmp/DDump-check app/DDumpApp.swift
 ```
 
-Swift compilation may require a matching local Xcode Command Line Tools install.
-
-## Uninstall
-
-```bash
-./bin/uninstall.sh
-```
+`swiftc` requires Apple command-line build tools on macOS.

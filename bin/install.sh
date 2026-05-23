@@ -4,6 +4,7 @@ set -euo pipefail
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 LABEL="com.ddump"
+NETWORK_WATCH_LABEL="com.ddump.network-watch"
 OLD_LABEL="com.dfp.dump"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.chase.rclone-gdrive"
@@ -60,7 +61,7 @@ mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 for s in ddump.sh ddump-trust.sh ddump-monitor.sh ddump-control.sh \
          ddump-settings.sh ddump-debug-snapshot.sh \
          ddump-notify.sh ddump-cluster.sh ddump-calendar-lookup.sh \
-         rclone-gdrive-mount.sh; do
+         rclone-gdrive-mount.sh ddump-network-watch.sh; do
   if [[ -f "${PROJECT_DIR}/bin/${s}" ]]; then
     cp "${PROJECT_DIR}/bin/${s}" "${BIN_DIR}/${s}"
     chmod +x "${BIN_DIR}/${s}"
@@ -201,21 +202,25 @@ add_missing_key 'CANDIDATE_MODE' '"lookback"' "Import candidate scan mode: lookb
 add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only files newer than this many hours are considered."
 add_missing_key 'USE_NOTIFICATIONS' '"1"' "Native macOS notifications instead of Terminal monitor."
 add_missing_key 'NOTIFICATION_TIMEOUT_SECONDS' '"60"'
-add_missing_key 'FOLDER_NAMING_STRATEGY' '"cluster"' "How to name shoot folders: smart | calendar | sequential | custom | cluster | camera."
-add_missing_key 'FOLDER_NAMING_FALLBACK' '"cluster"'
+add_missing_key 'FOLDER_NAMING_STRATEGY' '"sequential"' "How to name shoot folders: smart | calendar | sequential | custom | camera."
+add_missing_key 'FOLDER_NAMING_FALLBACK' '"sequential"'
 add_missing_key 'SMART_SAMPLE_PATH' '""' "Real shoot folder path used by smart naming to infer the daily Drive structure."
 add_missing_key 'SMART_ASSIGN_EXISTING_FOLDERS' '"1"' "Smart naming maps clusters into existing folders under today's Drive date folder."
 add_missing_key 'SPLIT_PHOTO_VIDEO' '"0"' "Optional smart-mode split: videos go to the sibling 2 — Video date ladder."
-add_missing_key 'FOLDER_NAME_SEQUENTIAL_PREFIX' '"DDump "'
+add_missing_key 'FOLDER_NAME_SEQUENTIAL_PREFIX' '"Shoot-"'
 add_missing_key 'FOLDER_NAME_CUSTOM_VALUES' '""'
 add_missing_key 'FOLDER_NAME_UNCATEGORIZED' '"Uncategorized"'
 add_missing_key 'CLUSTER_GAP_MINUTES' '"45"'
 add_missing_key 'CLUSTER_FOLDER_TEMPLATE' '"Cluster {n} {start}-{end}"'
+add_missing_key 'CLUSTER_GROUPING_ENABLED' '"1"' "When enabled, nearby capture times group together before naming."
+add_missing_key 'CLUSTER_ATTACH_MINUTES' '"120"' "Across cards, reuse same-day shoot bucket when cluster is within this window."
 add_missing_key 'CALENDAR_NAME' '""'
 add_missing_key 'CALENDAR_EVENT_PADDING_MIN' '"15"'
+add_missing_key 'POST_MOVE_ROOTS' '""' "Optional comma-separated list of additional final destinations."
+add_missing_key 'POST_MOVE_FALLBACK_ROOT' '""' "Fallback destination when primary root is unavailable."
 add_missing_key 'VERIFY_COPY_HASH' '"0"' "Optional post-copy SHA-256 verification. Off by default for speed; size verification remains on."
 add_missing_key 'UPLOAD_RECEIPTS_ENABLED' '"1"' "Write a small receipt file after each upload attempt."
-add_missing_key 'DB_ENABLED' '"1"' "Use SQLite database memory for runs, files, and upload jobs."
+add_missing_key 'DB_ENABLED' '"0"' "Use SQLite database memory for runs, files, and upload jobs (beta)."
 add_missing_key 'DB_FILE' '"$HOME/Library/Application Support/DDump/state/ddump.sqlite3"' "SQLite database path."
 add_missing_key 'HASH_BEFORE_COPY' '"0"' "Keep SD dumps fast: do not hash card files before local copy."
 add_missing_key 'UPLOAD_RETRY_MINUTES' '"3,10,60,240"' "Pending upload retry delays in minutes."
@@ -229,6 +234,15 @@ add_missing_key 'NTFY_NOTIFY_CARD_EJECTED' '"1"'
 add_missing_key 'NTFY_NOTIFY_UPLOAD_STARTED' '"0"'
 add_missing_key 'NTFY_NOTIFY_UPLOAD_COMPLETE' '"1"'
 add_missing_key 'NTFY_NOTIFY_MOUNT_FAILED' '"1"'
+add_missing_key 'NTFY_NOTIFY_CARD_ALMOST_FULL' '"1"'
+add_missing_key 'NTFY_NOTIFY_INTEGRITY_WARNING' '"1"'
+add_missing_key 'CARD_ALMOST_FULL_ALERT_ENABLED' '"1"' "Warn when free card space is below the size of the most recent import from that card."
+add_missing_key 'NETWORK_RESUME_ENABLED' '"1"' "When internet reconnects and pending uploads exist, automatically trigger a retry run."
+add_missing_key 'NETWORK_RESUME_CHECK_SECONDS' '"20"' "Network watcher poll interval."
+add_missing_key 'NETWORK_RESUME_COOLDOWN_SECONDS' '"120"' "Minimum seconds between reconnect-triggered retry runs."
+add_missing_key 'APP_COLOR_SCHEME' '"system"' "App appearance: system | light | dark."
+add_missing_key 'APP_ICON_DEFAULT_LIGHT' '""' "Stored icon preset ID used when app appearance is light."
+add_missing_key 'APP_ICON_DEFAULT_DARK' '""' "Stored icon preset ID used when app appearance is dark."
 
 if grep -q '^VERIFY_COPY_HASH="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^VERIFY_COPY_HASH="1"$/VERIFY_COPY_HASH="0"/' "$USER_CONFIG"
@@ -241,13 +255,18 @@ if grep -q '^DAILY_FOLDER_FORMAT="%Y-%m-%d-dump"$' "$USER_CONFIG"; then
 fi
 
 if grep -q '^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$' "$USER_CONFIG"; then
-  /usr/bin/sed -i '' 's/^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$/FOLDER_NAME_SEQUENTIAL_PREFIX="DDump "/' "$USER_CONFIG"
-  echo "Updated FOLDER_NAME_SEQUENTIAL_PREFIX from \"Dump \" to \"DDump \"."
+  /usr/bin/sed -i '' 's/^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$/FOLDER_NAME_SEQUENTIAL_PREFIX="Shoot-"/' "$USER_CONFIG"
+  echo "Updated FOLDER_NAME_SEQUENTIAL_PREFIX from \"Dump \" to \"Shoot-\"."
 fi
 
 if grep -q '^CANDIDATE_MODE="all"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^CANDIDATE_MODE="all"$/CANDIDATE_MODE="lookback"/' "$USER_CONFIG"
   echo "Updated CANDIDATE_MODE from \"all\" to \"lookback\" (recent-file import only)."
+fi
+
+if grep -q '^DB_ENABLED="1"$' "$USER_CONFIG"; then
+  /usr/bin/sed -i '' 's/^DB_ENABLED="1"$/DB_ENABLED="0"/' "$USER_CONFIG"
+  echo "Updated DB_ENABLED to 0 (staging-folder memory is now the default; SQLite remains optional beta)."
 fi
 
 if grep -q '^GDRIVE_MOUNT_LABEL="com.chase.rclone-gdrive"$' "$USER_CONFIG"; then
@@ -331,6 +350,7 @@ if [[ -z "$mount_label" ]]; then
   mount_label="$DEFAULT_MOUNT_LABEL"
 fi
 MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${mount_label}.plist"
+NETWORK_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${NETWORK_WATCH_LABEL}.plist"
 
 cat >"$MOUNT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -361,6 +381,38 @@ PLIST
 launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------------------
+# Network reconnect watcher (retry pending uploads when internet returns)
+# ---------------------------------------------------------------------------
+cat >"$NETWORK_WATCH_PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${NETWORK_WATCH_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${BIN_DIR}/ddump-network-watch.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/network-watch.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/network-watch.stderr.log</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+</dict>
+</plist>
+PLIST
+
+launchctl bootout "gui/${uid}" "$NETWORK_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/${uid}" "$NETWORK_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+
 echo ""
 echo "Installed DDump launch agent."
 echo "Main script: ${BIN_DIR}/ddump.sh"
@@ -371,4 +423,5 @@ echo "Config:      ${USER_CONFIG}"
 echo "Mac app:     ${APP_BUNDLE}"
 echo "LaunchAgent: ${PLIST_PATH}"
 echo "Mount agent: ${MOUNT_PLIST_PATH}"
+echo "Net watcher: ${NETWORK_WATCH_PLIST_PATH}"
 echo "Log file:    ${LOG_DIR}/ddump.log"
