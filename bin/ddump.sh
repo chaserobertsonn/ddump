@@ -1349,12 +1349,19 @@ check_post_move_ready() {
 
 check_directory_write_probe() {
   local dir="$1"
-  local probe_file
+  local probe_file_hidden probe_file_plain
   [[ -n "$dir" && -d "$dir" ]] || return 1
 
-  probe_file="${dir}/.ddump-write-test-${run_id}-$$"
-  if /usr/bin/touch "$probe_file" 2>/dev/null; then
-    /bin/rm -f "$probe_file" 2>/dev/null || true
+  probe_file_hidden="${dir}/.ddump-write-test-${run_id}-$$"
+  probe_file_plain="${dir}/ddump-write-test-${run_id}-$$"
+  if /usr/bin/touch "$probe_file_hidden" 2>/dev/null; then
+    /bin/rm -f "$probe_file_hidden" 2>/dev/null || true
+    return 0
+  fi
+
+  # Some sync providers reject hidden probe files from background processes.
+  if /usr/bin/touch "$probe_file_plain" 2>/dev/null; then
+    /bin/rm -f "$probe_file_plain" 2>/dev/null || true
     return 0
   fi
   return 1
@@ -2080,7 +2087,7 @@ db_file_has_local_copy() {
   local file_mtime="$5"
   db_available || return 1
   local count
-  count="$(/usr/bin/sqlite3 "$DB_FILE" "PRAGMA busy_timeout=5000; SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND source_root_rel=$(sql_quote "$root_rel") AND rel_path=$(sql_quote "$rel_path") AND source_size=$file_size AND source_mtime=$file_mtime AND status IN ('copied','organized','upload_pending','uploaded');" 2>>"$LOG_FILE" || echo 0)"
+  count="$(/usr/bin/sqlite3 -batch -noheader "$DB_FILE" "SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND source_root_rel=$(sql_quote "$root_rel") AND rel_path=$(sql_quote "$rel_path") AND source_size=$file_size AND source_mtime=$file_mtime AND status IN ('copied','organized','upload_pending','uploaded');" 2>>"$LOG_FILE" || echo 0)"
   [[ "${count:-0}" -gt 0 ]]
 }
 
@@ -2092,7 +2099,7 @@ db_file_retry_needed() {
   local file_mtime="$5"
   db_available || return 1
   local count
-  count="$(/usr/bin/sqlite3 "$DB_FILE" "PRAGMA busy_timeout=5000; SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND source_root_rel=$(sql_quote "$root_rel") AND rel_path=$(sql_quote "$rel_path") AND source_size=$file_size AND source_mtime=$file_mtime AND status IN ('copy_failed','verify_failed','needs_reinsert');" 2>>"$LOG_FILE" || echo 0)"
+  count="$(/usr/bin/sqlite3 -batch -noheader "$DB_FILE" "SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND source_root_rel=$(sql_quote "$root_rel") AND rel_path=$(sql_quote "$rel_path") AND source_size=$file_size AND source_mtime=$file_mtime AND status IN ('copy_failed','verify_failed','needs_reinsert');" 2>>"$LOG_FILE" || echo 0)"
   [[ "${count:-0}" -gt 0 ]]
 }
 
