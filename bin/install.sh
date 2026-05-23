@@ -5,6 +5,8 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 LABEL="com.ddump"
 OLD_LABEL="com.dfp.dump"
+DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
+OLD_MOUNT_LABEL="com.chase.rclone-gdrive"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -20,6 +22,7 @@ APP_BUNDLE="${HOME}/Applications/DDump.app"
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${LAUNCH_AGENT_DIR}/${LABEL}.plist"
 OLD_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_LABEL}.plist"
+OLD_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_MOUNT_LABEL}.plist"
 
 uid="$(id -u)"
 
@@ -43,6 +46,11 @@ if [[ -f "$OLD_PLIST_PATH" ]]; then
   launchctl bootout "gui/${uid}" "$OLD_PLIST_PATH" >/dev/null 2>&1 || true
   rm -f "$OLD_PLIST_PATH"
 fi
+if [[ -f "$OLD_MOUNT_PLIST_PATH" ]]; then
+  echo "Removing stale mount LaunchAgent: $OLD_MOUNT_LABEL"
+  launchctl bootout "gui/${uid}" "$OLD_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  rm -f "$OLD_MOUNT_PLIST_PATH"
+fi
 
 mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 
@@ -51,7 +59,8 @@ mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 # ---------------------------------------------------------------------------
 for s in ddump.sh ddump-trust.sh ddump-monitor.sh ddump-control.sh \
          ddump-settings.sh ddump-debug-snapshot.sh \
-         ddump-notify.sh ddump-cluster.sh ddump-calendar-lookup.sh; do
+         ddump-notify.sh ddump-cluster.sh ddump-calendar-lookup.sh \
+         rclone-gdrive-mount.sh; do
   if [[ -f "${PROJECT_DIR}/bin/${s}" ]]; then
     cp "${PROJECT_DIR}/bin/${s}" "${BIN_DIR}/${s}"
     chmod +x "${BIN_DIR}/${s}"
@@ -174,6 +183,11 @@ add_missing_key 'MIN_FREE_SPACE_GB' '"100"' "Minimum local staging free space re
 add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper command for starting/refreshing shared Finder mounts."
 add_missing_key 'FINDERSERVER_TIMER_CHECK_SECONDS' '"300"' "During upload, check timer this often."
 add_missing_key 'FINDERSERVER_TIMER_MIN_SECONDS' '"300"' "If timer is at/below this value, refresh it."
+add_missing_key 'GDRIVE_MOUNT_ENABLED' '"1"' "Enable DDump-managed rclone mount automation."
+add_missing_key 'GDRIVE_MOUNT_POINT' '"$HOME/GoogleDrive"' "Mounted cloud folder path used for uploads."
+add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDump."
+add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
+add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent label for DDump's mount helper."
 
 # v2 keys (new)
 add_missing_key 'TRUSTED_NAME_PREFIXES' '"DFP_"' "Volume name prefixes that auto-trust (comma-separated)."
@@ -231,6 +245,11 @@ fi
 if grep -q '^CANDIDATE_MODE="all"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^CANDIDATE_MODE="all"$/CANDIDATE_MODE="lookback"/' "$USER_CONFIG"
   echo "Updated CANDIDATE_MODE from \"all\" to \"lookback\" (recent-file import only)."
+fi
+
+if grep -q '^GDRIVE_MOUNT_LABEL="com.chase.rclone-gdrive"$' "$USER_CONFIG"; then
+  /usr/bin/sed -i '' 's/^GDRIVE_MOUNT_LABEL="com.chase.rclone-gdrive"$/GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"/' "$USER_CONFIG"
+  echo "Updated GDRIVE_MOUNT_LABEL to com.ddump.rclone-gdrive."
 fi
 
 # Default-off legacy UI
@@ -301,6 +320,44 @@ launchctl bootout "gui/${uid}" "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/${uid}" "$PLIST_PATH"
 launchctl kickstart -k "gui/${uid}/${LABEL}" >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------------------
+# Cloud mount LaunchAgent (packaged with DDump)
+# ---------------------------------------------------------------------------
+mount_label="$(/usr/bin/awk -F= '$1 == "GDRIVE_MOUNT_LABEL" { v=$2 } END { gsub(/^"|"$/, "", v); print v }' "$USER_CONFIG")"
+if [[ -z "$mount_label" ]]; then
+  mount_label="$DEFAULT_MOUNT_LABEL"
+fi
+MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${mount_label}.plist"
+
+cat >"$MOUNT_PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${mount_label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>${BIN_DIR}/rclone-gdrive-mount.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/rclone-gdrive.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/rclone-gdrive.stderr.log</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+</dict>
+</plist>
+PLIST
+
+launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+
 echo ""
 echo "Installed DDump launch agent."
 echo "Main script: ${BIN_DIR}/ddump.sh"
@@ -310,4 +367,5 @@ echo "Calendar:    ${BIN_DIR}/ddump-calendar-lookup.sh"
 echo "Config:      ${USER_CONFIG}"
 echo "Mac app:     ${APP_BUNDLE}"
 echo "LaunchAgent: ${PLIST_PATH}"
+echo "Mount agent: ${MOUNT_PLIST_PATH}"
 echo "Log file:    ${LOG_DIR}/ddump.log"

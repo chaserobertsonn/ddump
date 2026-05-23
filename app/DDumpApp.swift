@@ -118,14 +118,20 @@ final class AppState: ObservableObject {
   @Published var paused: Bool = false
   @Published var stopRequested: Bool = false
   @Published var ejectQueued: Bool = false
+  @Published var keepMountedRequested: Bool = false
   @Published var runActive: Bool = false
   @Published var pendingUploadCount: Int = 0
   @Published var localFreeGB: Int = 0
   @Published var stagingFolderCount: Int = 0
   @Published var lastUtilityMessage: String = ""
+  @Published var cloudMountActive: Bool = false
+  @Published var cloudServiceLoaded: Bool = false
+  @Published var cloudRcloneReady: Bool = false
+  @Published var cloudRemoteConfigured: Bool = false
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
+  private var statusTick: Int = 0
 
   deinit {
     timer?.invalidate()
@@ -143,12 +149,17 @@ final class AppState: ObservableObject {
       self?.refreshControlFlags()
       self?.refreshLockState()
       self?.refreshHealth()
+      self?.statusTick += 1
+      if (self?.statusTick ?? 0) % 5 == 0 {
+        self?.refreshCloudMountStatus()
+      }
     }
     // Keep Google Drive mounted while the DDump app is open.
     // When DDump closes, this refresh stops and finderserver's normal timer can unmount.
     mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
       self?.ensureUploadServerForAppSession()
     }
+    refreshCloudMountStatus()
   }
 
   func refreshStatus() {
@@ -179,10 +190,12 @@ final class AppState: ObservableObject {
     let p = fm.fileExists(atPath: DDumpPaths.pauseFlag.path)
     let s = fm.fileExists(atPath: DDumpPaths.stopFlag.path)
     let e = fm.fileExists(atPath: DDumpPaths.ejectNowFlag.path)
+    let k = fm.fileExists(atPath: DDumpPaths.keepMountedFlag.path)
     DispatchQueue.main.async {
       self.paused = p
       self.stopRequested = s
       self.ejectQueued = e
+      self.keepMountedRequested = k
     }
   }
 
@@ -232,6 +245,34 @@ final class AppState: ObservableObject {
       }
     }
     return get("POST_MOVE_ROOT", default: "\(NSHomeDirectory())/Temp")
+  }
+
+  var gdriveMountEnabledForUI: Bool {
+    get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
+  }
+
+  var gdriveMountPointForUI: String {
+    get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
+  }
+
+  var gdriveMountLabelForUI: String {
+    get("GDRIVE_MOUNT_LABEL", default: "com.ddump.rclone-gdrive")
+  }
+
+  var gdriveRemoteForUI: String {
+    get("GDRIVE_REMOTE", default: "combined:")
+  }
+
+  var rcloneBinForUI: String {
+    get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
+  }
+
+  func pathUsesGDriveMount(_ path: String) -> Bool {
+    let expandedMount = NSString(string: gdriveMountPointForUI).expandingTildeInPath
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let expandedPath = NSString(string: path).expandingTildeInPath
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    return expandedPath == expandedMount || expandedPath.hasPrefix(expandedMount + "/")
   }
 
   func set(_ key: String, _ value: String) {
@@ -287,6 +328,14 @@ final class AppState: ObservableObject {
     ejectQueued = true
   }
 
+  func doNotEject() {
+    ensureControlDir()
+    FileManager.default.createFile(atPath: DDumpPaths.keepMountedFlag.path, contents: Data())
+    try? FileManager.default.removeItem(at: DDumpPaths.ejectNowFlag)
+    keepMountedRequested = true
+    ejectQueued = false
+  }
+
   func retryPendingUploads() {
     guard FileManager.default.fileExists(atPath: DDumpPaths.scriptFile.path) else {
       lastUtilityMessage = "DDump script not installed."
@@ -339,29 +388,35 @@ final class AppState: ObservableObject {
   }
 
   func ensureUploadServerForAppSession() {
-    let uploadRoot = uploadRootForUI
-    guard uploadRoot.contains("/GoogleDrive") else { return }
+    guard gdriveMountEnabledForUI else { return }
+    guard pathUsesGDriveMount(uploadRootForUI) else { return }
+    startCloudMount(userMessagePrefix: "Upload server")
+  }
 
+  func startCloudMount(userMessagePrefix: String = "Cloud mount") {
+    let mountPoint = gdriveMountPointForUI
+    let mountLabel = gdriveMountLabelForUI
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
       task.arguments = ["-lc", """
-if /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "; then
+mount_point=\(shellDoubleQuoted(mountPoint))
+mount_label=\(shellDoubleQuoted(mountLabel))
+if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
   exit 0
 fi
 if [ -x "${HOME}/.local/bin/finderserver" ]; then
   "${HOME}/.local/bin/finderserver" on >/dev/null 2>&1 || true
 fi
 uid="$(/usr/bin/id -u)"
-plist="${HOME}/Library/LaunchAgents/com.chase.rclone-gdrive.plist"
-label="com.chase.rclone-gdrive"
-/bin/mkdir -p "${HOME}/GoogleDrive"
+plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+/bin/mkdir -p "${mount_point}"
 if [ -f "$plist" ]; then
   /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
-  /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+  /bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
 fi
 for i in {1..30}; do
-  if /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "; then
+  if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
     exit 0
   fi
   /bin/sleep 1
@@ -372,20 +427,138 @@ exit 1
         try task.run()
       } catch {
         DispatchQueue.main.async {
-          self.lastUtilityMessage = "Could not start upload server: \(error.localizedDescription)"
+          self.lastUtilityMessage = "Could not start cloud mount: \(error.localizedDescription)"
         }
         return
       }
       task.waitUntilExit()
-      if task.terminationStatus == 0 {
-        DispatchQueue.main.async {
-          self.lastUtilityMessage = "Upload server is on and ready."
+      DispatchQueue.main.async {
+        if task.terminationStatus == 0 {
+          self.lastUtilityMessage = "\(userMessagePrefix) is on and ready."
+        } else {
+          self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
         }
-      } else {
-        DispatchQueue.main.async {
-          self.lastUtilityMessage = "Upload server did not become ready."
-        }
+        self.refreshCloudMountStatus()
       }
+    }
+  }
+
+  func stopCloudMount() {
+    let mountPoint = gdriveMountPointForUI
+    let mountLabel = gdriveMountLabelForUI
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+mount_point=\(shellDoubleQuoted(mountPoint))
+mount_label=\(shellDoubleQuoted(mountLabel))
+uid="$(/usr/bin/id -u)"
+if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+  /usr/sbin/diskutil unmount "${mount_point}" >/dev/null 2>&1 || /sbin/umount -f "${mount_point}" >/dev/null 2>&1 || true
+fi
+/bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+exit 0
+"""]
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not stop cloud mount: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      DispatchQueue.main.async {
+        self.lastUtilityMessage = "Cloud mount stop requested."
+        self.refreshCloudMountStatus()
+      }
+    }
+  }
+
+  func refreshCloudMountStatus() {
+    let mountPoint = gdriveMountPointForUI
+    let mountLabel = gdriveMountLabelForUI
+    let remote = gdriveRemoteForUI
+    let rcloneBin = rcloneBinForUI
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+set +e
+mount_point=\(shellDoubleQuoted(mountPoint))
+mount_label=\(shellDoubleQuoted(mountLabel))
+remote=\(shellDoubleQuoted(remote))
+rclone_bin=\(shellDoubleQuoted(rcloneBin))
+
+if [ -x "$rclone_bin" ]; then
+  rclone="$rclone_bin"
+elif command -v rclone >/dev/null 2>&1; then
+  rclone="$(command -v rclone)"
+else
+  rclone=""
+fi
+
+if [ -n "$rclone" ]; then
+  echo "rclone_ready=1"
+  remote_name="${remote%%:*}:"
+  if "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "$remote_name"; then
+    echo "remote_configured=1"
+  else
+    echo "remote_configured=0"
+  fi
+else
+  echo "rclone_ready=0"
+  echo "remote_configured=0"
+fi
+
+if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+  echo "mount_active=1"
+else
+  echo "mount_active=0"
+fi
+
+uid="$(/usr/bin/id -u)"
+if /bin/launchctl print "gui/${uid}/${mount_label}" >/dev/null 2>&1; then
+  echo "service_loaded=1"
+else
+  echo "service_loaded=0"
+fi
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = Pipe()
+      do {
+        try task.run()
+      } catch {
+        return
+      }
+      task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      DispatchQueue.main.async {
+        self.cloudMountActive = parsed["mount_active"] == "1"
+        self.cloudServiceLoaded = parsed["service_loaded"] == "1"
+        self.cloudRcloneReady = parsed["rclone_ready"] == "1"
+        self.cloudRemoteConfigured = parsed["remote_configured"] == "1"
+      }
+    }
+  }
+
+  func openRcloneSetupInTerminal() {
+    let mountRemote = gdriveRemoteForUI
+    let remoteName = mountRemote.split(separator: ":").first.map(String.init) ?? "combined"
+    let cmd = "if command -v rclone >/dev/null 2>&1; then rclone config reconnect \(remoteName): || rclone config; else echo 'rclone not found'; fi"
+    let task = Process()
+    task.launchPath = "/usr/bin/osascript"
+    task.arguments = [
+      "-e",
+      "tell application \"Terminal\" to do script \(shellDoubleQuoted(cmd))"
+    ]
+    do {
+      try task.run()
+      lastUtilityMessage = "Opened Terminal for rclone setup."
+    } catch {
+      lastUtilityMessage = "Could not open Terminal for rclone setup."
     }
   }
 
@@ -615,6 +788,14 @@ struct ControlBar: View {
       .disabled(!state.runActive || state.stopRequested)
 
       Button {
+        state.doNotEject()
+      } label: {
+        Label("Do Not Eject", systemImage: "pin.slash.fill")
+      }
+      .controlSize(.large)
+      .disabled(!state.runActive)
+
+      Button {
         state.ejectNow()
       } label: {
         Label("Eject after this file", systemImage: "eject.fill")
@@ -627,6 +808,10 @@ struct ControlBar: View {
 
       if state.ejectQueued {
         Label("Eject queued", systemImage: "eject.circle")
+          .foregroundColor(.orange)
+          .font(.caption)
+      } else if state.keepMountedRequested {
+        Label("Will stay mounted", systemImage: "pin.slash.circle")
           .foregroundColor(.orange)
           .font(.caption)
       } else if state.stopRequested {
@@ -924,6 +1109,8 @@ struct SettingsView: View {
         .tabItem { Label("Naming", systemImage: "textformat") }
       DetectionSettings()
         .tabItem { Label("Detection", systemImage: "camera") }
+      CloudSettings()
+        .tabItem { Label("Cloud", systemImage: "icloud") }
       CalendarSettings()
         .tabItem { Label("Calendar", systemImage: "calendar") }
       AppearanceSettings()
@@ -1177,6 +1364,81 @@ struct DetectionSettings: View {
       ntfyCardEjected = (state.get("NTFY_NOTIFY_CARD_EJECTED", default: "1") == "1")
       ntfyUploadStarted = (state.get("NTFY_NOTIFY_UPLOAD_STARTED", default: "0") == "1")
       ntfyUploadComplete = (state.get("NTFY_NOTIFY_UPLOAD_COMPLETE", default: "1") == "1")
+    }
+  }
+}
+
+struct CloudSettings: View {
+  @EnvironmentObject var state: AppState
+  @State private var enabled: Bool = true
+  @State private var mountPoint: String = ""
+  @State private var remote: String = ""
+  @State private var rcloneBin: String = ""
+  @State private var mountLabel: String = ""
+
+  var body: some View {
+    Form {
+      Section("Connection") {
+        Toggle("Enable DDump-managed cloud mount", isOn: $enabled)
+          .onChange(of: enabled) { _, v in
+            state.set("GDRIVE_MOUNT_ENABLED", v ? "1" : "0")
+            state.refreshCloudMountStatus()
+          }
+        TextField("rclone remote (example: combined:)", text: $remote, onCommit: {
+          state.set("GDRIVE_REMOTE", remote)
+          state.refreshCloudMountStatus()
+        })
+        TextField("Mount point folder", text: $mountPoint, onCommit: {
+          state.set("GDRIVE_MOUNT_POINT", mountPoint)
+          state.refreshCloudMountStatus()
+        })
+        TextField("rclone binary path", text: $rcloneBin, onCommit: {
+          state.set("RCLONE_BIN", rcloneBin)
+          state.refreshCloudMountStatus()
+        })
+        TextField("Mount service label", text: $mountLabel, onCommit: {
+          state.set("GDRIVE_MOUNT_LABEL", mountLabel)
+          state.refreshCloudMountStatus()
+        })
+      }
+
+      Section("Status") {
+        Label(state.cloudRcloneReady ? "rclone found" : "rclone missing", systemImage: state.cloudRcloneReady ? "checkmark.circle.fill" : "xmark.circle.fill")
+          .foregroundColor(state.cloudRcloneReady ? .green : .orange)
+        Label(state.cloudRemoteConfigured ? "remote configured" : "remote not configured", systemImage: state.cloudRemoteConfigured ? "checkmark.circle.fill" : "xmark.circle.fill")
+          .foregroundColor(state.cloudRemoteConfigured ? .green : .orange)
+        Label(state.cloudServiceLoaded ? "mount service loaded" : "mount service not loaded", systemImage: state.cloudServiceLoaded ? "checkmark.circle.fill" : "xmark.circle.fill")
+          .foregroundColor(state.cloudServiceLoaded ? .green : .orange)
+        Label(state.cloudMountActive ? "mount is active" : "mount is not active", systemImage: state.cloudMountActive ? "checkmark.circle.fill" : "xmark.circle.fill")
+          .foregroundColor(state.cloudMountActive ? .green : .orange)
+      }
+
+      Section("Actions") {
+        HStack(spacing: 10) {
+          Button("Start mount") { state.startCloudMount() }
+          Button("Stop mount") { state.stopCloudMount() }
+          Button("Re-check status") { state.refreshCloudMountStatus() }
+        }
+        HStack(spacing: 10) {
+          Button("Open rclone setup in Terminal") { state.openRcloneSetupInTerminal() }
+          Button("Open mount folder") { openInFinder(state.gdriveMountPointForUI) }
+        }
+      }
+
+      Section {
+        Text("Friend install flow: run DDump installer, open this tab, connect remote in Terminal once, then set Upload destination inside your mounted cloud folder.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+      }
+    }
+    .formStyle(.grouped)
+    .onAppear {
+      enabled = state.get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
+      mountPoint = state.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
+      remote = state.get("GDRIVE_REMOTE", default: "combined:")
+      rcloneBin = state.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
+      mountLabel = state.get("GDRIVE_MOUNT_LABEL", default: "com.ddump.rclone-gdrive")
+      state.refreshCloudMountStatus()
     }
   }
 }

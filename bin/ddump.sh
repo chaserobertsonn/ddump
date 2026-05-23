@@ -285,6 +285,11 @@ FINDERSERVER_BIN="${HOME}/.local/bin/finderserver"
 FINDERSERVER_TIMER_CHECK_SECONDS="300"
 FINDERSERVER_TIMER_MIN_SECONDS="300"
 FINDERSERVER_GUARD_PID_FILE="${STATE_DIR}/finderserver-guard.pid"
+GDRIVE_MOUNT_ENABLED="1"
+GDRIVE_MOUNT_POINT="${HOME}/GoogleDrive"
+GDRIVE_REMOTE="combined:"
+RCLONE_BIN="${HOME}/bin/rclone"
+GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
 NTFY_TOPIC="dfp-chase-scheduler"
 NTFY_NOTIFY_STAGING_STARTED="0"
 NTFY_NOTIFY_CARD_EJECTED="1"
@@ -654,7 +659,8 @@ build_video_post_move_target_dir() {
 
 path_uses_gdrive_mount() {
   local path="$1"
-  local gdrive="${HOME}/GoogleDrive"
+  local gdrive="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
+  [[ "${GDRIVE_MOUNT_ENABLED:-1}" == "1" ]] || return 1
   case "$path" in
     "$gdrive"|"$gdrive"/*) return 0 ;;
     *) return 1 ;;
@@ -662,7 +668,13 @@ path_uses_gdrive_mount() {
 }
 
 gdrive_mount_active() {
-  /sbin/mount | /usr/bin/grep -q " on ${HOME}/GoogleDrive "
+  local mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
+  /sbin/mount | /usr/bin/grep -q " on ${mount_dir} "
+}
+
+gdrive_mount_plist_path() {
+  local label="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"
+  printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$label"
 }
 
 finderserver_available() {
@@ -773,12 +785,17 @@ ensure_gdrive_mount_for_post_move() {
   local target_root="$1"
   path_uses_gdrive_mount "$target_root" || return 0
   gdrive_mount_active && return 0
+  if [[ "${GDRIVE_MOUNT_ENABLED:-1}" != "1" ]]; then
+    move_last_status="blocked"
+    move_last_detail="Cloud mount disabled (GDRIVE_MOUNT_ENABLED=0)"
+    return 1
+  fi
 
   local uid plist label mount_dir
   uid="$(/usr/bin/id -u)"
-  plist="${HOME}/Library/LaunchAgents/com.chase.rclone-gdrive.plist"
-  label="com.chase.rclone-gdrive"
-  mount_dir="${HOME}/GoogleDrive"
+  plist="$(gdrive_mount_plist_path)"
+  label="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"
+  mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
   if [[ ! -f "$plist" ]]; then
     move_last_status="blocked"
     move_last_detail="Google Drive mount agent missing: ${plist}"
@@ -816,8 +833,8 @@ stop_gdrive_mount_if_started() {
   stop_finderserver_timer_guard
   local uid label mount_dir
   uid="$(/usr/bin/id -u)"
-  label="com.chase.rclone-gdrive"
-  mount_dir="${HOME}/GoogleDrive"
+  label="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"
+  mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
 
   if gdrive_mount_active; then
     if /usr/sbin/diskutil unmount "$mount_dir" >/dev/null 2>&1; then
@@ -1008,7 +1025,7 @@ move_queued_paths_to_post_target() {
     log "Post-move preflight write probe failed for ${vol_name}; continuing and attempting real copy anyway: ${target_dir}"
   fi
 
-  local moved_count=0
+  local copied_count=0
   local failed_count=0
   local src_path base_name dest_path
   while IFS= read -r src_path || [[ -n "$src_path" ]]; do
@@ -1021,19 +1038,17 @@ move_queued_paths_to_post_target() {
     db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
 
     if [[ "$split_video_enabled" != "1" ]] && queue_entry_already_uploaded "$src_path" "$target_dir"; then
-      /bin/rm -rf "$src_path"
       db_update_upload_job_status "$src_path" "uploaded" "0" "0" "already complete on destination"
       db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-      moved_count=$((moved_count + 1))
+      copied_count=$((copied_count + 1))
       continue
     fi
 
     if [[ "$split_video_enabled" == "1" && -d "$src_path" ]]; then
       if copy_bucket_split_photo_video "$src_path" "$dest_path" "${video_target_dir}/${base_name}"; then
-        /bin/rm -rf "$src_path"
         db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
         db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-        moved_count=$((moved_count + 1))
+        copied_count=$((copied_count + 1))
       else
         failed_count=$((failed_count + 1))
         db_update_upload_job_status "$src_path" "failed" "0" "0" "photo/video split copy failed"
@@ -1047,15 +1062,13 @@ move_queued_paths_to_post_target() {
       # Merge into existing folder/file destination to avoid clobbering.
       if [[ -d "$src_path" && -d "$dest_path" ]]; then
         if copy_path_to_post_target "$src_path" "$dest_path"; then
-          /bin/rm -rf "$src_path"
           db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
           db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-          moved_count=$((moved_count + 1))
+          copied_count=$((copied_count + 1))
         elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
-          /bin/rm -rf "$src_path"
           db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
           db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-          moved_count=$((moved_count + 1))
+          copied_count=$((copied_count + 1))
         else
           failed_count=$((failed_count + 1))
           db_update_upload_job_status "$src_path" "failed" "0" "0" "merge copy failed"
@@ -1072,15 +1085,13 @@ move_queued_paths_to_post_target() {
     fi
 
     if copy_path_to_post_target "$src_path" "$dest_path"; then
-      /bin/rm -rf "$src_path"
       db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
       db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-      moved_count=$((moved_count + 1))
+      copied_count=$((copied_count + 1))
     elif queue_entry_already_uploaded "$src_path" "$target_dir"; then
-      /bin/rm -rf "$src_path"
       db_update_upload_job_status "$src_path" "uploaded" "0" "0" "verified after retry"
       db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
-      moved_count=$((moved_count + 1))
+      copied_count=$((copied_count + 1))
     else
       failed_count=$((failed_count + 1))
       db_update_upload_job_status "$src_path" "failed" "0" "0" "copy to destination failed"
@@ -1090,17 +1101,17 @@ move_queued_paths_to_post_target() {
   done <"$queue_file"
 
   if [[ "$failed_count" -eq 0 ]]; then
-    log "Post-move complete for ${vol_name}: moved=${moved_count}, target=${target_dir}"
-    notify "DDump" "${vol_name}: moved ${moved_count} folder(s) to Google Drive."
+    log "Post-transfer complete for ${vol_name}: copied=${copied_count}, target=${target_dir}"
+    notify "DDump" "${vol_name}: copied ${copied_count} folder(s) to destination (staging kept)."
     move_last_status="success"
-    move_last_detail="moved=${moved_count}"
+    move_last_detail="copied=${copied_count}"
     return 0
   fi
 
-  log "Post-move partial for ${vol_name}: moved=${moved_count}, failed=${failed_count}, target=${target_dir}"
-  notify "DDump" "${vol_name}: post-move had ${failed_count} error(s)."
+  log "Post-transfer partial for ${vol_name}: copied=${copied_count}, failed=${failed_count}, target=${target_dir}"
+  notify "DDump" "${vol_name}: destination copy had ${failed_count} error(s)."
   move_last_status="partial"
-  move_last_detail="moved=${moved_count}, failed=${failed_count}"
+  move_last_detail="copied=${copied_count}, failed=${failed_count}"
   return 1
 }
 
@@ -2714,6 +2725,55 @@ bump_pending_retry() {
   fi
 }
 
+pending_file_contains_source_path() {
+  local source_path="$1"
+  local pending_file row_mode row_dest row_file
+  for pending_file in "$PENDING_DIR"/pending.*.tsv; do
+    [[ -f "$pending_file" ]] || continue
+    while IFS=$'\t' read -r row_mode row_dest row_file _ || [[ -n "$row_mode$row_dest$row_file" ]]; do
+      if [[ -z "$row_file" ]]; then
+        row_file="$row_dest"
+      fi
+      [[ "$row_file" == "$source_path" ]] && return 0
+    done <"$pending_file"
+  done
+  return 1
+}
+
+seed_pending_from_db_incomplete() {
+  db_available || return 0
+
+  local resume_file seeded_count
+  resume_file="$(/usr/bin/mktemp "${PENDING_DIR}/pending.resume-db.${run_id}.XXXXXX.tsv")"
+  seeded_count=0
+
+  {
+    /usr/bin/sqlite3 -separator $'\t' "$DB_FILE" \
+      "SELECT COALESCE(target_dir,''), COALESCE(local_path,''), status, COALESCE(attempts,0), COALESCE(next_retry_epoch,0) FROM upload_jobs WHERE status IN ('pending','retry_wait','failed','uploading','needs_reinsert') ORDER BY updated_at ASC;" \
+      2>>"$LOG_FILE" \
+      | while IFS=$'\t' read -r row_dest row_file row_status row_attempts row_next || [[ -n "$row_dest$row_file$row_status" ]]; do
+          [[ -n "$row_dest" && -n "$row_file" ]] || continue
+          if pending_file_contains_source_path "$row_file"; then
+            continue
+          fi
+          if [[ ! -e "$row_file" ]]; then
+            db_update_upload_job_status "$row_file" "needs_reinsert" "${row_attempts:-0}" "${row_next:-0}" "local staged file missing"
+            db_mark_media_needs_reinsert_by_local_path "$row_file" "local staged file missing before resume"
+            continue
+          fi
+          /usr/bin/printf 'queued\t%s\t%s\t%s\t%s\n' "$row_dest" "$row_file" "${row_attempts:-0}" "${row_next:-0}" >>"$resume_file"
+        done
+  } || true
+
+  if [[ -s "$resume_file" ]]; then
+    seeded_count="$(/usr/bin/wc -l <"$resume_file" | /usr/bin/awk '{print $1}')"
+    log "Seeded ${seeded_count} pending upload row(s) from SQLite recovery."
+    pending_recovery_touched=1
+  else
+    /bin/rm -f "$resume_file"
+  fi
+}
+
 recover_pending_imports() {
   local pending_file
   for pending_file in "$PENDING_DIR"/pending.*.tsv; do
@@ -2823,6 +2883,8 @@ recover_pending_imports() {
 
 # ----- end folder-naming helpers ---------------------------------------------
 
+set_status_phase "starting" "Checking incomplete sessions before new card import."
+seed_pending_from_db_incomplete
 recover_pending_imports
 
 run_day_folder=""
@@ -3302,7 +3364,11 @@ for vol_path in /Volumes/*; do
         friendly_target="$(effective_post_move_root)"
       fi
       write_upload_receipt "$vol_name" "success" "$friendly_target" "$post_move_queue_file"
-      friendly_target_short="${friendly_target##*/GoogleDrive/}"
+      if path_uses_gdrive_mount "$friendly_target"; then
+        friendly_target_short="${friendly_target#${GDRIVE_MOUNT_POINT%/}/}"
+      else
+        friendly_target_short="$friendly_target"
+      fi
       /bin/rm -f "$pending_imports_file"
       notify "DDump" "✅ ${vol_name}: ${imported_this_volume} files uploaded to ${friendly_target_short}" done
       ntfy_notify "upload_complete" "DDump: upload complete" "${vol_name}: uploaded ${imported_this_volume} file(s) to ${friendly_target_short}."

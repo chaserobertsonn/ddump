@@ -1,10 +1,53 @@
 #!/bin/zsh
-# Mounts Google Drive at ~/GoogleDrive via macFUSE.
-# Low-memory profile intended for DDump uploads and occasional Finder checks.
+# Mounts a configured rclone remote for DDump uploads.
 
-PATH=$HOME/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
-MOUNT="$HOME/GoogleDrive"
-LOG="$HOME/Library/Logs/rclone-gdrive.log"
+set -euo pipefail
+
+PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+APP_SUPPORT_DIR="$HOME/Library/Application Support/DDump"
+CONFIG_FILE="$APP_SUPPORT_DIR/config.env"
+DEFAULT_CONFIG_FILE="${0:A:h}/../config/config.env"
+LOG_DIR="$APP_SUPPORT_DIR/logs"
+
+# Defaults (overridden by config files)
+GDRIVE_MOUNT_ENABLED="1"
+GDRIVE_MOUNT_POINT="$HOME/GoogleDrive"
+GDRIVE_REMOTE="combined:"
+RCLONE_BIN="$HOME/bin/rclone"
+LOG="$LOG_DIR/rclone-gdrive.log"
+
+if [[ -f "$DEFAULT_CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$DEFAULT_CONFIG_FILE"
+fi
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+
+mkdir -p "$LOG_DIR"
+MOUNT="$GDRIVE_MOUNT_POINT"
+REMOTE="$GDRIVE_REMOTE"
+
+if [[ "${GDRIVE_MOUNT_ENABLED:-1}" != "1" ]]; then
+  echo "$(date)  mount skipped: GDRIVE_MOUNT_ENABLED=${GDRIVE_MOUNT_ENABLED}" >> "$LOG"
+  exit 0
+fi
+
+if [[ -z "$MOUNT" || -z "$REMOTE" ]]; then
+  echo "$(date)  mount skipped: missing GDRIVE_MOUNT_POINT or GDRIVE_REMOTE" >> "$LOG"
+  exit 1
+fi
+
+if [[ -n "${RCLONE_BIN:-}" && -x "$RCLONE_BIN" ]]; then
+  RCLONE="$RCLONE_BIN"
+elif command -v rclone >/dev/null 2>&1; then
+  RCLONE="$(command -v rclone)"
+else
+  echo "$(date)  mount failed: rclone binary not found (set RCLONE_BIN)." >> "$LOG"
+  exit 1
+fi
 
 mkdir -p "$MOUNT"
 
@@ -24,8 +67,8 @@ if find "$MOUNT" -mindepth 1 -maxdepth 1 \
   exit 1
 fi
 
-echo "$(date)  starting rclone mount (macFUSE, low-memory profile)" >> "$LOG"
-exec "$HOME/bin/rclone" mount combined: "$MOUNT" \
+echo "$(date)  starting rclone mount remote=$REMOTE mount=$MOUNT binary=$RCLONE" >> "$LOG"
+exec "$RCLONE" mount "$REMOTE" "$MOUNT" \
   --vfs-cache-mode writes \
   --vfs-cache-max-size 8G \
   --vfs-cache-max-age 6h \
