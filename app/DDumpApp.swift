@@ -248,23 +248,23 @@ final class AppState: ObservableObject {
   }
 
   var gdriveMountEnabledForUI: Bool {
-    get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
+    return self.get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
   }
 
   var gdriveMountPointForUI: String {
-    get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
+    return self.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
   }
 
   var gdriveMountLabelForUI: String {
-    get("GDRIVE_MOUNT_LABEL", default: "com.ddump.rclone-gdrive")
+    return self.get("GDRIVE_MOUNT_LABEL", default: "com.ddump.rclone-gdrive")
   }
 
   var gdriveRemoteForUI: String {
-    get("GDRIVE_REMOTE", default: "combined:")
+    return self.get("GDRIVE_REMOTE", default: "combined:")
   }
 
   var rcloneBinForUI: String {
-    get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
+    return self.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
   }
 
   func pathUsesGDriveMount(_ path: String) -> Bool {
