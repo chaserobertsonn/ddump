@@ -238,7 +238,7 @@ final class AppState: ObservableObject {
   }
 
   var sqliteMemoryEnabled: Bool {
-    get("DB_ENABLED", default: "0") == "1"
+    return get("DB_ENABLED", default: "0") == "1"
   }
 
   func preferredColorScheme() -> ColorScheme? {
