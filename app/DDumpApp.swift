@@ -471,12 +471,50 @@ fi
 uid="$(/usr/bin/id -u)"
 plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
 /bin/mkdir -p "${mount_point}"
- /bin/mkdir -p "${HOME}/Library/Application Support/DDump/state"
+/bin/mkdir -p "${HOME}/Library/Application Support/DDump/state"
+lock_pid_file="${lock_dir}/pid"
 if ! /bin/mkdir "${lock_dir}" >/dev/null 2>&1; then
-  # Another mount worker is already trying. Avoid parallel retries.
-  exit 0
+  stale_lock=0
+  lock_pid="$(/bin/cat "${lock_pid_file}" 2>/dev/null || true)"
+  if [ -z "${lock_pid}" ]; then
+    stale_lock=1
+  elif ! echo "${lock_pid}" | /usr/bin/grep -Eq '^[0-9]+$'; then
+    stale_lock=1
+  elif ! /bin/kill -0 "${lock_pid}" >/dev/null 2>&1; then
+    stale_lock=1
+  fi
+  if [ "${stale_lock}" = "0" ]; then
+    lock_mtime="$(/usr/bin/stat -f '%m' "${lock_dir}" 2>/dev/null || echo 0)"
+    now_epoch="$(/bin/date '+%s')"
+    if echo "${lock_mtime}" | /usr/bin/grep -Eq '^[0-9]+$'; then
+      if [ $((now_epoch - lock_mtime)) -gt 180 ]; then
+        stale_lock=1
+      fi
+    fi
+  fi
+  if [ "${stale_lock}" = "1" ]; then
+    /bin/rm -f "${lock_pid_file}" >/dev/null 2>&1 || true
+    /bin/rmdir "${lock_dir}" >/dev/null 2>&1 || true
+    /bin/mkdir "${lock_dir}" >/dev/null 2>&1 || true
+  fi
 fi
-cleanup_lock() { /bin/rmdir "${lock_dir}" >/dev/null 2>&1 || true; }
+if ! [ -d "${lock_dir}" ]; then
+  # Another mount worker is active. Wait for it to finish instead of exiting "success".
+  i=0
+  while [ "$i" -lt "$wait_seconds" ]; do
+    if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+      exit 0
+    fi
+    /bin/sleep 1
+    i=$((i+1))
+  done
+  exit 1
+fi
+/bin/echo "$$" > "${lock_pid_file}"
+cleanup_lock() {
+  /bin/rm -f "${lock_pid_file}" >/dev/null 2>&1 || true
+  /bin/rmdir "${lock_dir}" >/dev/null 2>&1 || true
+}
 trap cleanup_lock EXIT
 
 if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist" ]; then
@@ -785,6 +823,131 @@ echo "checked_at=$(/bin/date '+%Y-%m-%d %H:%M:%S')"
     }
   }
 
+  func installRcloneViaApp() {
+    let configuredBin = rcloneBinForUI
+    setCloudAction(true, "Installing rclone…")
+    lastUtilityMessage = "Installing rclone…"
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+set +e
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+configured_bin=\(shellDoubleQuoted(configuredBin))
+
+expand_user_path() {
+  local raw="$1"
+  raw="${raw/#\\$HOME/$HOME}"
+  raw="${raw/#$HOME/$HOME}"
+  raw="${raw/#\\~/$HOME}"
+  printf '%s' "$raw"
+}
+
+emit_success() {
+  local path="$1"
+  echo "install_ok=1"
+  echo "rclone_path=$path"
+  echo "install_message=rclone ready at $path"
+  exit 0
+}
+
+emit_fail() {
+  local msg="$1"
+  echo "install_ok=0"
+  echo "install_message=$msg"
+  exit 1
+}
+
+configured_bin="$(expand_user_path "$configured_bin")"
+candidate=""
+
+if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
+  candidate="$configured_bin"
+fi
+
+if [ -z "$candidate" ] && command -v rclone >/dev/null 2>&1; then
+  candidate="$(command -v rclone)"
+fi
+
+if [ -z "$candidate" ] && command -v brew >/dev/null 2>&1; then
+  brew install rclone >/tmp/ddump-rclone-install.log 2>&1 || true
+  if command -v rclone >/dev/null 2>&1; then
+    candidate="$(command -v rclone)"
+  fi
+fi
+
+if [ -z "$candidate" ]; then
+  arch="$(/usr/bin/uname -m)"
+  case "$arch" in
+    arm64) archive="rclone-current-osx-arm64.zip" ;;
+    x86_64) archive="rclone-current-osx-amd64.zip" ;;
+    *) emit_fail "Unsupported Mac architecture: $arch" ;;
+  esac
+
+  tmpdir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ddump-rclone.XXXXXX")"
+  if [ -z "$tmpdir" ] || [ ! -d "$tmpdir" ]; then
+    emit_fail "Could not create temp folder for rclone install."
+  fi
+  zip_path="$tmpdir/$archive"
+  url="https://downloads.rclone.org/${archive}"
+  /usr/bin/curl -fsSL "$url" -o "$zip_path" || emit_fail "Download failed for ${url}"
+  /usr/bin/unzip -q "$zip_path" -d "$tmpdir" || emit_fail "Could not unzip downloaded rclone package."
+  extracted_dir="$(/usr/bin/find "$tmpdir" -maxdepth 1 -type d -name "rclone-v*" | /usr/bin/head -n 1)"
+  if [ -z "$extracted_dir" ] || [ ! -x "$extracted_dir/rclone" ]; then
+    emit_fail "Downloaded rclone package did not contain a runnable binary."
+  fi
+  /bin/mkdir -p "${HOME}/bin" || emit_fail "Could not create ${HOME}/bin."
+  /bin/cp "$extracted_dir/rclone" "${HOME}/bin/rclone" || emit_fail "Could not copy rclone into ${HOME}/bin."
+  /bin/chmod +x "${HOME}/bin/rclone" || emit_fail "Could not mark ${HOME}/bin/rclone executable."
+  candidate="${HOME}/bin/rclone"
+fi
+
+if [ ! -x "$candidate" ]; then
+  emit_fail "rclone install finished but executable was not found."
+fi
+
+"$candidate" version >/dev/null 2>&1 || emit_fail "rclone installed, but version check failed."
+emit_success "$candidate"
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = pipe
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          self.lastUtilityMessage = "Could not start rclone install: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      let installOK = task.terminationStatus == 0 && parsed["install_ok"] == "1"
+      let installMessage = parsed["install_message"] ?? ""
+      let installedPath = parsed["rclone_path"] ?? ""
+      DispatchQueue.main.async {
+        self.cloudActionInProgress = false
+        self.cloudActionMessage = ""
+        if installOK {
+          if !installedPath.isEmpty {
+            self.set("RCLONE_BIN", installedPath)
+          }
+          self.lastUtilityMessage = installMessage.isEmpty ? "rclone installed." : installMessage
+          self.refreshCloudMountStatus(showProgress: false)
+        } else {
+          if installMessage.isEmpty {
+            self.lastUtilityMessage = "rclone install failed. Check internet connection, then retry."
+          } else {
+            self.lastUtilityMessage = installMessage
+          }
+        }
+      }
+    }
+  }
+
   func openNetworkVolumePrivacySettings() {
     let candidates = [
       "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
@@ -819,7 +982,29 @@ echo "checked_at=$(/bin/date '+%Y-%m-%d %H:%M:%S')"
   func openRcloneSetupInTerminal() {
     let mountRemote = gdriveRemoteForUI
     let remoteName = mountRemote.split(separator: ":").first.map(String.init) ?? "combined"
-    let cmd = "if command -v rclone >/dev/null 2>&1; then rclone config reconnect \(remoteName): || rclone config; else echo 'rclone not found'; fi"
+    let configuredBin = rcloneBinForUI
+    let cmd = """
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+configured_bin=\(shellDoubleQuoted(configuredBin))
+remote_name=\(shellDoubleQuoted(remoteName))
+expand_user_path() {
+  local raw="$1"
+  raw="${raw/#\\$HOME/$HOME}"
+  raw="${raw/#$HOME/$HOME}"
+  raw="${raw/#\\~/$HOME}"
+  printf '%s' "$raw"
+}
+configured_bin="$(expand_user_path "$configured_bin")"
+if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
+  rclone="$configured_bin"
+elif command -v rclone >/dev/null 2>&1; then
+  rclone="$(command -v rclone)"
+else
+  echo "rclone not found. Use Install rclone in DDump Cloud settings first."
+  exit 1
+fi
+"$rclone" config reconnect "${remote_name}:" || "$rclone" config
+"""
     let task = Process()
     task.launchPath = "/usr/bin/osascript"
     task.arguments = [
@@ -2274,6 +2459,13 @@ struct CloudSettings: View {
               state.hardRestartCloudMount()
             } label: {
               Label("Hard restart mount", systemImage: "bolt.circle")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.installRcloneViaApp()
+            } label: {
+              Label("Install rclone", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
 
