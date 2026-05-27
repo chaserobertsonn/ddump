@@ -439,6 +439,17 @@ final class AppState: ObservableObject {
     return f.string(from: Date())
   }
 
+  private func showUtilityDialog(title: String, text: String) {
+    DispatchQueue.main.async {
+      let alert = NSAlert()
+      alert.alertStyle = .informational
+      alert.messageText = title
+      alert.informativeText = text
+      alert.addButton(withTitle: "OK")
+      alert.runModal()
+    }
+  }
+
   func startCloudMount(userMessagePrefix: String = "Cloud mount", showProgress: Bool = false, completion: ((Bool) -> Void)? = nil) {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
@@ -937,12 +948,20 @@ emit_success "$candidate"
           }
           self.lastUtilityMessage = installMessage.isEmpty ? "rclone installed." : installMessage
           self.refreshCloudMountStatus(showProgress: false)
+          self.showUtilityDialog(
+            title: "rclone ready",
+            text: self.lastUtilityMessage
+          )
         } else {
           if installMessage.isEmpty {
             self.lastUtilityMessage = "rclone install failed. Check internet connection, then retry."
           } else {
             self.lastUtilityMessage = installMessage
           }
+          self.showUtilityDialog(
+            title: "rclone install failed",
+            text: self.lastUtilityMessage
+          )
         }
       }
     }
@@ -2498,6 +2517,28 @@ struct CloudSettings: View {
             .buttonStyle(DDumpSecondaryButtonStyle())
           }
           .disabled(state.cloudActionInProgress)
+
+          if !state.lastUtilityMessage.isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+              Image(systemName: "info.circle.fill")
+                .foregroundColor(.ddumpPeach)
+                .font(.system(size: 14, weight: .semibold))
+              Text(state.lastUtilityMessage)
+                .font(DDumpFont.ui(12, weight: .medium))
+                .foregroundColor(.ddumpFG2)
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.ddumpSurface2)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.ddumpLine1, lineWidth: 1)
+            )
+          }
         }
 
         sectionHeader("Offline resume")
