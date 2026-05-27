@@ -135,6 +135,7 @@ final class AppState: ObservableObject {
   @Published var keepMountedRequested: Bool = false
   @Published var runActive: Bool = false
   @Published var pendingUploadCount: Int = 0
+  @Published var needsReinsertCount: Int = 0
   @Published var localFreeGB: Int = 0
   @Published var stagingFolderCount: Int = 0
   @Published var lastUtilityMessage: String = ""
@@ -242,8 +243,31 @@ final class AppState: ObservableObject {
         }.count
       } ?? 0
 
+    var needsReinsert = 0
+    if sqliteMemoryEnabled {
+      let dbPath = DDumpPaths.appSupport.appendingPathComponent("state/ddump.sqlite3").path
+      if fm.fileExists(atPath: dbPath) {
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = ["-lc", "/usr/bin/sqlite3 \(shellDoubleQuoted(dbPath)) \"SELECT COUNT(*) FROM media_files WHERE status='needs_reinsert';\" 2>/dev/null || echo 0"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do {
+          try task.run()
+          task.waitUntilExit()
+          let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
+          needsReinsert = Int(out) ?? 0
+        } catch {
+          needsReinsert = 0
+        }
+      }
+    }
+
     DispatchQueue.main.async {
       self.pendingUploadCount = pending
+      self.needsReinsertCount = needsReinsert
       self.localFreeGB = freeGB
       self.stagingFolderCount = staged
     }
@@ -450,6 +474,13 @@ final class AppState: ObservableObject {
     }
   }
 
+  var shouldWarnBeforeQuit: Bool {
+    if cloudActionInProgress { return true }
+    if runActive { return true }
+    if ["starting", "scanning", "importing", "stopping"].contains(phase) { return true }
+    return false
+  }
+
   func startCloudMount(userMessagePrefix: String = "Cloud mount", showProgress: Bool = false, completion: ((Bool) -> Void)? = nil) {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
@@ -464,6 +495,15 @@ final class AppState: ObservableObject {
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
+      let actionTimeout = max(45, Int(self.get("GDRIVE_ACTION_TIMEOUT_SECONDS", default: "180")) ?? 180)
+      let timeoutFlag = DDumpPaths.appSupport.appendingPathComponent("state/cloud-mount-timeout.flag")
+      try? FileManager.default.createDirectory(
+        at: DDumpPaths.appSupport.appendingPathComponent("state"),
+        withIntermediateDirectories: true
+      )
+      try? Data().write(to: timeoutFlag)
+      try? FileManager.default.removeItem(at: timeoutFlag)
+      let timeoutQueue = DispatchQueue(label: "ddump.cloud.mount.timeout")
       task.arguments = ["-lc", """
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
@@ -585,8 +625,21 @@ exit 1
         }
         return
       }
+      timeoutQueue.asyncAfter(deadline: .now() + .seconds(actionTimeout)) {
+        if task.isRunning {
+          try? Data("1".utf8).write(to: timeoutFlag)
+          task.terminate()
+          DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(2)) {
+            if task.isRunning {
+              task.interrupt()
+            }
+          }
+        }
+      }
       task.waitUntilExit()
-      let ok = task.terminationStatus == 0
+      let didTimeout = FileManager.default.fileExists(atPath: timeoutFlag.path)
+      try? FileManager.default.removeItem(at: timeoutFlag)
+      let ok = task.terminationStatus == 0 && !didTimeout
       DispatchQueue.main.async {
         if showProgress {
           self.cloudActionInProgress = false
@@ -595,7 +648,21 @@ exit 1
         if ok {
           self.lastUtilityMessage = "\(userMessagePrefix) is on and ready."
         } else {
-          self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
+          if didTimeout {
+            self.lastUtilityMessage = "\(userMessagePrefix) timed out after \(actionTimeout)s."
+          } else {
+            self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
+          }
+          let missingNote: String
+          if self.needsReinsertCount > 0 {
+            missingNote = "Missing from prior checks: \(self.needsReinsertCount) file(s)."
+          } else {
+            missingNote = "Missing from prior checks: none currently marked."
+          }
+          self.showUtilityDialog(
+            title: "Cloud mount not ready",
+            text: "\(self.lastUtilityMessage)\nPending upload batches: \(self.pendingUploadCount).\n\(missingNote)\nDiagnostics: \(self.cloudDiagnosticMessage)"
+          )
         }
         self.refreshCloudMountStatus(showProgress: false)
         completion?(ok)
@@ -706,6 +773,20 @@ exit 0
     let mountLabel = gdriveMountLabelForUI
     let remote = gdriveRemoteForUI
     let rcloneBin = rcloneBinForUI
+    if !gdriveMountEnabledForUI {
+      DispatchQueue.main.async {
+        if showProgress {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+        }
+        self.cloudMountActive = false
+        self.cloudServiceLoaded = false
+        self.cloudRemoteConfigured = false
+        self.cloudDiagnosticMessage = "Cloud uploads are disabled in settings."
+        self.cloudLastCheckedAt = self.nowTimestamp()
+      }
+      return
+    }
     if showProgress {
       setCloudAction(true, "Refreshing mount diagnostics…")
     }
@@ -1003,6 +1084,8 @@ emit_success "$candidate"
     let remoteName = mountRemote.split(separator: ":").first.map(String.init) ?? "combined"
     let configuredBin = rcloneBinForUI
     let cmd = """
+#!/bin/bash
+set -e
 export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 configured_bin=\(shellDoubleQuoted(configuredBin))
 remote_name=\(shellDoubleQuoted(remoteName))
@@ -1023,18 +1106,67 @@ else
   exit 1
 fi
 "$rclone" config reconnect "${remote_name}:" || "$rclone" config
+status="$?"
+echo
+echo "rclone setup exited with status ${status}."
+echo "Press Enter to close this window."
+read -r _
+exit "${status}"
 """
-    let task = Process()
-    task.launchPath = "/usr/bin/osascript"
-    task.arguments = [
-      "-e",
-      "tell application \"Terminal\" to do script \(shellDoubleQuoted(cmd))"
-    ]
+
+    let scriptURL = DDumpPaths.appSupport.appendingPathComponent("state/rclone-setup.command")
     do {
-      try task.run()
-      lastUtilityMessage = "Opened Terminal for rclone setup."
+      try FileManager.default.createDirectory(
+        at: DDumpPaths.appSupport.appendingPathComponent("state"),
+        withIntermediateDirectories: true
+      )
+      try cmd.write(to: scriptURL, atomically: true, encoding: .utf8)
+      let chmodTask = Process()
+      chmodTask.launchPath = "/bin/chmod"
+      chmodTask.arguments = ["+x", scriptURL.path]
+      try chmodTask.run()
+      chmodTask.waitUntilExit()
+      if NSWorkspace.shared.open(scriptURL) {
+        lastUtilityMessage = "Opened Terminal for rclone setup."
+      } else {
+        lastUtilityMessage = "Could not open Terminal for rclone setup."
+        showUtilityDialog(
+          title: "Could not open rclone setup",
+          text: "DDump could not launch Terminal automatically. Run this file manually:\n\(scriptURL.path)"
+        )
+      }
     } catch {
       lastUtilityMessage = "Could not open Terminal for rclone setup."
+      showUtilityDialog(
+        title: "Could not prepare rclone setup",
+        text: error.localizedDescription
+      )
+    }
+  }
+
+  func runCloudSetupWizard() {
+    let alert = NSAlert()
+    alert.alertStyle = .informational
+    alert.messageText = "Cloud setup"
+    alert.informativeText = """
+1) Install rclone
+2) Connect your cloud remote
+3) Start mount
+4) Set destination inside mounted cloud folder
+
+If you do not want cloud right now, disable it below.
+"""
+    alert.addButton(withTitle: "Install rclone")
+    alert.addButton(withTitle: "Open rclone setup")
+    alert.addButton(withTitle: "Dismiss")
+    let response = alert.runModal()
+    if response == .alertFirstButtonReturn {
+      installRcloneViaApp()
+      return
+    }
+    if response == .alertSecondButtonReturn {
+      openRcloneSetupInTerminal()
+      return
     }
   }
 
@@ -2292,6 +2424,7 @@ struct DetectionSettings: View {
 struct CloudSettings: View {
   @EnvironmentObject var state: AppState
   @State private var enabled: Bool = true
+  @State private var showSetupGuide: Bool = false
   @State private var mountPoint: String = ""
   @State private var remote: String = ""
   @State private var rcloneBin: String = ""
@@ -2362,6 +2495,44 @@ struct CloudSettings: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 20) {
+        if enabled && (!state.cloudRcloneReady || !state.cloudRemoteConfigured || !state.cloudMountActive) {
+          VStack(alignment: .leading, spacing: 10) {
+            Text("Cloud setup needed")
+              .font(DDumpFont.ui(14, weight: .semibold))
+              .foregroundColor(.ddumpFG1)
+            Text("DDump detected cloud is not fully ready. Run setup now, or disable cloud if you only want local dumps.")
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG2)
+            HStack(spacing: 10) {
+              Button {
+                showSetupGuide = true
+              } label: {
+                Label("Cloud setup", systemImage: "sparkles")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+
+              Button {
+                enabled = false
+                state.set("GDRIVE_MOUNT_ENABLED", "0")
+                state.refreshCloudMountStatus()
+                state.lastUtilityMessage = "Cloud uploads are disabled."
+              } label: {
+                Label("Disable cloud", systemImage: "icloud.slash")
+              }
+              .buttonStyle(DDumpSecondaryButtonStyle())
+            }
+          }
+          .padding(12)
+          .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(Color.ddumpSurface2)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
+        }
+
         if state.cloudActionInProgress {
           HStack(spacing: 10) {
             ProgressView()
@@ -2439,16 +2610,40 @@ struct CloudSettings: View {
         )
 
         sectionHeader("Status", caption: state.cloudLastCheckedAt.isEmpty ? nil : "Last check \(state.cloudLastCheckedAt)")
-        VStack(spacing: 10) {
-          statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
-          statusCard(state.cloudRemoteConfigured, okText: "Remote configured", failText: "Remote not configured", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Open rclone setup and create the configured remote.")
-          statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
-          statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
-          statusCard(state.networkOnline, okText: "Network reachable", failText: "Network unavailable", icon: "wifi", hint: state.networkOnline ? "" : "DDump waits and retries automatically when connection returns.")
+        if enabled {
+          VStack(spacing: 10) {
+            statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
+            statusCard(state.cloudRemoteConfigured, okText: "Remote configured", failText: "Remote not configured", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Open rclone setup and create the configured remote.")
+            statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
+            statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
+            statusCard(state.networkOnline, okText: "Network reachable", failText: "Network unavailable", icon: "wifi", hint: state.networkOnline ? "" : "DDump waits and retries automatically when connection returns.")
+          }
+        } else {
+          HStack(spacing: 8) {
+            Image(systemName: "icloud.slash")
+              .foregroundColor(.ddumpFG3)
+            Text("Cloud uploads are disabled for this app.")
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG3)
+          }
+          .padding(10)
+          .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .fill(Color.ddumpSurface2)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
         }
 
         sectionHeader("Actions")
         VStack(alignment: .leading, spacing: 10) {
+          if !enabled {
+            Text("Cloud actions are disabled. Turn on cloud above to manage mount/setup.")
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG3)
+          }
           HStack(spacing: 10) {
             Button {
               state.startCloudMount(showProgress: true)
@@ -2471,7 +2666,7 @@ struct CloudSettings: View {
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
           }
-          .disabled(state.cloudActionInProgress)
+          .disabled(state.cloudActionInProgress || !enabled)
 
           HStack(spacing: 10) {
             Button {
@@ -2515,8 +2710,15 @@ struct CloudSettings: View {
               Label("Open privacy settings", systemImage: "hand.raised")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              showSetupGuide = true
+            } label: {
+              Label("Cloud setup", systemImage: "sparkles")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
           }
-          .disabled(state.cloudActionInProgress)
+          .disabled(state.cloudActionInProgress || !enabled)
 
           if !state.lastUtilityMessage.isEmpty {
             HStack(alignment: .top, spacing: 10) {
@@ -2640,6 +2842,95 @@ struct CloudSettings: View {
       networkResumeCooldownSeconds = state.get("NETWORK_RESUME_COOLDOWN_SECONDS", default: "120")
       state.refreshCloudMountStatus()
     }
+    .sheet(isPresented: $showSetupGuide) {
+      CloudSetupGuideSheet(isPresented: $showSetupGuide)
+        .environmentObject(state)
+        .preferredColorScheme(state.preferredColorScheme())
+    }
+  }
+}
+
+struct CloudSetupGuideSheet: View {
+  @EnvironmentObject var state: AppState
+  @Binding var isPresented: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack {
+        Text("Cloud setup")
+          .font(DDumpFont.display(22, weight: .semibold))
+          .foregroundColor(.ddumpFG1)
+        Spacer()
+        Button("Dismiss") { isPresented = false }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+
+      Text("Follow these steps in order:")
+        .font(DDumpFont.ui(13, weight: .medium))
+        .foregroundColor(.ddumpFG2)
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("1. Install rclone")
+        Text("2. Connect your cloud remote in Terminal")
+        Text("3. Start mount and re-check status")
+        Text("4. Set destination inside the mounted folder")
+      }
+      .font(DDumpFont.ui(12))
+      .foregroundColor(.ddumpFG2)
+
+      HStack(spacing: 10) {
+        Button {
+          state.installRcloneViaApp()
+        } label: {
+          Label("Install rclone", systemImage: "square.and.arrow.down")
+        }
+        .buttonStyle(DDumpPrimaryButtonStyle())
+
+        Button {
+          state.openRcloneSetupInTerminal()
+        } label: {
+          Label("Open rclone setup", systemImage: "terminal")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+
+      HStack(spacing: 10) {
+        Button {
+          state.startCloudMount(showProgress: true)
+        } label: {
+          Label("Start mount", systemImage: "play.circle")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+
+        Button {
+          state.refreshCloudMountStatus(showProgress: true)
+        } label: {
+          Label("Re-check status", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+
+        Button {
+          state.set("GDRIVE_MOUNT_ENABLED", "0")
+          state.refreshCloudMountStatus()
+          state.lastUtilityMessage = "Cloud uploads are disabled."
+          isPresented = false
+        } label: {
+          Label("Disable cloud", systemImage: "icloud.slash")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+
+      if !state.lastUtilityMessage.isEmpty {
+        Text(state.lastUtilityMessage)
+          .font(DDumpFont.ui(12))
+          .foregroundColor(.ddumpFG3)
+      }
+
+      Spacer()
+    }
+    .padding(18)
+    .frame(minWidth: 680, minHeight: 320)
+    .background(Color.ddumpBG)
   }
 }
 
@@ -3104,6 +3395,8 @@ func pickFolder(prompt: String) -> String? {
 /// AppDelegate that assigns a frameAutosaveName to the main window so macOS
 /// remembers its position/size across launches.
 class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
+  weak var appState: AppState?
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
       for window in NSApplication.shared.windows {
@@ -3126,6 +3419,26 @@ class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
     }
     return true
   }
+
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard let state = appState else {
+      return .terminateNow
+    }
+    if !state.shouldWarnBeforeQuit {
+      return .terminateNow
+    }
+
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "A transfer is still running"
+    let pendingText = state.pendingUploadCount > 0 ? "\(state.pendingUploadCount) pending upload batch(es)." : "No pending upload batches."
+    let missingText = state.needsReinsertCount > 0 ? "\(state.needsReinsertCount) file(s) currently marked missing." : "No files currently marked missing."
+    alert.informativeText = "Current phase: \(state.phase).\n\(pendingText)\n\(missingText)\n\nQuit DDump anyway?"
+    alert.addButton(withTitle: "Quit Anyway")
+    alert.addButton(withTitle: "Cancel")
+    let response = alert.runModal()
+    return response == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+  }
 }
 
 // MARK: - App entry point
@@ -3145,6 +3458,9 @@ struct DDumpApp: App {
         .environmentObject(state)
         .background(WindowAccessor())
         .preferredColorScheme(state.preferredColorScheme())
+        .onAppear {
+          appDelegate.appState = state
+        }
     }
     .windowResizability(.contentSize)
     // Settings are opened through ContentView's sheet. The native Settings scene

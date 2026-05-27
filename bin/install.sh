@@ -231,6 +231,7 @@ add_missing_key 'RCLONE_MOUNT_COMMAND' '"auto"' "Mount command: auto (prefer nfs
 add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent label for DDump's mount helper."
 add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"15,30,60,180"' "Mount retry backoff schedule in seconds."
 add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt waits for readiness."
+add_missing_key 'GDRIVE_ACTION_TIMEOUT_SECONDS' '"180"' "Maximum seconds DDump waits for a mount action before timing out."
 replace_key_if_exact 'GDRIVE_MOUNT_RETRY_SECONDS' '5,15,60,180,360,600' '15,30,60,180'
 
 # v2 keys (new)

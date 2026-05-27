@@ -438,6 +438,7 @@ summary_kept_mounted_volumes=""
 summary_post_move_blocked_total=0
 summary_post_move_fail_total=0
 summary_errors_total=0
+summary_upload_incomplete_total=0
 
 last_dest_dir=""
 COPY_VERIFY_FAILURE_REASON=""
@@ -2418,8 +2419,17 @@ verify_volume_upload_completeness() {
   if [[ "$incomplete_count" -gt 0 ]]; then
     db_mark_incomplete_volume_run_needs_reinsert "$uuid" "not confirmed on upload destination; reinsert card for recovery"
     summary_errors_total=$((summary_errors_total + 1))
+    summary_upload_incomplete_total=$((summary_upload_incomplete_total + incomplete_count))
     log "Upload completeness check failed for ${vol_name}: ${incomplete_count} file(s) not confirmed on destination."
-    notify "DDump" "⚠️ ${vol_name}: ${incomplete_count} file(s) not confirmed on server. Reinsert card to recover missing files." warn
+    local urgency_label
+    if [[ "$incomplete_count" -ge 50 ]]; then
+      urgency_label="HIGH"
+    elif [[ "$incomplete_count" -ge 10 ]]; then
+      urgency_label="MEDIUM"
+    else
+      urgency_label="LOW"
+    fi
+    notify "DDump" "⚠️ ${vol_name}: ${incomplete_count} file(s) not confirmed on server. Urgency ${urgency_label}. Reinsert card to recover missing files." warn
     return 1
   fi
 
@@ -3790,7 +3800,7 @@ if [[ "$processed_volume_count" -eq 0 ]]; then
   log "No trusted SD card volumes found."
 fi
 
-summary_message="Run complete. volumes=${processed_volume_count}, imported=${imported_file_count_total}, skipped_duplicate=${summary_skipped_existing_total}, skipped_extension=${summary_skipped_extension_total}, copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}, kept_mounted=${summary_kept_mounted_total}, post_move_blocked=${summary_post_move_blocked_total}, post_move_fail=${summary_post_move_fail_total}, errors=${summary_errors_total}"
+summary_message="Run complete. volumes=${processed_volume_count}, imported=${imported_file_count_total}, skipped_duplicate=${summary_skipped_existing_total}, skipped_extension=${summary_skipped_extension_total}, copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}, upload_incomplete=${summary_upload_incomplete_total}, kept_mounted=${summary_kept_mounted_total}, post_move_blocked=${summary_post_move_blocked_total}, post_move_fail=${summary_post_move_fail_total}, errors=${summary_errors_total}"
 log "$summary_message"
 if [[ "$summary_copy_fail_total" -gt 0 || "$summary_verify_fail_total" -gt 0 ]]; then
   ntfy_notify "integrity_warning" "DDump: integrity warning" "Run finished with copy/verify issues. copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}."
