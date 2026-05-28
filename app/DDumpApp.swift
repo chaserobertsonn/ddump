@@ -1085,7 +1085,7 @@ emit_success "$candidate"
     let configuredBin = rcloneBinForUI
     let cmd = """
 #!/bin/bash
-set -e
+set +e
 export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 configured_bin=\(shellDoubleQuoted(configuredBin))
 remote_name=\(shellDoubleQuoted(remoteName))
@@ -1101,17 +1101,36 @@ if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
   rclone="$configured_bin"
 elif command -v rclone >/dev/null 2>&1; then
   rclone="$(command -v rclone)"
+elif [ -x "/opt/homebrew/bin/rclone" ]; then
+  rclone="/opt/homebrew/bin/rclone"
+elif [ -x "/usr/local/bin/rclone" ]; then
+  rclone="/usr/local/bin/rclone"
 else
   echo "rclone not found. Use Install rclone in DDump Cloud settings first."
-  exit 1
+  echo
+  echo "Press Enter to close this window."
+  read -r _ || true
+  exit 0
 fi
-"$rclone" config reconnect "${remote_name}:" || "$rclone" config
+
+if "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "${remote_name}:"; then
+  "$rclone" config reconnect "${remote_name}:"
+  reconnect_rc="$?"
+  if [ "$reconnect_rc" -ne 0 ]; then
+    echo
+    echo "Reconnect failed for '${remote_name}:'. Opening full rclone config instead."
+    "$rclone" config
+  fi
+else
+  echo "Remote '${remote_name}:' is not configured yet. Opening full rclone config."
+  "$rclone" config
+fi
 status="$?"
 echo
 echo "rclone setup exited with status ${status}."
 echo "Press Enter to close this window."
-read -r _
-exit "${status}"
+read -r _ || true
+exit 0
 """
 
     let scriptURL = DDumpPaths.appSupport.appendingPathComponent("state/rclone-setup.command")
