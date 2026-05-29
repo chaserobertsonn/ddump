@@ -1152,15 +1152,14 @@ legacy_label="com.chase.rclone-gdrive"
 write_config_key() {
   local key="$1"
   local value="$2"
-  local safe_value="${value//\"/\\\"}"
   /bin/mkdir -p "$(dirname "$config_file")"
   if [ ! -f "$config_file" ]; then
-    /usr/bin/printf '%s="%s"\\n' "$key" "$safe_value" >"$config_file"
+    /usr/bin/printf '%s="%s"\\n' "$key" "$value" >"$config_file"
     return
   fi
   local tmp
   tmp="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ddump-config.XXXXXX")" || return 1
-  /usr/bin/awk -v key="$key" -v value="$safe_value" '
+  /usr/bin/awk -v key="$key" -v value="$value" '
     BEGIN { done=0 }
     $0 ~ "^" key "=" {
       print key "=\\"" value "\\""
@@ -1215,6 +1214,10 @@ expand_user_path() {
   printf '%s' "$raw"
 }
 configured_bin="$(expand_user_path "$configured_bin")"
+mount_point="$(expand_user_path "$mount_point")"
+if [ -n "$current_dest" ]; then
+  current_dest="$(expand_user_path "$current_dest")"
+fi
 if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
   rclone="$configured_bin"
 elif command -v rclone >/dev/null 2>&1; then
