@@ -1188,9 +1188,12 @@ exec "$rclone" gui --addr localhost:5579 --api-addr localhost:5572
         self.cloudSetupProcess = task
         if task.isRunning {
           self.cloudSetupBrowserRunning = true
+          if let remotesURL = URL(string: "http://127.0.0.1:5579/#/remotes") {
+            _ = NSWorkspace.shared.open(remotesURL)
+          }
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
-          self.lastUtilityMessage = "Browser setup is open. In the web page: Configs → New remote → Google Drive."
+          self.lastUtilityMessage = "Browser setup opened. Click New remote, choose Google Drive, finish sign-in, then come back and click I finished setup."
         }
       }
       task.terminationHandler = { [weak self] finished in
@@ -2622,6 +2625,7 @@ struct CloudSettings: View {
   @EnvironmentObject var state: AppState
   @State private var enabled: Bool = true
   @State private var showSetupGuide: Bool = false
+  @State private var showAdvanced: Bool = false
   @State private var mountPoint: String = ""
   @State private var remote: String = ""
   @State private var rcloneBin: String = ""
@@ -2751,9 +2755,104 @@ struct CloudSettings: View {
           )
         }
 
-        sectionHeader("Connection", caption: "rclone-backed upload mount")
+        sectionHeader("Guided setup")
+        VStack(alignment: .leading, spacing: 12) {
+          let needsInstall = !state.cloudRcloneReady
+          let needsConnect = state.cloudRcloneReady && !state.cloudRemoteConfigured
+          let needsMount = state.cloudRcloneReady && state.cloudRemoteConfigured && !state.cloudMountActive
+          let done = state.cloudRcloneReady && state.cloudRemoteConfigured && state.cloudMountActive
+          let stepText: String = {
+            if needsInstall { return "Step 1 of 3: Install the cloud helper." }
+            if needsConnect { return "Step 2 of 3: Connect your Google Drive account." }
+            if needsMount { return "Step 3 of 3: Start the cloud connection." }
+            if done { return "All set. Cloud is connected and ready." }
+            return "Start setup."
+          }()
+          Text(stepText)
+            .font(DDumpFont.ui(14, weight: .semibold))
+            .foregroundColor(.ddumpFG1)
+          Text("This wizard is the only setup most users need.")
+            .font(DDumpFont.ui(12))
+            .foregroundColor(.ddumpFG3)
+          HStack(spacing: 10) {
+            if needsInstall {
+              Button {
+                state.installRcloneViaApp()
+              } label: {
+                Label("Install cloud helper", systemImage: "square.and.arrow.down")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+            } else if needsConnect {
+              if state.cloudSetupBrowserRunning {
+                Button {
+                  state.finishCloudSetupFromBrowser()
+                } label: {
+                  Label("I finished Google sign-in", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(DDumpPrimaryButtonStyle())
+                Button {
+                  state.stopCloudSetupInBrowser()
+                } label: {
+                  Label("Cancel setup", systemImage: "xmark.circle")
+                }
+                .buttonStyle(DDumpSecondaryButtonStyle())
+              } else {
+                Button {
+                  state.launchCloudSetupInBrowser()
+                } label: {
+                  Label("Connect Google Drive", systemImage: "globe")
+                }
+                .buttonStyle(DDumpPrimaryButtonStyle())
+              }
+            } else if needsMount {
+              Button {
+                state.startCloudMount(showProgress: true)
+              } label: {
+                Label("Start cloud connection", systemImage: "play.circle")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+            } else {
+              Button {
+                state.refreshCloudMountStatus(showProgress: true)
+              } label: {
+                Label("Re-check cloud status", systemImage: "arrow.clockwise")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+            }
+            Button {
+              showSetupGuide = true
+            } label: {
+              Label("Full setup guide", systemImage: "sparkles")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+          }
+          if done {
+            Text("Upload destination: \(state.uploadRootForUI)")
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG2)
+          }
+        }
+        .padding(14)
+        .background(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.ddumpSurface)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
 
-        VStack(spacing: 0) {
+        Button {
+          showAdvanced.toggle()
+        } label: {
+          Label(showAdvanced ? "Hide advanced cloud controls" : "Show advanced cloud controls", systemImage: "slider.horizontal.3")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+
+        if showAdvanced {
+          sectionHeader("Connection", caption: "rclone-backed upload mount")
+
+          VStack(spacing: 0) {
           HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
               Text("Enable DDump-managed cloud mount")
@@ -2795,19 +2894,19 @@ struct CloudSettings: View {
             state.set("GDRIVE_MOUNT_LABEL", mountLabel)
             state.refreshCloudMountStatus()
           }
-        }
-        .padding(.horizontal, 14)
-        .background(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.ddumpSurface)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(Color.ddumpLine1, lineWidth: 1)
-        )
+          }
+          .padding(.horizontal, 14)
+          .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(Color.ddumpSurface)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
 
-        sectionHeader("Status", caption: state.cloudLastCheckedAt.isEmpty ? nil : "Last check \(state.cloudLastCheckedAt)")
-        if enabled {
+          sectionHeader("Status", caption: state.cloudLastCheckedAt.isEmpty ? nil : "Last check \(state.cloudLastCheckedAt)")
+          if enabled {
           VStack(spacing: 10) {
             statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
             statusCard(state.cloudRemoteConfigured, okText: "Cloud account connected", failText: "Cloud account not connected", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Use Browser setup, connect Google Drive, then click I finished setup.")
@@ -2815,7 +2914,7 @@ struct CloudSettings: View {
             statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
             statusCard(state.networkOnline, okText: "Network reachable", failText: "Network unavailable", icon: "wifi", hint: state.networkOnline ? "" : "DDump waits and retries automatically when connection returns.")
           }
-        } else {
+          } else {
           HStack(spacing: 8) {
             Image(systemName: "icloud.slash")
               .foregroundColor(.ddumpFG3)
@@ -2832,10 +2931,10 @@ struct CloudSettings: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
-        }
+          }
 
-        sectionHeader("Actions")
-        VStack(alignment: .leading, spacing: 10) {
+          sectionHeader("Actions")
+          VStack(alignment: .leading, spacing: 10) {
           if !enabled {
             Text("Cloud actions are disabled. Turn on cloud above to manage mount/setup.")
               .font(DDumpFont.ui(12))
@@ -2952,10 +3051,10 @@ struct CloudSettings: View {
                 .stroke(Color.ddumpLine1, lineWidth: 1)
             )
           }
-        }
+          }
 
-        sectionHeader("Offline resume")
-        VStack(alignment: .leading, spacing: 12) {
+          sectionHeader("Offline resume")
+          VStack(alignment: .leading, spacing: 12) {
           Toggle("Auto-retry pending uploads when internet reconnects", isOn: $networkResumeEnabled)
             .toggleStyle(.switch)
             .tint(.ddumpPeach)
@@ -2982,20 +3081,20 @@ struct CloudSettings: View {
               .textFieldStyle(.roundedBorder)
               .onSubmit { state.set("NETWORK_RESUME_COOLDOWN_SECONDS", networkResumeCooldownSeconds) }
           }
-        }
-        .font(DDumpFont.ui(13))
-        .padding(14)
-        .background(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.ddumpSurface)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(Color.ddumpLine1, lineWidth: 1)
-        )
+          }
+          .font(DDumpFont.ui(13))
+          .padding(14)
+          .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(Color.ddumpSurface)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
 
-        sectionHeader("Diagnostics")
-        VStack(alignment: .leading, spacing: 10) {
+          sectionHeader("Diagnostics")
+          VStack(alignment: .leading, spacing: 10) {
           Text(state.cloudDiagnosticMessage.isEmpty ? "No diagnostic message yet." : state.cloudDiagnosticMessage)
             .font(.system(size: 12, weight: .regular, design: .monospaced))
             .foregroundColor(.ddumpFG2)
@@ -3006,18 +3105,18 @@ struct CloudSettings: View {
             Label("Run diagnostics now", systemImage: "stethoscope")
           }
           .buttonStyle(DDumpSecondaryButtonStyle())
-        }
-        .padding(14)
-        .background(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.ddumpSurface2)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(Color.ddumpLine1, lineWidth: 1)
-        )
+          }
+          .padding(14)
+          .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(Color.ddumpSurface2)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
 
-        HStack(alignment: .top, spacing: 10) {
+          HStack(alignment: .top, spacing: 10) {
           Image(systemName: "info.circle.fill")
             .foregroundColor(.ddumpPeach)
           VStack(alignment: .leading, spacing: 3) {
@@ -3031,11 +3130,12 @@ struct CloudSettings: View {
               .font(DDumpFont.ui(12))
               .foregroundColor(.ddumpFG3)
           }
-        }
-        .padding(12)
-        .background(Color.ddumpBGAlt)
-        .overlay(alignment: .top) {
-          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          }
+          .padding(12)
+          .background(Color.ddumpBGAlt)
+          .overlay(alignment: .top) {
+            Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          }
         }
       }
       .padding(.horizontal, 14)
