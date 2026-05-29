@@ -148,10 +148,12 @@ final class AppState: ObservableObject {
   @Published var cloudActionMessage: String = ""
   @Published var cloudLastCheckedAt: String = ""
   @Published var networkOnline: Bool = false
+  @Published var cloudSetupBrowserRunning: Bool = false
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
   private var statusTick: Int = 0
+  private var cloudSetupProcess: Process?
 
   deinit {
     timer?.invalidate()
@@ -1128,84 +1130,20 @@ emit_success "$candidate"
     }
   }
 
-  func openRcloneSetupInTerminal() {
-    let mountRemote = gdriveRemoteForUI
-    let remoteName = mountRemote.split(separator: ":").first.map(String.init) ?? "combined"
+  func launchCloudSetupInBrowser() {
+    if cloudSetupBrowserRunning {
+      lastUtilityMessage = "Cloud setup is already running in your browser."
+      return
+    }
     let configuredBin = rcloneBinForUI
-    let mountPoint = gdriveMountPointForUI
-    let mountLabel = gdriveMountLabelForUI
-    let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
-    let currentDest = get("POST_MOVE_ROOT", default: "")
-    let cmd = """
-#!/bin/bash
+    setCloudAction(true, "Opening cloud setup in your browser…")
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
 set +e
 export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 configured_bin=\(shellDoubleQuoted(configuredBin))
-remote_name=\(shellDoubleQuoted(remoteName))
-mount_point=\(shellDoubleQuoted(mountPoint))
-mount_label=\(shellDoubleQuoted(mountLabel))
-wait_seconds=\(shellDoubleQuoted(waitSeconds))
-current_dest=\(shellDoubleQuoted(currentDest))
-config_file="${HOME}/Library/Application Support/DDump/config.env"
-legacy_label="com.chase.rclone-gdrive"
-
-write_config_key() {
-  local key="$1"
-  local value="$2"
-  /bin/mkdir -p "$(dirname "$config_file")"
-  if [ ! -f "$config_file" ]; then
-    /usr/bin/printf '%s="%s"\\n' "$key" "$value" >"$config_file"
-    return
-  fi
-  local tmp
-  tmp="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ddump-config.XXXXXX")" || return 1
-  /usr/bin/awk -v key="$key" -v value="$value" '
-    BEGIN { done=0 }
-    $0 ~ "^" key "=" {
-      print key "=\\"" value "\\""
-      done=1
-      next
-    }
-    { print }
-    END {
-      if (!done) {
-        print key "=\\"" value "\\""
-      }
-    }
-  ' "$config_file" >"$tmp" && /bin/mv "$tmp" "$config_file"
-}
-
-pick_remote() {
-  local -a remotes=()
-  while IFS= read -r line; do
-    [ -n "$line" ] && remotes+=("$line")
-  done < <("$rclone" listremotes 2>/dev/null || true)
-  if [ "${#remotes[@]}" -eq 0 ]; then
-    return 0
-  fi
-  if [ "${#remotes[@]}" -eq 1 ]; then
-    echo "${remotes[0]}"
-    return 0
-  fi
-  echo
-  echo "Choose which remote DDump should use:"
-  local i=1
-  for item in "${remotes[@]}"; do
-    echo "  ${i}) ${item}"
-    i=$((i + 1))
-  done
-  local choice
-  read -r -p "Remote number [1]: " choice
-  if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
-    choice=1
-  fi
-  if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#remotes[@]}" ]; then
-    choice=1
-  fi
-  echo "${remotes[$((choice - 1))]}"
-  return 0
-}
-
 expand_user_path() {
   local raw="$1"
   raw="${raw/#\\$HOME/$HOME}"
@@ -1214,10 +1152,6 @@ expand_user_path() {
   printf '%s' "$raw"
 }
 configured_bin="$(expand_user_path "$configured_bin")"
-mount_point="$(expand_user_path "$mount_point")"
-if [ -n "$current_dest" ]; then
-  current_dest="$(expand_user_path "$current_dest")"
-fi
 if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
   rclone="$configured_bin"
 elif command -v rclone >/dev/null 2>&1; then
@@ -1227,149 +1161,185 @@ elif [ -x "/opt/homebrew/bin/rclone" ]; then
 elif [ -x "/usr/local/bin/rclone" ]; then
   rclone="/usr/local/bin/rclone"
 else
-  echo "rclone not found. Use Install rclone in DDump Cloud settings first."
-  echo
-  echo "Press Enter to close this window."
-  read -r _ || true
-  exit 0
+  echo "setup_error=rclone missing"
+  exit 2
 fi
-
-echo
-echo "DDump Cloud Setup Assistant"
-echo "---------------------------"
-
-selected_remote=""
-selected_remote="$(pick_remote)"
-if [ -z "$selected_remote" ]; then
-  echo "No rclone remote is configured yet. Opening rclone config."
-  "$rclone" config
+echo "rclone_path=$rclone"
+if ! "$rclone" gui --help >/dev/null 2>&1; then
+  echo "setup_error=rclone gui is unavailable (update rclone to v1.74+)"
+  exit 3
 fi
-
-selected_remote="$(pick_remote)"
-if [ -z "$selected_remote" ]; then
-  echo
-  echo "No remote was configured. DDump cloud setup is incomplete."
-  echo "Press Enter to close this window."
-  read -r _ || true
-  exit 0
-fi
-
-echo
-echo "Selected remote: ${selected_remote}"
-
-if [ -n "$remote_name" ] && [ "${selected_remote%:}" = "${remote_name}" ]; then
-  read -r -p "Reconnect auth for ${selected_remote} now? [y/N]: " reconnect_ans
-  if [[ "$reconnect_ans" =~ ^[Yy]$ ]]; then
-    "$rclone" config reconnect "${selected_remote}" || true
-  fi
-fi
-
-if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then
-  wait_seconds=30
-fi
-if [ "$wait_seconds" -lt 10 ]; then
-  wait_seconds=10
-fi
-
-default_dest="${mount_point}/DDump Uploads"
-if [ -n "$current_dest" ]; then
-  default_dest="$current_dest"
-fi
-echo
-read -r -p "Destination root for uploads [${default_dest}]: " chosen_dest
-if [ -z "$chosen_dest" ]; then
-  chosen_dest="$default_dest"
-fi
-
-write_config_key "RCLONE_BIN" "$rclone"
-write_config_key "GDRIVE_REMOTE" "$selected_remote"
-write_config_key "GDRIVE_MOUNT_POINT" "$mount_point"
-write_config_key "GDRIVE_MOUNT_LABEL" "$mount_label"
-write_config_key "GDRIVE_MOUNT_ENABLED" "1"
-write_config_key "ENABLE_POST_EJECT_MOVE" "1"
-write_config_key "POST_MOVE_ROOT" "$chosen_dest"
-
-echo
-echo "Saved DDump cloud settings:"
-echo "  RCLONE_BIN=$rclone"
-echo "  GDRIVE_REMOTE=$selected_remote"
-echo "  POST_MOVE_ROOT=$chosen_dest"
-
-uid="$(/usr/bin/id -u)"
-plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
-if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist" ]; then
-  mount_label="$legacy_label"
-  plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
-fi
-
-if [ ! -f "$plist" ]; then
-  echo
-  echo "Mount LaunchAgent not found at $plist"
-  echo "Run DDump install again, then rerun this setup."
-  echo "Press Enter to close this window."
-  read -r _ || true
-  exit 0
-fi
-
-/bin/mkdir -p "$mount_point"
-/bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
-/bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
-i=0
-mounted=0
-while [ "$i" -lt "$wait_seconds" ]; do
-  if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
-    mounted=1
-    break
-  fi
-  /bin/sleep 1
-  i=$((i + 1))
-done
-
-echo
-if [ "$mounted" -eq 1 ]; then
-  echo "Cloud mount is active at ${mount_point}."
-else
-  echo "Cloud mount is still inactive after ${wait_seconds}s."
-  last_log="$(tail -n 1 "${HOME}/Library/Application Support/DDump/logs/rclone-gdrive.log" 2>/dev/null || true)"
-  if [ -n "$last_log" ]; then
-    echo "Last mount log: ${last_log}"
-  fi
-fi
-
-echo "Cloud setup assistant finished."
-echo "Press Enter to close this window."
-read -r _ || true
-exit 0
-"""
-
-    let scriptURL = DDumpPaths.appSupport.appendingPathComponent("state/rclone-setup.command")
-    do {
-      try FileManager.default.createDirectory(
-        at: DDumpPaths.appSupport.appendingPathComponent("state"),
-        withIntermediateDirectories: true
-      )
-      try cmd.write(to: scriptURL, atomically: true, encoding: .utf8)
-      let chmodTask = Process()
-      chmodTask.launchPath = "/bin/chmod"
-      chmodTask.arguments = ["+x", scriptURL.path]
-      try chmodTask.run()
-      chmodTask.waitUntilExit()
-      if NSWorkspace.shared.open(scriptURL) {
-        lastUtilityMessage = "Opened Terminal for rclone setup."
-      } else {
-        lastUtilityMessage = "Could not open Terminal for rclone setup."
-        showUtilityDialog(
-          title: "Could not open rclone setup",
-          text: "DDump could not launch Terminal automatically. Run this file manually:\n\(scriptURL.path)"
-        )
+exec "$rclone" gui --addr localhost:5579 --api-addr localhost:5572
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = pipe
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          self.lastUtilityMessage = "Could not start browser setup: \(error.localizedDescription)"
+        }
+        return
       }
-    } catch {
-      lastUtilityMessage = "Could not open Terminal for rclone setup."
-      showUtilityDialog(
-        title: "Could not prepare rclone setup",
-        text: error.localizedDescription
-      )
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        self.cloudSetupProcess = task
+        if task.isRunning {
+          self.cloudSetupBrowserRunning = true
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          self.lastUtilityMessage = "Browser setup is open. In the web page: Configs → New remote → Google Drive."
+        }
+      }
+      task.terminationHandler = { [weak self] finished in
+        guard let self else { return }
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let parsed = parseShellEnv(output)
+        DispatchQueue.main.async {
+          self.cloudSetupProcess = nil
+          self.cloudSetupBrowserRunning = false
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          if finished.terminationStatus != 0 {
+            let reason = parsed["setup_error"] ?? "Cloud setup helper closed."
+            self.lastUtilityMessage = reason
+          }
+        }
+      }
     }
+  }
+
+  func stopCloudSetupInBrowser(showMessage: Bool = true) {
+    guard let task = cloudSetupProcess else {
+      if showMessage {
+        lastUtilityMessage = "Cloud setup helper is not running."
+      }
+      cloudSetupBrowserRunning = false
+      return
+    }
+    if task.isRunning {
+      task.terminate()
+      DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0) {
+        if task.isRunning {
+          task.interrupt()
+        }
+      }
+    }
+    cloudSetupProcess = nil
+    cloudSetupBrowserRunning = false
+    if showMessage {
+      lastUtilityMessage = "Stopped browser setup helper."
+    }
+  }
+
+  func finishCloudSetupFromBrowser() {
+    setCloudAction(true, "Checking your cloud setup…")
+    let configuredBin = rcloneBinForUI
+    let configuredRemote = gdriveRemoteForUI
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+set +e
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+configured_bin=\(shellDoubleQuoted(configuredBin))
+configured_remote=\(shellDoubleQuoted(configuredRemote))
+expand_user_path() {
+  local raw="$1"
+  raw="${raw/#\\$HOME/$HOME}"
+  raw="${raw/#$HOME/$HOME}"
+  raw="${raw/#\\~/$HOME}"
+  printf '%s' "$raw"
+}
+configured_bin="$(expand_user_path "$configured_bin")"
+if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
+  rclone="$configured_bin"
+elif command -v rclone >/dev/null 2>&1; then
+  rclone="$(command -v rclone)"
+elif [ -x "/opt/homebrew/bin/rclone" ]; then
+  rclone="/opt/homebrew/bin/rclone"
+elif [ -x "/usr/local/bin/rclone" ]; then
+  rclone="/usr/local/bin/rclone"
+else
+  echo "setup_error=rclone missing"
+  exit 2
+fi
+echo "rclone_path=$rclone"
+remotes="$("$rclone" listremotes 2>/dev/null || true)"
+count="$(printf '%s\\n' "$remotes" | /usr/bin/sed '/^$/d' | /usr/bin/wc -l | /usr/bin/awk '{print $1}')"
+echo "remote_count=$count"
+selected=""
+current_name="${configured_remote%%:*}:"
+if [ -n "$current_name" ] && printf '%s\\n' "$remotes" | /usr/bin/grep -Fxq "$current_name"; then
+  selected="$current_name"
+fi
+if [ -z "$selected" ]; then
+  selected="$(printf '%s\\n' "$remotes" | /usr/bin/sed -n '1p')"
+fi
+echo "selected_remote=$selected"
+exit 0
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = pipe
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          self.lastUtilityMessage = "Could not verify setup: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      let selectedRemote = (parsed["selected_remote"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      let remoteCount = Int(parsed["remote_count"] ?? "0") ?? 0
+      let rclonePath = parsed["rclone_path"] ?? ""
+      let setupError = parsed["setup_error"] ?? ""
+      DispatchQueue.main.async {
+        self.cloudActionInProgress = false
+        self.cloudActionMessage = ""
+        if !setupError.isEmpty {
+          self.lastUtilityMessage = setupError
+          self.showUtilityDialog(
+            title: "Cloud setup incomplete",
+            text: "Install rclone first, then run browser setup."
+          )
+          return
+        }
+        if remoteCount <= 0 || selectedRemote.isEmpty {
+          self.lastUtilityMessage = "No cloud account connected yet."
+          self.showUtilityDialog(
+            title: "Cloud setup incomplete",
+            text: "In the browser setup page, create a new Google Drive remote first. Then click “I finished setup”."
+          )
+          return
+        }
+        if !rclonePath.isEmpty {
+          self.set("RCLONE_BIN", rclonePath)
+        }
+        self.set("GDRIVE_REMOTE", selectedRemote)
+        self.set("GDRIVE_MOUNT_ENABLED", "1")
+        self.set("ENABLE_POST_EJECT_MOVE", "1")
+        let currentDest = self.get("POST_MOVE_ROOT", default: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentDest.isEmpty {
+          let mountExpanded = NSString(string: self.gdriveMountPointForUI).expandingTildeInPath
+          self.set("POST_MOVE_ROOT", "\(mountExpanded)/DDump Uploads")
+        }
+        self.stopCloudSetupInBrowser(showMessage: false)
+        self.lastUtilityMessage = "Cloud account connected. Starting mount…"
+        self.startCloudMount(userMessagePrefix: "Cloud mount", showProgress: true)
+      }
+    }
+  }
+
+  func openRcloneSetupInTerminal() {
+    launchCloudSetupInBrowser()
   }
 
   func runCloudSetupWizard() {
@@ -1377,18 +1347,18 @@ exit 0
     alert.alertStyle = .informational
     alert.messageText = "Cloud setup"
     alert.informativeText = """
-1) Install rclone (if needed)
-2) Run Cloud setup assistant (connect remote + save destination)
-3) DDump starts mount and verifies it
+1) Install rclone
+2) Open browser setup and connect Google Drive
+3) Click “I finished setup” in DDump
 
 If you do not want cloud right now, disable it below.
 """
-    alert.addButton(withTitle: "Run Cloud setup")
+    alert.addButton(withTitle: "Open Browser Setup")
     alert.addButton(withTitle: "Install rclone")
     alert.addButton(withTitle: "Dismiss")
     let response = alert.runModal()
     if response == .alertFirstButtonReturn {
-      openRcloneSetupInTerminal()
+      launchCloudSetupInBrowser()
       return
     }
     if response == .alertSecondButtonReturn {
@@ -2840,7 +2810,7 @@ struct CloudSettings: View {
         if enabled {
           VStack(spacing: 10) {
             statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
-            statusCard(state.cloudRemoteConfigured, okText: "Remote configured", failText: "Remote not configured", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Open rclone setup and create the configured remote.")
+            statusCard(state.cloudRemoteConfigured, okText: "Cloud account connected", failText: "Cloud account not connected", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Use Browser setup, connect Google Drive, then click I finished setup.")
             statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
             statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
             statusCard(state.networkOnline, okText: "Network reachable", failText: "Network unavailable", icon: "wifi", hint: state.networkOnline ? "" : "DDump waits and retries automatically when connection returns.")
@@ -2911,9 +2881,23 @@ struct CloudSettings: View {
             .buttonStyle(DDumpSecondaryButtonStyle())
 
             Button {
-              state.openRcloneSetupInTerminal()
+              state.launchCloudSetupInBrowser()
             } label: {
-              Label("Open rclone setup", systemImage: "terminal")
+              Label("Open browser setup", systemImage: "globe")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.finishCloudSetupFromBrowser()
+            } label: {
+              Label("I finished setup", systemImage: "checkmark.circle")
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+
+            Button {
+              state.stopCloudSetupInBrowser()
+            } label: {
+              Label("Stop setup helper", systemImage: "xmark.circle")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
 
@@ -3040,7 +3024,7 @@ struct CloudSettings: View {
             Text("Friend install flow")
               .font(DDumpFont.ui(13, weight: .semibold))
               .foregroundColor(.ddumpFG1)
-            Text("Run the DDump installer, open this tab, connect the remote once in Terminal, then set your upload destination inside the mounted cloud folder.")
+            Text("Run installer, click Browser setup, connect Google Drive on the web page, click I finished setup, done.")
               .font(DDumpFont.ui(12))
               .foregroundColor(.ddumpFG2)
             Text("macOS requires you to allow network-volume access once per app identity. There is no system-level ‘approve all’ button.")
@@ -3098,9 +3082,9 @@ struct CloudSetupGuideSheet: View {
 
       VStack(alignment: .leading, spacing: 8) {
         Text("1. Install rclone")
-        Text("2. Connect your cloud remote in Terminal")
-        Text("3. Start mount and re-check status")
-        Text("4. Set destination inside the mounted folder")
+        Text("2. Open Browser setup")
+        Text("3. In browser: Configs → New remote → Google Drive")
+        Text("4. Back in DDump: click I finished setup")
       }
       .font(DDumpFont.ui(12))
       .foregroundColor(.ddumpFG2)
@@ -3114,14 +3098,21 @@ struct CloudSetupGuideSheet: View {
         .buttonStyle(DDumpPrimaryButtonStyle())
 
         Button {
-          state.openRcloneSetupInTerminal()
+          state.launchCloudSetupInBrowser()
         } label: {
-          Label("Open rclone setup", systemImage: "terminal")
+          Label("Open browser setup", systemImage: "globe")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
       }
 
       HStack(spacing: 10) {
+        Button {
+          state.finishCloudSetupFromBrowser()
+        } label: {
+          Label("I finished setup", systemImage: "checkmark.circle")
+        }
+        .buttonStyle(DDumpPrimaryButtonStyle())
+
         Button {
           state.startCloudMount(showProgress: true)
         } label: {
@@ -3137,12 +3128,9 @@ struct CloudSetupGuideSheet: View {
         .buttonStyle(DDumpSecondaryButtonStyle())
 
         Button {
-          state.set("GDRIVE_MOUNT_ENABLED", "0")
-          state.refreshCloudMountStatus()
-          state.lastUtilityMessage = "Cloud uploads are disabled."
-          isPresented = false
+          state.stopCloudSetupInBrowser()
         } label: {
-          Label("Disable cloud", systemImage: "icloud.slash")
+          Label("Stop setup helper", systemImage: "xmark.circle")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
       }
