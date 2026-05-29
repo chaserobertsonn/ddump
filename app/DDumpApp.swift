@@ -484,6 +484,8 @@ final class AppState: ObservableObject {
   func startCloudMount(userMessagePrefix: String = "Cloud mount", showProgress: Bool = false, completion: ((Bool) -> Void)? = nil) {
     let mountPoint = gdriveMountPointForUI
     let mountLabel = gdriveMountLabelForUI
+    let remote = gdriveRemoteForUI
+    let rcloneBin = rcloneBinForUI
     let retryCSV = get("GDRIVE_MOUNT_RETRY_SECONDS", default: "15,30,60,180")
     let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
     DispatchQueue.main.async {
@@ -505,15 +507,36 @@ final class AppState: ObservableObject {
       try? FileManager.default.removeItem(at: timeoutFlag)
       let timeoutQueue = DispatchQueue(label: "ddump.cloud.mount.timeout")
       task.arguments = ["-lc", """
+set +e
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
+remote=\(shellDoubleQuoted(remote))
+rclone_bin=\(shellDoubleQuoted(rcloneBin))
 retry_csv=\(shellDoubleQuoted(retryCSV))
 wait_seconds=\(shellDoubleQuoted(waitSeconds))
 legacy_label="com.chase.rclone-gdrive"
 lock_dir="${HOME}/Library/Application Support/DDump/state/cloud-mount-start.lock"
 if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then wait_seconds=30; fi
 if [ "$wait_seconds" -lt 10 ]; then wait_seconds=10; fi
+if [ -x "$rclone_bin" ]; then
+  rclone="$rclone_bin"
+elif command -v rclone >/dev/null 2>&1; then
+  rclone="$(command -v rclone)"
+else
+  echo "ddump_reason=rclone binary not found; install rclone in Cloud settings."
+  exit 21
+fi
+remote_name="${remote%%:*}"
+if [ -z "$remote_name" ]; then
+  echo "ddump_reason=rclone remote is blank; run Cloud setup."
+  exit 22
+fi
+if ! "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "${remote_name}:"; then
+  echo "ddump_reason=rclone remote '${remote_name}:' is not configured; run Cloud setup."
+  exit 23
+fi
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+  echo "ddump_reason=mount already active"
   exit 0
 fi
 if [ -x "${HOME}/.local/bin/finderserver" ]; then
@@ -573,6 +596,7 @@ if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist
   plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
 fi
 if [ ! -f "$plist" ]; then
+  echo "ddump_reason=mount LaunchAgent missing at ${plist}."
   exit 1
 fi
 
@@ -596,6 +620,7 @@ attempt_mount() {
 }
 
 if attempt_mount; then
+  echo "ddump_reason=mount active and ready"
   exit 0
 fi
 
@@ -607,11 +632,16 @@ for delay in "${retries[@]}"; do
   fi
   /bin/sleep "$delay"
   if attempt_mount; then
+    echo "ddump_reason=mount active and ready"
     exit 0
   fi
 done
+echo "ddump_reason=mount retries exhausted (check rclone-gdrive.log)."
 exit 1
 """]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = pipe
       do {
         try task.run()
       } catch {
@@ -639,6 +669,9 @@ exit 1
       task.waitUntilExit()
       let didTimeout = FileManager.default.fileExists(atPath: timeoutFlag.path)
       try? FileManager.default.removeItem(at: timeoutFlag)
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      let reason = parsed["ddump_reason"] ?? ""
       let ok = task.terminationStatus == 0 && !didTimeout
       DispatchQueue.main.async {
         if showProgress {
@@ -650,6 +683,8 @@ exit 1
         } else {
           if didTimeout {
             self.lastUtilityMessage = "\(userMessagePrefix) timed out after \(actionTimeout)s."
+          } else if !reason.isEmpty {
+            self.lastUtilityMessage = reason
           } else {
             self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
           }
@@ -659,10 +694,12 @@ exit 1
           } else {
             missingNote = "Missing from prior checks: none currently marked."
           }
-          self.showUtilityDialog(
-            title: "Cloud mount not ready",
-            text: "\(self.lastUtilityMessage)\nPending upload batches: \(self.pendingUploadCount).\n\(missingNote)\nDiagnostics: \(self.cloudDiagnosticMessage)"
-          )
+          if showProgress {
+            self.showUtilityDialog(
+              title: "Cloud mount not ready",
+              text: "\(self.lastUtilityMessage)\nPending upload batches: \(self.pendingUploadCount).\n\(missingNote)\nDiagnostics: \(self.cloudDiagnosticMessage)"
+            )
+          }
         }
         self.refreshCloudMountStatus(showProgress: false)
         completion?(ok)
@@ -811,8 +848,13 @@ fi
 if [ -n "$rclone" ]; then
   rclone_ready=1
   echo "rclone_ready=1"
+  remotes="$("$rclone" listremotes 2>/dev/null || true)"
+  first_remote="$(printf '%s\n' "$remotes" | /usr/bin/sed -n '1p')"
+  remote_count="$(printf '%s\n' "$remotes" | /usr/bin/sed '/^$/d' | /usr/bin/wc -l | /usr/bin/awk '{print $1}')"
+  echo "first_remote=$first_remote"
+  echo "remote_count=$remote_count"
   remote_name="${remote%%:*}:"
-  if "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "$remote_name"; then
+  if printf '%s\n' "$remotes" | /usr/bin/grep -Fxq "$remote_name"; then
     remote_configured=1
     echo "remote_configured=1"
   else
@@ -824,6 +866,8 @@ else
   remote_configured=0
   echo "rclone_ready=0"
   echo "remote_configured=0"
+  echo "first_remote="
+  echo "remote_count=0"
 fi
 
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
@@ -908,6 +952,18 @@ echo "checked_at=$(/bin/date '+%Y-%m-%d %H:%M:%S')"
         self.cloudServiceLoaded = parsed["service_loaded"] == "1"
         self.cloudRcloneReady = parsed["rclone_ready"] == "1"
         self.cloudRemoteConfigured = parsed["remote_configured"] == "1"
+        let discoveredFirstRemote = (parsed["first_remote"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let discoveredRemoteCount = Int(parsed["remote_count"] ?? "0") ?? 0
+        let configuredRemote = self.get("GDRIVE_REMOTE", default: "combined:").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !self.cloudRemoteConfigured
+           && discoveredRemoteCount == 1
+           && !discoveredFirstRemote.isEmpty
+           && (configuredRemote.isEmpty || configuredRemote == "combined:") {
+          self.set("GDRIVE_REMOTE", discoveredFirstRemote)
+          self.lastUtilityMessage = "Cloud remote auto-selected: \(discoveredFirstRemote)"
+          self.refreshCloudMountStatus(showProgress: false)
+          return
+        }
         self.cloudDiagnosticMessage = parsed["diag_reason"] ?? ""
         self.networkOnline = parsed["network_online"] == "1"
         self.cloudLastCheckedAt = parsed["checked_at"] ?? self.nowTimestamp()
@@ -961,13 +1017,6 @@ if [ -z "$candidate" ] && command -v rclone >/dev/null 2>&1; then
   candidate="$(command -v rclone)"
 fi
 
-if [ -z "$candidate" ] && command -v brew >/dev/null 2>&1; then
-  brew install rclone >/tmp/ddump-rclone-install.log 2>&1 || true
-  if command -v rclone >/dev/null 2>&1; then
-    candidate="$(command -v rclone)"
-  fi
-fi
-
 if [ -z "$candidate" ]; then
   arch="$(/usr/bin/uname -m)"
   case "$arch" in
@@ -982,7 +1031,7 @@ if [ -z "$candidate" ]; then
   fi
   zip_path="$tmpdir/$archive"
   url="https://downloads.rclone.org/${archive}"
-  /usr/bin/curl -fsSL "$url" -o "$zip_path" || emit_fail "Download failed for ${url}"
+  /usr/bin/curl -fsSL --connect-timeout 20 --max-time 240 "$url" -o "$zip_path" || emit_fail "Download failed for ${url}"
   /usr/bin/unzip -q "$zip_path" -d "$tmpdir" || emit_fail "Could not unzip downloaded rclone package."
   extracted_dir="$(/usr/bin/find "$tmpdir" -maxdepth 1 -type d -name "rclone-v*" | /usr/bin/head -n 1)"
   if [ -z "$extracted_dir" ] || [ ! -x "$extracted_dir/rclone" ]; then
@@ -1083,12 +1132,81 @@ emit_success "$candidate"
     let mountRemote = gdriveRemoteForUI
     let remoteName = mountRemote.split(separator: ":").first.map(String.init) ?? "combined"
     let configuredBin = rcloneBinForUI
+    let mountPoint = gdriveMountPointForUI
+    let mountLabel = gdriveMountLabelForUI
+    let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
+    let currentDest = get("POST_MOVE_ROOT", default: "")
     let cmd = """
 #!/bin/bash
 set +e
 export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 configured_bin=\(shellDoubleQuoted(configuredBin))
 remote_name=\(shellDoubleQuoted(remoteName))
+mount_point=\(shellDoubleQuoted(mountPoint))
+mount_label=\(shellDoubleQuoted(mountLabel))
+wait_seconds=\(shellDoubleQuoted(waitSeconds))
+current_dest=\(shellDoubleQuoted(currentDest))
+config_file="${HOME}/Library/Application Support/DDump/config.env"
+legacy_label="com.chase.rclone-gdrive"
+
+write_config_key() {
+  local key="$1"
+  local value="$2"
+  local safe_value="${value//\"/\\\"}"
+  /bin/mkdir -p "$(dirname "$config_file")"
+  if [ ! -f "$config_file" ]; then
+    /usr/bin/printf '%s="%s"\\n' "$key" "$safe_value" >"$config_file"
+    return
+  fi
+  local tmp
+  tmp="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ddump-config.XXXXXX")" || return 1
+  /usr/bin/awk -v key="$key" -v value="$safe_value" '
+    BEGIN { done=0 }
+    $0 ~ "^" key "=" {
+      print key "=\\"" value "\\""
+      done=1
+      next
+    }
+    { print }
+    END {
+      if (!done) {
+        print key "=\\"" value "\\""
+      }
+    }
+  ' "$config_file" >"$tmp" && /bin/mv "$tmp" "$config_file"
+}
+
+pick_remote() {
+  local -a remotes=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && remotes+=("$line")
+  done < <("$rclone" listremotes 2>/dev/null || true)
+  if [ "${#remotes[@]}" -eq 0 ]; then
+    return 0
+  fi
+  if [ "${#remotes[@]}" -eq 1 ]; then
+    echo "${remotes[0]}"
+    return 0
+  fi
+  echo
+  echo "Choose which remote DDump should use:"
+  local i=1
+  for item in "${remotes[@]}"; do
+    echo "  ${i}) ${item}"
+    i=$((i + 1))
+  done
+  local choice
+  read -r -p "Remote number [1]: " choice
+  if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+    choice=1
+  fi
+  if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#remotes[@]}" ]; then
+    choice=1
+  fi
+  echo "${remotes[$((choice - 1))]}"
+  return 0
+}
+
 expand_user_path() {
   local raw="$1"
   raw="${raw/#\\$HOME/$HOME}"
@@ -1113,21 +1231,109 @@ else
   exit 0
 fi
 
-if "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "${remote_name}:"; then
-  "$rclone" config reconnect "${remote_name}:"
-  reconnect_rc="$?"
-  if [ "$reconnect_rc" -ne 0 ]; then
-    echo
-    echo "Reconnect failed for '${remote_name}:'. Opening full rclone config instead."
-    "$rclone" config
-  fi
-else
-  echo "Remote '${remote_name}:' is not configured yet. Opening full rclone config."
+echo
+echo "DDump Cloud Setup Assistant"
+echo "---------------------------"
+
+selected_remote=""
+selected_remote="$(pick_remote)"
+if [ -z "$selected_remote" ]; then
+  echo "No rclone remote is configured yet. Opening rclone config."
   "$rclone" config
 fi
-status="$?"
+
+selected_remote="$(pick_remote)"
+if [ -z "$selected_remote" ]; then
+  echo
+  echo "No remote was configured. DDump cloud setup is incomplete."
+  echo "Press Enter to close this window."
+  read -r _ || true
+  exit 0
+fi
+
 echo
-echo "rclone setup exited with status ${status}."
+echo "Selected remote: ${selected_remote}"
+
+if [ -n "$remote_name" ] && [ "${selected_remote%:}" = "${remote_name}" ]; then
+  read -r -p "Reconnect auth for ${selected_remote} now? [y/N]: " reconnect_ans
+  if [[ "$reconnect_ans" =~ ^[Yy]$ ]]; then
+    "$rclone" config reconnect "${selected_remote}" || true
+  fi
+fi
+
+if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then
+  wait_seconds=30
+fi
+if [ "$wait_seconds" -lt 10 ]; then
+  wait_seconds=10
+fi
+
+default_dest="${mount_point}/DDump Uploads"
+if [ -n "$current_dest" ]; then
+  default_dest="$current_dest"
+fi
+echo
+read -r -p "Destination root for uploads [${default_dest}]: " chosen_dest
+if [ -z "$chosen_dest" ]; then
+  chosen_dest="$default_dest"
+fi
+
+write_config_key "RCLONE_BIN" "$rclone"
+write_config_key "GDRIVE_REMOTE" "$selected_remote"
+write_config_key "GDRIVE_MOUNT_POINT" "$mount_point"
+write_config_key "GDRIVE_MOUNT_LABEL" "$mount_label"
+write_config_key "GDRIVE_MOUNT_ENABLED" "1"
+write_config_key "ENABLE_POST_EJECT_MOVE" "1"
+write_config_key "POST_MOVE_ROOT" "$chosen_dest"
+
+echo
+echo "Saved DDump cloud settings:"
+echo "  RCLONE_BIN=$rclone"
+echo "  GDRIVE_REMOTE=$selected_remote"
+echo "  POST_MOVE_ROOT=$chosen_dest"
+
+uid="$(/usr/bin/id -u)"
+plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist" ]; then
+  mount_label="$legacy_label"
+  plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
+fi
+
+if [ ! -f "$plist" ]; then
+  echo
+  echo "Mount LaunchAgent not found at $plist"
+  echo "Run DDump install again, then rerun this setup."
+  echo "Press Enter to close this window."
+  read -r _ || true
+  exit 0
+fi
+
+/bin/mkdir -p "$mount_point"
+/bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+/bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+i=0
+mounted=0
+while [ "$i" -lt "$wait_seconds" ]; do
+  if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+    mounted=1
+    break
+  fi
+  /bin/sleep 1
+  i=$((i + 1))
+done
+
+echo
+if [ "$mounted" -eq 1 ]; then
+  echo "Cloud mount is active at ${mount_point}."
+else
+  echo "Cloud mount is still inactive after ${wait_seconds}s."
+  last_log="$(tail -n 1 "${HOME}/Library/Application Support/DDump/logs/rclone-gdrive.log" 2>/dev/null || true)"
+  if [ -n "$last_log" ]; then
+    echo "Last mount log: ${last_log}"
+  fi
+fi
+
+echo "Cloud setup assistant finished."
 echo "Press Enter to close this window."
 read -r _ || true
 exit 0
@@ -1168,23 +1374,22 @@ exit 0
     alert.alertStyle = .informational
     alert.messageText = "Cloud setup"
     alert.informativeText = """
-1) Install rclone
-2) Connect your cloud remote
-3) Start mount
-4) Set destination inside mounted cloud folder
+1) Install rclone (if needed)
+2) Run Cloud setup assistant (connect remote + save destination)
+3) DDump starts mount and verifies it
 
 If you do not want cloud right now, disable it below.
 """
+    alert.addButton(withTitle: "Run Cloud setup")
     alert.addButton(withTitle: "Install rclone")
-    alert.addButton(withTitle: "Open rclone setup")
     alert.addButton(withTitle: "Dismiss")
     let response = alert.runModal()
     if response == .alertFirstButtonReturn {
-      installRcloneViaApp()
+      openRcloneSetupInTerminal()
       return
     }
     if response == .alertSecondButtonReturn {
-      openRcloneSetupInTerminal()
+      installRcloneViaApp()
       return
     }
   }
