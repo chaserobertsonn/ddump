@@ -84,7 +84,7 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 ### E) Mount and network operations
 
 - Bundled rclone mount helper script and LaunchAgent.
-- Mount retry backoff (`5,15,60,180,360,600` default).
+- Mount retry backoff (`15,30,60,180` default).
 - Hard restart mount action in app.
 - Finder-server keepalive guard during uploads.
 - Auto-off timer guard refresh loop during uploads.
@@ -116,7 +116,8 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 - Health panel: free space, pending count, staging folder count.
 - Retry pending uploads action.
 - Safe cleanup action.
-- Settings tabs: Destination, Naming, Detection, Cloud, Calendar, Appearance.
+- Settings tabs: General, Naming, Detection, Notifications, Cloud, Calendar.
+- General settings include destination mode, destination folders, appearance, and update checks.
 - Info tooltips (`i`) for key settings.
 - Theme mode: light/dark/system.
 - Icon preset library:
@@ -224,7 +225,7 @@ DDump keeps staging copies, tracks incomplete state, prioritizes recovery on rei
 12. Offline-first field mode preset for travel/event environments.
 13. One-click “handoff package” bundle for editors (folder + manifest + receipt).
 14. Shoot timeline view combining imports across cards/cameras for the day.
-15. Built-in onboarding checklist + test mode for first-time friend installs.
+15. Built-in onboarding checklist + test mode for first-time installs.
 
 ## Messaging Variations
 

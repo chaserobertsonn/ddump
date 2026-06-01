@@ -25,21 +25,46 @@ notify() {
   local title="$1"
   local msg="$2"
   local kind="${3:-info}"   # info | warn | done
+  local event_key="${4:-general}"
+  if [[ "$event_key" != "general" ]] && [[ "$(macos_notify_enabled "$event_key")" != "1" ]]; then
+    return
+  fi
   if [[ "${USE_NOTIFICATIONS:-1}" != "1" ]]; then
     # Legacy mode: fall back to old toggle.
     if [[ "${ENABLE_NOTIFICATIONS:-0}" != "1" ]]; then
       return
     fi
-    /usr/bin/osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || true
+    /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
+      || /usr/bin/osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
+      || true
     return
   fi
   local notify_script="${APP_SUPPORT_DIR}/bin/ddump-notify.sh"
   if [[ -x "$notify_script" ]]; then
     DDUMP_NOTIFIER_TIMEOUT="${NOTIFICATION_TIMEOUT_SECONDS:-60}" \
+      DDUMP_NOTIFIER_SENDER="com.ddump.app" \
+      DDUMP_NOTIFIER_APP_ID="com.ddump.app" \
       /bin/bash "$notify_script" "$kind" "$title" "$msg" >/dev/null 2>&1 || true
   else
-    /usr/bin/osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || true
+    /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
+      || /usr/bin/osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
+      || true
   fi
+}
+
+macos_notify_enabled() {
+  local event_key="$1"
+  case "$event_key" in
+    staging_started) printf '%s' "${MACOS_NOTIFY_STAGING_STARTED:-1}" ;;
+    card_ejected) printf '%s' "${MACOS_NOTIFY_CARD_EJECTED:-1}" ;;
+    upload_started) printf '%s' "${MACOS_NOTIFY_UPLOAD_STARTED:-1}" ;;
+    upload_complete) printf '%s' "${MACOS_NOTIFY_UPLOAD_COMPLETE:-1}" ;;
+    mount_failed) printf '%s' "${MACOS_NOTIFY_MOUNT_FAILED:-0}" ;;
+    card_almost_full) printf '%s' "${MACOS_NOTIFY_CARD_ALMOST_FULL:-1}" ;;
+    integrity_warning) printf '%s' "${MACOS_NOTIFY_INTEGRITY_WARNING:-1}" ;;
+    pending_recovery_missing) printf '%s' "${MACOS_NOTIFY_PENDING_RECOVERY_MISSING:-1}" ;;
+    *) printf '1' ;;
+  esac
 }
 
 notify_ask() {
@@ -86,21 +111,29 @@ ntfy_notify() {
   local event_key="$1"
   local title="$2"
   local text="$3"
+  shift 3
   local topic="${NTFY_TOPIC:-}"
   [[ -n "$topic" ]] || return 0
 
   local enabled_key=""
+  local template_key=""
   case "$event_key" in
-    staging_started) enabled_key="${NTFY_NOTIFY_STAGING_STARTED:-0}" ;;
-    card_ejected) enabled_key="${NTFY_NOTIFY_CARD_EJECTED:-1}" ;;
-    upload_started) enabled_key="${NTFY_NOTIFY_UPLOAD_STARTED:-0}" ;;
-    upload_complete) enabled_key="${NTFY_NOTIFY_UPLOAD_COMPLETE:-1}" ;;
-    mount_failed) enabled_key="${NTFY_NOTIFY_MOUNT_FAILED:-1}" ;;
-    card_almost_full) enabled_key="${NTFY_NOTIFY_CARD_ALMOST_FULL:-1}" ;;
-    integrity_warning) enabled_key="${NTFY_NOTIFY_INTEGRITY_WARNING:-1}" ;;
+    staging_started) enabled_key="${NTFY_NOTIFY_STAGING_STARTED:-0}"; template_key="NTFY_TEMPLATE_STAGING_STARTED" ;;
+    card_ejected) enabled_key="${NTFY_NOTIFY_CARD_EJECTED:-1}"; template_key="NTFY_TEMPLATE_CARD_EJECTED" ;;
+    upload_started) enabled_key="${NTFY_NOTIFY_UPLOAD_STARTED:-0}"; template_key="NTFY_TEMPLATE_UPLOAD_STARTED" ;;
+    upload_complete) enabled_key="${NTFY_NOTIFY_UPLOAD_COMPLETE:-1}"; template_key="NTFY_TEMPLATE_UPLOAD_COMPLETE" ;;
+    mount_failed) enabled_key="${NTFY_NOTIFY_MOUNT_FAILED:-0}"; template_key="NTFY_TEMPLATE_MOUNT_FAILED" ;;
+    card_almost_full) enabled_key="${NTFY_NOTIFY_CARD_ALMOST_FULL:-1}"; template_key="NTFY_TEMPLATE_CARD_ALMOST_FULL" ;;
+    integrity_warning) enabled_key="${NTFY_NOTIFY_INTEGRITY_WARNING:-1}"; template_key="NTFY_TEMPLATE_INTEGRITY_WARNING" ;;
+    pending_recovery_missing) enabled_key="${NTFY_NOTIFY_PENDING_RECOVERY_MISSING:-1}"; template_key="NTFY_TEMPLATE_PENDING_RECOVERY_MISSING" ;;
     *) enabled_key="0" ;;
   esac
   [[ "$enabled_key" == "1" ]] || return 0
+
+  local template="${!template_key:-}"
+  if [[ -n "$template" ]]; then
+    text="$(render_notification_template "$template" "title=$title" "event=$event_key" "message=$text" "$@")"
+  fi
 
   local body
   body="$(printf '%s\n%s\n%s' "$title" "$event_key" "$text")"
@@ -112,6 +145,18 @@ ntfy_notify() {
     log "ntfy notification failed for event=${event_key} topic=${topic}"
     return 1
   fi
+}
+
+render_notification_template() {
+  local rendered="$1"
+  shift
+  local pair key value
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    rendered="${rendered//\{$key\}/$value}"
+  done
+  printf '%s' "$rendered"
 }
 
 is_trusted_name_prefix() {
@@ -214,7 +259,7 @@ DEST_ROOT="$HOME/Temp"
 LOOKBACK_HOURS="24"
 CANDIDATE_MODE="lookback"
 SOURCE_SUBDIR="DCIM"
-TRUSTED_NAME_PREFIXES="DFP_"
+TRUSTED_NAME_PREFIXES=""
 PROMPT_TO_REMEMBER_UNKNOWN="1"
 PROMPT_FOR_UNKNOWN_CARD_ACTION="1"
 SKIP_INTERNAL_VOLUMES="1"
@@ -287,6 +332,7 @@ PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
 STOP_AFTER_FILE_FLAG="${CONTROL_DIR}/stop_after_file.flag"
 KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 EJECT_NOW_FLAG="${CONTROL_DIR}/eject_now.flag"
+MANUAL_SHOOT_NAME_FILE="${CONTROL_DIR}/manual_shoot_name.txt"
 MANUAL_SELECTION_FILE="${DDUMP_MANUAL_SELECTION_FILE:-}"
 MANUAL_SELECTION_SAFETY_GB="${DDUMP_MANUAL_SELECTION_SAFETY_GB:-2}"
 FINDERSERVER_BIN="${HOME}/.local/bin/finderserver"
@@ -300,14 +346,31 @@ RCLONE_BIN="${HOME}/bin/rclone"
 GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
 GDRIVE_MOUNT_RETRY_SECONDS="15,30,60,180"
 GDRIVE_MOUNT_WAIT_SECONDS="30"
-NTFY_TOPIC="dfp-chase-scheduler"
+NTFY_TOPIC=""
 NTFY_NOTIFY_STAGING_STARTED="0"
 NTFY_NOTIFY_CARD_EJECTED="1"
 NTFY_NOTIFY_UPLOAD_STARTED="0"
 NTFY_NOTIFY_UPLOAD_COMPLETE="1"
-NTFY_NOTIFY_MOUNT_FAILED="1"
+NTFY_NOTIFY_MOUNT_FAILED="0"
 NTFY_NOTIFY_CARD_ALMOST_FULL="1"
 NTFY_NOTIFY_INTEGRITY_WARNING="1"
+NTFY_NOTIFY_PENDING_RECOVERY_MISSING="1"
+MACOS_NOTIFY_STAGING_STARTED="1"
+MACOS_NOTIFY_CARD_EJECTED="1"
+MACOS_NOTIFY_UPLOAD_STARTED="1"
+MACOS_NOTIFY_UPLOAD_COMPLETE="1"
+MACOS_NOTIFY_MOUNT_FAILED="0"
+MACOS_NOTIFY_CARD_ALMOST_FULL="1"
+MACOS_NOTIFY_INTEGRITY_WARNING="1"
+MACOS_NOTIFY_PENDING_RECOVERY_MISSING="1"
+NTFY_TEMPLATE_STAGING_STARTED="{message}"
+NTFY_TEMPLATE_CARD_EJECTED="{message}"
+NTFY_TEMPLATE_UPLOAD_STARTED="{message}"
+NTFY_TEMPLATE_UPLOAD_COMPLETE="{message}"
+NTFY_TEMPLATE_MOUNT_FAILED="{message}"
+NTFY_TEMPLATE_CARD_ALMOST_FULL="{message}"
+NTFY_TEMPLATE_INTEGRITY_WARNING="{message}"
+NTFY_TEMPLATE_PENDING_RECOVERY_MISSING="{import_time} import is missing {missing_count} of {total_count} items. Please reinsert the same card to retry."
 CARD_ALMOST_FULL_ALERT_ENABLED="1"
 APP_COLOR_SCHEME="system"
 
@@ -721,7 +784,22 @@ path_uses_gdrive_mount() {
 
 gdrive_mount_active() {
   local mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
-  /sbin/mount | /usr/bin/grep -q " on ${mount_dir} "
+  /sbin/mount | /usr/bin/grep -q " on ${mount_dir} " || return 1
+  /bin/ls -1 "$mount_dir" >/dev/null 2>&1 &
+  local probe_pid="$!"
+  local elapsed=0
+  while /bin/kill -0 "$probe_pid" >/dev/null 2>&1; do
+    if [[ "$elapsed" -ge 8 ]]; then
+      /bin/kill -TERM "$probe_pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$probe_pid" >/dev/null 2>&1 || true
+      /bin/wait "$probe_pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  /bin/wait "$probe_pid" >/dev/null 2>&1
 }
 
 gdrive_mount_plist_path() {
@@ -939,7 +1017,7 @@ stop_gdrive_mount_if_started() {
   [[ "${ddump_started_gdrive_mount:-0}" == "1" ]] || return 0
   stop_finderserver_timer_guard
   if ddump_ui_app_running; then
-    log "Keeping Google Drive mounted because DDump app is open."
+    log "Leaving Google Drive mounted while DDump app is open; idle watcher will unmount after app closes."
     return 0
   fi
   local uid label mount_dir
@@ -948,7 +1026,7 @@ stop_gdrive_mount_if_started() {
   mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
 
   if gdrive_mount_active; then
-    if /usr/sbin/diskutil unmount "$mount_dir" >/dev/null 2>&1; then
+    if /sbin/umount -f "$mount_dir" >/dev/null 2>&1 || /usr/sbin/diskutil unmount force "$mount_dir" >/dev/null 2>&1; then
       /bin/launchctl bootout "gui/${uid}/${label}" >/dev/null 2>&1 || true
       log "Stopped Google Drive rclone mount started by DDump."
     else
@@ -1443,7 +1521,7 @@ check_card_almost_full_after_import() {
     imported_human="$(bytes_to_human "$imported_bytes")"
     free_human="$(bytes_to_human "$free_bytes")"
     log "Card almost full warning: ${vol_name}, free=${free_human}, last_import=${imported_human}"
-    notify "DDump" "⚠️ ${vol_name}: only ${free_human} free. Last import was ${imported_human}; another shoot this size likely needs format/card swap." warn
+    notify "DDump" "⚠️ ${vol_name}: only ${free_human} free. Last import was ${imported_human}; another shoot this size likely needs format/card swap." warn "card_almost_full"
     ntfy_notify "card_almost_full" "DDump: card almost full" "${vol_name}: free ${free_human}, last import ${imported_human}. Another similar shoot may require format/card swap."
   fi
 }
@@ -2652,8 +2730,8 @@ existing_smart_bucket_for_index() {
 compute_buckets_smart() {
   # Smart mode keeps the cluster grouping, but if today's final Drive date
   # folder already has named shoot folders, cluster 1 maps to the first folder,
-  # cluster 2 to the second, etc. This lets DDump land in real Densley shoot
-  # folders without hard-coding daily dates.
+  # cluster 2 to the second, etc. This lets DDump land in existing shoot folders
+  # without hard-coding daily dates.
   local dest_dir="$1"
   local gap_min="${CLUSTER_GAP_MINUTES:-45}"
   local tmpl="$CLUSTER_FOLDER_TEMPLATE"
@@ -2859,6 +2937,28 @@ sanitize_bucket_name() {
   printf '%.180s' "$cleaned"
 }
 
+manual_shoot_name_override() {
+  [[ -f "$MANUAL_SHOOT_NAME_FILE" ]] || return 1
+  local raw
+  raw="$(/usr/bin/head -n 1 "$MANUAL_SHOOT_NAME_FILE" 2>/dev/null || true)"
+  raw="$(trim "$raw")"
+  [[ -n "$raw" ]] || return 1
+  printf '%s' "$raw"
+}
+
+compute_buckets_manual_override() {
+  local bucket
+  if ! bucket="$(manual_shoot_name_override)"; then
+    return 1
+  fi
+  local f
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    printf '%s\t%s\n' "$f" "$bucket"
+  done
+  return 0
+}
+
 rebucket_imported_files() {
   # Re-organize already-imported files in dest_dir into bucket folders per
   # FOLDER_NAMING_STRATEGY. Rewrites the post-move queue with the new bucket
@@ -2878,33 +2978,37 @@ rebucket_imported_files() {
   bucket_tsv="$(mktemp "${STATE_DIR}/buckets.${run_id}.XXXXXX")"
 
   local primary_ok=1
-  case "$strategy" in
-    sequential)
-      compute_buckets_sequential "$dest_dir" <"$imported_list" >"$bucket_tsv"
-      ;;
-    custom)
-      compute_buckets_custom "$dest_dir" <"$imported_list" >"$bucket_tsv" || primary_ok=0
-      ;;
-    cluster)
-      compute_buckets_cluster "$dest_dir" <"$imported_list" >"$bucket_tsv"
-      ;;
-    smart)
-      if infer_smart_root_from_sample_path >/dev/null; then
-        compute_buckets_smart "$dest_dir" <"$imported_list" >"$bucket_tsv"
-      else
-        log "FOLDER_NAMING_STRATEGY=smart needs SMART_SAMPLE_PATH with /YYYY/YYYY.MM/YYYY.MM.DD/; using fallback '$fallback'."
-        primary_ok=0
-      fi
-      ;;
-    calendar)
-      compute_buckets_calendar "$dest_dir" <"$imported_list" >"$bucket_tsv" || primary_ok=0
-      ;;
-    *)
-      log "Unknown FOLDER_NAMING_STRATEGY='$strategy'; keeping camera folders."
-      rm -f "$bucket_tsv"
-      return 0
-      ;;
-  esac
+  if compute_buckets_manual_override <"$imported_list" >"$bucket_tsv"; then
+    log "Using manual shoot name override from ${MANUAL_SHOOT_NAME_FILE}."
+  else
+    case "$strategy" in
+      sequential)
+        compute_buckets_sequential "$dest_dir" <"$imported_list" >"$bucket_tsv"
+        ;;
+      custom)
+        compute_buckets_custom "$dest_dir" <"$imported_list" >"$bucket_tsv" || primary_ok=0
+        ;;
+      cluster)
+        compute_buckets_cluster "$dest_dir" <"$imported_list" >"$bucket_tsv"
+        ;;
+      smart)
+        if infer_smart_root_from_sample_path >/dev/null; then
+          compute_buckets_smart "$dest_dir" <"$imported_list" >"$bucket_tsv"
+        else
+          log "FOLDER_NAMING_STRATEGY=smart needs SMART_SAMPLE_PATH with /YYYY/YYYY.MM/YYYY.MM.DD/; using fallback '$fallback'."
+          primary_ok=0
+        fi
+        ;;
+      calendar)
+        compute_buckets_calendar "$dest_dir" <"$imported_list" >"$bucket_tsv" || primary_ok=0
+        ;;
+      *)
+        log "Unknown FOLDER_NAMING_STRATEGY='$strategy'; keeping camera folders."
+        rm -f "$bucket_tsv"
+        return 0
+        ;;
+    esac
+  fi
 
   if [[ "$primary_ok" -eq 0 ]]; then
     compute_buckets_with_fallback "$fallback" "$dest_dir" <"$imported_list" >"$bucket_tsv"
@@ -3071,6 +3175,62 @@ uuid_has_pending_recovery_file() {
   return 1
 }
 
+pending_import_label() {
+  local human
+  human="$(pending_import_time_label "$1")"
+  if [[ -n "$human" ]]; then
+    printf 'Import from %s' "$human"
+  else
+    printf 'Pending import'
+  fi
+}
+
+pending_import_time_label() {
+  local pending_file="$1"
+  local base stamp human
+  base="$(basename "$pending_file")"
+  stamp="$(printf '%s' "$base" | /usr/bin/sed -n 's/^pending\.[^.]*\.\([0-9]\{8\}-[0-9]\{6\}\)\.tsv$/\1/p')"
+  if [[ -n "$stamp" ]]; then
+    human="$(/bin/date -j -f '%Y%m%d-%H%M%S' "$stamp" '+%-m/%-d %-I:%M%p' 2>/dev/null | /usr/bin/tr '[:upper:]' '[:lower:]' || true)"
+    if [[ -n "$human" ]]; then
+      printf '%s' "$human"
+      return
+    fi
+  fi
+  /usr/bin/stat -f '%Sm' -t '%-m/%-d %-I:%M%p' "$pending_file" 2>/dev/null | /usr/bin/tr '[:upper:]' '[:lower:]' || true
+}
+
+append_limited_list_item() {
+  local current="$1"
+  local item="$2"
+  if [[ -z "$current" ]]; then
+    printf '%s' "$item"
+  else
+    printf '%s, %s' "$current" "$item"
+  fi
+}
+
+missing_pending_recovery_message() {
+  local pending_file="$1"
+  local missing_count="$2"
+  local pending_count="$3"
+  local examples="$4"
+  local roots="$5"
+  local label where
+  label="$(pending_import_label "$pending_file")"
+  where=""
+  if [[ -n "$roots" ]]; then
+    where=" Missing from: ${roots}."
+  fi
+  if [[ -n "$examples" ]]; then
+    printf '%s is missing %s of %s staged item(s). Examples: %s.%s Reinsert the original card or restore the staging folder so DDump can retry.' \
+      "$label" "$missing_count" "$pending_count" "$examples" "$where"
+  else
+    printf '%s is missing %s of %s staged item(s).%s Reinsert the original card or restore the staging folder so DDump can retry.' \
+      "$label" "$missing_count" "$pending_count" "$where"
+  fi
+}
+
 uuid_has_unfinished_media_rows() {
   local uuid="$1"
   db_available || return 1
@@ -3136,6 +3296,8 @@ recover_pending_imports() {
     fi
 
     local imported_list queue_file dest_dir row_dest row_file queued_mode pending_row_count missing_row_count not_due
+    local row_root recovery_msg
+    local missing_examples missing_example_count missing_roots missing_root_count
     imported_list="$(/usr/bin/mktemp "${STATE_DIR}/recover-imported.${run_id}.XXXXXX")"
     queue_file="$(/usr/bin/mktemp "${STATE_DIR}/recover-queue.${run_id}.XXXXXX")"
     dest_dir=""
@@ -3143,6 +3305,10 @@ recover_pending_imports() {
     pending_row_count=0
     missing_row_count=0
     not_due=0
+    missing_examples=""
+    missing_example_count=0
+    missing_roots=""
+    missing_root_count=0
 
     local row_mode row_attempts row_next now_epoch
     now_epoch="$(/bin/date '+%s')"
@@ -3161,6 +3327,15 @@ recover_pending_imports() {
       fi
       if [[ ! -e "$row_file" ]]; then
         missing_row_count=$((missing_row_count + 1))
+        if [[ "$missing_example_count" -lt 4 ]]; then
+          missing_examples="$(append_limited_list_item "$missing_examples" "$(basename "$row_file")")"
+          missing_example_count=$((missing_example_count + 1))
+        fi
+        row_root="$(dirname "$row_file")"
+        if [[ "$missing_root_count" -lt 2 ]] && [[ ", ${missing_roots}, " != *", ${row_root}, "* ]]; then
+          missing_roots="$(append_limited_list_item "$missing_roots" "$row_root")"
+          missing_root_count=$((missing_root_count + 1))
+        fi
         db_update_upload_job_status "$row_file" "needs_reinsert" "${row_attempts:-0}" "${row_next:-0}" "local staged file missing"
         db_mark_media_needs_reinsert_by_local_path "$row_file" "local staged file missing before upload"
         continue
@@ -3187,9 +3362,17 @@ recover_pending_imports() {
 
     if [[ -z "$dest_dir" ]] || { [[ "$queued_mode" -ne 1 ]] && [[ ! -s "$imported_list" ]]; }; then
       if [[ "$pending_row_count" -gt 0 && "$missing_row_count" -gt 0 ]]; then
-        log "Pending recovery cannot continue because staged files are missing; reinsert the card if those files were not uploaded: ${pending_file}"
-        notify "DDump" "Pending import files are missing. Reinsert the card so DDump can retry." warn
-        bump_pending_retry "$pending_file" "local staged file missing; card reinsert needed"
+        recovery_msg="$(missing_pending_recovery_message "$pending_file" "$missing_row_count" "$pending_row_count" "$missing_examples" "$missing_roots")"
+        log "Pending recovery cannot continue because staged files are missing: ${recovery_msg} Pending file: ${pending_file}"
+        notify "DDump" "$recovery_msg" warn "pending_recovery_missing"
+        ntfy_notify "pending_recovery_missing" "DDump: recovery needs card" "$recovery_msg" \
+          "import=$(pending_import_label "$pending_file")" \
+          "import_time=$(pending_import_time_label "$pending_file")" \
+          "missing_count=$missing_row_count" \
+          "total_count=$pending_row_count" \
+          "examples=$missing_examples" \
+          "roots=$missing_roots"
+        bump_pending_retry "$pending_file" "local staged file missing; card/staging restore needed"
       else
         log "Pending recovery had no existing files; clearing ${pending_file}."
         /bin/rm -f "$pending_file"
@@ -3417,13 +3600,13 @@ for vol_path in /Volumes/*; do
 
   # Tell the user something is happening right now.
   if [[ "$manual_selection_for_volume" == "1" ]]; then
-    notify "DDump" "📷 ${vol_name}: importing manual selection..." info
+    notify "DDump" "📷 ${vol_name}: importing manual selection..." info "staging_started"
     ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: manual-selection staging started."
   elif [[ "$vol_photo_total" =~ ^[0-9]+$ && "$vol_photo_total" -gt 0 ]]; then
-    notify "DDump" "📷 ${vol_name}: scanning ${vol_photo_total} files (${vol_photo_recent} from last ${PHOTO_RECENCY_HOURS:-24}h)..." info
+    notify "DDump" "📷 ${vol_name}: scanning ${vol_photo_total} files (${vol_photo_recent} from last ${PHOTO_RECENCY_HOURS:-24}h)..." info "staging_started"
     ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: staging started (detected ${vol_photo_total} files)."
   else
-    notify "DDump" "📷 ${vol_name}: scanning..." info
+    notify "DDump" "📷 ${vol_name}: scanning..." info "staging_started"
     ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: staging started."
   fi
 
@@ -3677,7 +3860,7 @@ for vol_path in /Volumes/*; do
         summary_errors_total=$((summary_errors_total + 1))
       fi
     fi
-    notify "DDump" "${vol_name}: no new files, ${ejected_msg}" info
+    notify "DDump" "${vol_name}: no new files, ${ejected_msg}" info "card_ejected"
     /bin/rm -f "$manual_candidates_file"
     /bin/rm -f "$post_move_queue_file"
     /bin/rm -f "$imported_files_file"
@@ -3729,7 +3912,7 @@ for vol_path in /Volumes/*; do
     # Re-organize imported files into bucket folders per FOLDER_NAMING_STRATEGY,
     # then queue the bucket folders for post-move.
     if [[ "$imported_this_volume" -gt 0 ]]; then
-      notify "DDump" "📂 ${vol_name}: copy done (${imported_this_volume} files). Uploading to Drive..." info
+      notify "DDump" "📂 ${vol_name}: copy done (${imported_this_volume} files). Uploading to Drive..." info "upload_started"
       ntfy_notify "upload_started" "DDump: upload started" "${vol_name}: upload started for ${imported_this_volume} file(s)."
     fi
     rebucket_ok=1
@@ -3756,7 +3939,7 @@ for vol_path in /Volumes/*; do
         friendly_target_short="$friendly_target"
       fi
       /bin/rm -f "$pending_imports_file"
-      notify "DDump" "✅ ${vol_name}: ${imported_this_volume} files uploaded to ${friendly_target_short}" done
+      notify "DDump" "✅ ${vol_name}: ${imported_this_volume} files uploaded to ${friendly_target_short}" done "upload_complete"
       ntfy_notify "upload_complete" "DDump: upload complete" "${vol_name}: uploaded ${imported_this_volume} file(s) to ${friendly_target_short}."
     else
       status="partial"

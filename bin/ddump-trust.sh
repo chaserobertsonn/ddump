@@ -16,7 +16,7 @@ Usage:
   $(basename "$0") <volume-name-or-/Volumes/path>
 
 Example:
-  $(basename "$0") DFP_MAIN_CARD
+  $(basename "$0") EOS_DIGITAL
 USAGE
 }
 

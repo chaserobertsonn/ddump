@@ -104,6 +104,40 @@ fi
 
 mkdir -p "$MOUNT"
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  "$@" >/dev/null 2>&1 &
+  local pid="$!"
+  local elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if (( elapsed >= seconds )); then
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  /bin/wait "$pid" >/dev/null 2>&1
+}
+
+mount_entry_exists() {
+  /sbin/mount | /usr/bin/grep -q " on $MOUNT "
+}
+
+mount_responds() {
+  mount_entry_exists || return 1
+  run_with_timeout 8 /bin/ls -1 "$MOUNT"
+}
+
+force_unmount_mountpoint() {
+  run_with_timeout 10 /sbin/umount -f "$MOUNT" || true
+  run_with_timeout 10 /usr/sbin/diskutil unmount force "$MOUNT" || true
+}
+
 MOUNT_COMMAND="${RCLONE_MOUNT_COMMAND:-auto}"
 if [[ "$MOUNT_COMMAND" == "auto" || -z "$MOUNT_COMMAND" ]]; then
   # Probing the subcommand directly is more reliable than parsing `rclone help`
@@ -121,14 +155,13 @@ if [[ "$MOUNT_COMMAND" != "mount" && "$MOUNT_COMMAND" != "nfsmount" ]]; then
 fi
 
 # If a healthy mount already exists, keep it and exit cleanly.
-if mount | grep -q " on $MOUNT "; then
-  if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" >/dev/null 2>&1; then
+if mount_entry_exists; then
+  if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" >/dev/null 2>&1 && mount_responds; then
     echo "$(date)  mount already active at $MOUNT; leaving existing session in place" >> "$LOG"
     exit 0
   fi
-  echo "$(date)  stale mount found (no matching rclone process), force-unmounting" >> "$LOG"
-  diskutil unmount force "$MOUNT" >/dev/null 2>&1 || true
-  umount -f "$MOUNT" >/dev/null 2>&1 || true
+  echo "$(date)  stale/unresponsive mount found, force-unmounting $MOUNT" >> "$LOG"
+  force_unmount_mountpoint
   sleep 2
 fi
 
@@ -139,8 +172,7 @@ if [[ -n "${stale_pids}" ]]; then
   /bin/kill -TERM ${stale_pids} >/dev/null 2>&1 || true
   /bin/sleep 2
   /bin/kill -KILL ${stale_pids} >/dev/null 2>&1 || true
-  diskutil unmount force "$MOUNT" >/dev/null 2>&1 || true
-  umount -f "$MOUNT" >/dev/null 2>&1 || true
+  force_unmount_mountpoint
   sleep 1
 fi
 
@@ -178,7 +210,5 @@ exec "$RCLONE" "$MOUNT_COMMAND" "$REMOTE" "$MOUNT" \
   --exclude ".TemporaryItems/**" \
   --exclude ".AppleDouble/**" \
   --exclude ".AppleDB/**" \
-  --rc \
-  --rc-addr 127.0.0.1:5572 \
   --log-file "$LOG" \
   --log-level NOTICE

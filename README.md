@@ -47,8 +47,13 @@ It is built for high-confidence transfer workflows:
 ### 3) Cloud/mount robustness
 
 - Packaged rclone mount helper LaunchAgent.
+- Cloud setup wizard only runs when cloud uploads are enabled.
+- Wizard installs/uses rclone, opens Google sign-in, creates the Drive remote, and builds a combined mount when shared drives are available.
+- Google Drive shared drives mount as top-level folders so both personal and team drives can be selected.
+- Uses rclone `nfsmount`; macFUSE is not required for the default DDump Google Drive mount path.
+- DDump uses a passive app keepalive and an idle watcher: it does not remount every minute, and the cloud mount is unmounted after the idle timeout when DDump is closed and no transfer is running.
 - Mount preflight checks before transfer.
-- Mount retry backoff schedule (`5,15,60,180,360,600` by default).
+- Mount retry backoff schedule (`15,30,60,180` by default).
 - Finder-server timer guard during uploads to avoid unmount mid-transfer.
 - Hard restart mount action in app.
 - Cloud diagnostics in app (binary/remote/service/mount state + reason string).
@@ -72,6 +77,16 @@ Strategies:
 - `calendar`: match file capture times to Google Calendar events.
 - `smart`: infer date-ladder destination shape from a sample path.
 - `camera`: keep camera folder structure names.
+
+Smart mode is for date-ladder destination folders such as:
+
+```text
+.../Client Uploads/Photos/2026/2026.05/2026.05.31/Shoot Name
+```
+
+Paste one real sample shoot folder in Settings -> Naming. DDump reuses the root before the date ladder, then automatically uploads to today's `YYYY/YYYY.MM/YYYY.MM.DD` folder on every run.
+
+During an active card transfer, the main progress panel also has an optional Shoot name field. If filled in before staging finishes, that name overrides automatic bucket naming for that run.
 
 Grouping controls:
 
@@ -102,23 +117,32 @@ Grouping controls:
 
 Tabs:
 
-- Destination
+- General
 - Naming
 - Detection
+- Notifications
 - Cloud
 - Calendar
-- Appearance
 
 Includes:
 
 - Tooltips (`i` hints) for key settings.
+- Destination mode and destination folders under General.
+- Check-for-updates controls under General, off by default.
 - Theme mode: light/dark/system.
 - Icon preset library with multiple stored icons.
 - Default icon selection for light mode and dark mode.
 
 ## Install
 
-Run from this repository on macOS:
+Download the latest DMG from GitHub Releases, open it, then double-click
+`Install DDump.command`. The installer creates `~/Applications/DDump.app` and
+the helper files under your user Library.
+
+Early builds are unsigned. If macOS blocks launch, control-click the installer
+or app and choose Open.
+
+Developers can also run from this repository on macOS:
 
 ```bash
 ./bin/install.sh
@@ -194,24 +218,37 @@ Important keys:
 - `LOOKBACK_HOURS`
 - `FOLDER_NAMING_STRATEGY`
 - `FOLDER_NAMING_FALLBACK`
+- `SMART_SAMPLE_PATH`
+- `SMART_ASSIGN_EXISTING_FOLDERS`
 - `CLUSTER_GROUPING_ENABLED`
 - `CLUSTER_GAP_MINUTES`
 - `CLUSTER_ATTACH_MINUTES`
 - `DB_ENABLED`
 - `GDRIVE_MOUNT_ENABLED`
+- `GDRIVE_REMOTE`
+- `GDRIVE_MOUNT_POINT`
 - `GDRIVE_MOUNT_RETRY_SECONDS`
+- `CLOUD_IDLE_UNMOUNT_SECONDS`
 - `NETWORK_RESUME_ENABLED`
 - `NETWORK_RESUME_CHECK_SECONDS`
 - `NETWORK_RESUME_COOLDOWN_SECONDS`
 - `NTFY_TOPIC`
 - `NTFY_NOTIFY_*` toggles
+- `MACOS_NOTIFY_*` toggles
+- `NTFY_TEMPLATE_*` message templates
+- `UPDATE_CHECKS_ENABLED`
+- `AUTO_UPDATES_ENABLED`
+- `UPDATE_CHECK_FREQUENCY`
+- `UPDATE_GITHUB_REPO`
 
 ## Current Defaults Worth Noting
 
 - Lookback mode is enforced for safe card ingest behavior.
 - SQLite memory is OFF by default (staging memory mode is default).
 - Card eject grace defaults to 60 seconds.
-- Default ntfy toggles prioritize card ejected + upload complete (plus mount/integrity/card-full guardrails enabled where configured).
+- Update checks and auto updates are OFF by default until a public release/update feed is configured.
+- Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.
+- Default ntfy toggles prioritize card ejected, upload complete, and pending recovery. Mount-failure ntfy alerts are off by default because cloud mounts are short lived and retried from the app.
 
 ## Development Checks
 

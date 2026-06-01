@@ -31,10 +31,12 @@ enum DDumpPaths {
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
   static var controlDir: URL { appSupport.appendingPathComponent("state/control") }
   static var manualSelectionFile: URL { appSupport.appendingPathComponent("state/manual_selection.paths") }
+  static var manualShootNameFile: URL { controlDir.appendingPathComponent("manual_shoot_name.txt") }
   static var lockDir: URL { appSupport.appendingPathComponent("state/run.lock") }
   static var pauseFlag: URL { controlDir.appendingPathComponent("pause.flag") }
   static var stopFlag: URL { controlDir.appendingPathComponent("stop_after_file.flag") }
   static var keepMountedFlag: URL { controlDir.appendingPathComponent("keep_mounted.flag") }
+  static var appCloudKeepaliveFile: URL { controlDir.appendingPathComponent("app_cloud_keepalive.touch") }
   static var ejectNowFlag: URL { controlDir.appendingPathComponent("eject_now.flag") }
 }
 
@@ -70,6 +72,18 @@ func parseShellEnv(_ text: String) -> [String: String] {
 func readShellEnv(at url: URL) -> [String: String] {
   guard let s = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
   return parseShellEnv(s)
+}
+
+func expandConfiguredPath(_ value: String) -> String {
+  var expanded = value
+  if expanded.hasPrefix("\\$HOME/") {
+    expanded = NSHomeDirectory() + "/" + expanded.dropFirst("\\$HOME/".count)
+  } else if expanded.hasPrefix("$HOME/") {
+    expanded = NSHomeDirectory() + "/" + expanded.dropFirst("$HOME/".count)
+  } else if expanded == "\\$HOME" || expanded == "$HOME" {
+    expanded = NSHomeDirectory()
+  }
+  return NSString(string: expanded).expandingTildeInPath
 }
 
 func shellDoubleQuoted(_ value: String) -> String {
@@ -163,9 +177,6 @@ final class AppState: ObservableObject {
   init() {
     refreshStatus()
     refreshConfig()
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-      self?.ensureUploadServerForAppSession(showProgress: true, reason: "App launch")
-    }
     timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
       self?.refreshStatus()
       self?.refreshControlFlags()
@@ -176,12 +187,27 @@ final class AppState: ObservableObject {
         self?.refreshCloudMountStatus(showProgress: false)
       }
     }
-    // Keep Google Drive mounted while the DDump app is open.
-    // When DDump closes, this refresh stops and finderserver's normal timer can unmount.
-    mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
-      self?.ensureUploadServerForAppSession(showProgress: false, reason: "App keepalive")
+    // Passive cloud-use marker: do not remount on a timer. The idle watcher
+    // only keeps rclone mounted while setup/upload work has recently touched it.
+    mountKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: true) { [weak self] _ in
+      guard let self else { return }
+      if self.cloudActionInProgress || self.cloudSetupBrowserRunning {
+        self.touchCloudKeepalive()
+      }
     }
     refreshCloudMountStatus(showProgress: false)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+      self?.checkForUpdatesIfNeeded()
+    }
+  }
+
+  func touchCloudKeepalive() {
+    do {
+      try FileManager.default.createDirectory(at: DDumpPaths.controlDir, withIntermediateDirectories: true)
+      try "\(nowTimestamp())\n".write(to: DDumpPaths.appCloudKeepaliveFile, atomically: true, encoding: .utf8)
+    } catch {
+      appendAppLog("could not update cloud keepalive: \(error.localizedDescription)")
+    }
   }
 
   func refreshStatus() {
@@ -305,11 +331,11 @@ final class AppState: ObservableObject {
   }
 
   var gdriveMountEnabledForUI: Bool {
-    return self.get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
+    return self.get("GDRIVE_MOUNT_ENABLED", default: "0") == "1"
   }
 
   var gdriveMountPointForUI: String {
-    return self.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
+    return expandConfiguredPath(self.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive"))
   }
 
   var gdriveMountLabelForUI: String {
@@ -321,13 +347,31 @@ final class AppState: ObservableObject {
   }
 
   var rcloneBinForUI: String {
-    return self.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
+    return expandConfiguredPath(self.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone"))
+  }
+
+  var defaultCloudUploadFolderForUI: String {
+    return "\(gdriveMountPointForUI)/DDump Uploads"
+  }
+
+  var cloudDestinationReadyForUI: Bool {
+    let destination = uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    return !destination.isEmpty && pathUsesGDriveMount(destination)
+  }
+
+  var cloudSetupConnectionOKForUI: Bool {
+    return get("CLOUD_SETUP_CONNECTION_OK", default: "0") == "1" && cloudDestinationReadyForUI
+  }
+
+  var cloudSetupNeedsAttentionForUI: Bool {
+    return gdriveMountEnabledForUI
+      && (!cloudRcloneReady || !cloudRemoteConfigured || !cloudDestinationReadyForUI || !cloudSetupConnectionOKForUI || !cloudMountActive)
   }
 
   func pathUsesGDriveMount(_ path: String) -> Bool {
-    let expandedMount = NSString(string: gdriveMountPointForUI).expandingTildeInPath
+    let expandedMount = expandConfiguredPath(gdriveMountPointForUI)
       .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    let expandedPath = NSString(string: path).expandingTildeInPath
+    let expandedPath = expandConfiguredPath(path)
       .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     return expandedPath == expandedMount || expandedPath.hasPrefix(expandedMount + "/")
   }
@@ -449,14 +493,84 @@ final class AppState: ObservableObject {
 
   func ensureUploadServerForAppSession(showProgress: Bool = false, reason: String = "Upload server") {
     guard gdriveMountEnabledForUI else { return }
+    guard cloudSetupConnectionOKForUI else {
+      refreshCloudMountStatus(showProgress: false)
+      return
+    }
     startCloudMount(userMessagePrefix: reason, showProgress: showProgress)
   }
 
   private func setCloudAction(_ running: Bool, _ message: String) {
+    if running {
+      touchCloudKeepalive()
+    }
     DispatchQueue.main.async {
       self.cloudActionInProgress = running
       self.cloudActionMessage = message
     }
+  }
+
+  private func appendAppLog(_ message: String) {
+    let line = "\(nowTimestamp()) [DDumpApp] \(message)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    do {
+      try FileManager.default.createDirectory(
+        at: DDumpPaths.logFile.deletingLastPathComponent(),
+        withIntermediateDirectories: true)
+      if !FileManager.default.fileExists(atPath: DDumpPaths.logFile.path) {
+        FileManager.default.createFile(atPath: DDumpPaths.logFile.path, contents: nil)
+      }
+      let handle = try FileHandle(forWritingTo: DDumpPaths.logFile)
+      handle.seekToEndOfFile()
+      handle.write(data)
+      handle.closeFile()
+    } catch {
+      // Logging must never block the user action it describes.
+    }
+  }
+
+  private func plainCloudFailure(_ reason: String) -> String {
+    let lower = reason.lowercased()
+    if lower.contains("rclone binary") || lower.contains("rclone missing") || lower.contains("rclone install") {
+      return "The cloud helper is not installed yet."
+    }
+    if lower.contains("remote") && lower.contains("not configured") {
+      return "Google Drive is not connected yet."
+    }
+    if lower.contains("launchagent missing") {
+      return "DDump's background cloud service is not installed. Run the DDump installer once, then retry."
+    }
+    if lower.contains("mount retries exhausted") {
+      return "DDump could not open the Google Drive folder. Check the internet connection, then retry."
+    }
+    if lower.contains("timed out") {
+      return "Google Drive took too long to respond. Check the internet connection, then retry."
+    }
+    if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return "DDump could not finish the cloud setup step."
+    }
+    if lower.contains("rclone") {
+      return reason.replacingOccurrences(of: "rclone", with: "cloud helper")
+    }
+    return reason
+  }
+
+  private func rcloneAuthURL(in text: String) -> String? {
+    let pattern = #"http://127\.0\.0\.1:[0-9]+/auth\?state=[A-Za-z0-9_\-]+"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    guard let match = regex.firstMatch(in: text, range: range),
+          let swiftRange = Range(match.range, in: text) else {
+      return nil
+    }
+    return String(text[swiftRange])
+  }
+
+  private func copyAuthURLForBrowser(_ url: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(url, forType: .string)
+    lastUtilityMessage = "Google sign-in link copied. Paste it into the Chrome profile where you are already logged in."
+    appendAppLog("cloud setup auth link copied for browser handoff")
   }
 
   private func nowTimestamp() -> String {
@@ -476,8 +590,81 @@ final class AppState: ObservableObject {
     }
   }
 
+  private func checkForUpdatesIfNeeded(force: Bool = false) {
+    guard get("UPDATE_CHECKS_ENABLED", default: "0") == "1" || force else { return }
+    let frequency = get("UPDATE_CHECK_FREQUENCY", default: "weekly")
+    let now = Int(Date().timeIntervalSince1970)
+    let last = Int(get("UPDATE_LAST_CHECK_EPOCH", default: "0")) ?? 0
+    let interval: Int
+    switch frequency {
+    case "startup":
+      interval = 0
+    case "monthly":
+      interval = 30 * 24 * 60 * 60
+    default:
+      interval = 7 * 24 * 60 * 60
+    }
+    if !force && last > 0 && interval > 0 && now - last < interval {
+      return
+    }
+    set("UPDATE_LAST_CHECK_EPOCH", "\(now)")
+
+    let repo = get("UPDATE_GITHUB_REPO", default: "chaserobertsonn/ddump")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !repo.isEmpty,
+          let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest") else { return }
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 12
+    request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+
+    URLSession.shared.dataTask(with: request) { data, _, error in
+      if let error {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not check for updates: \(error.localizedDescription)"
+        }
+        return
+      }
+      guard let data,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not read the update response."
+        }
+        return
+      }
+      let tag = (json["tag_name"] as? String) ?? ""
+      let releaseURL = (json["html_url"] as? String) ?? "https://github.com/\(repo)/releases/latest"
+      guard !tag.isEmpty else { return }
+
+      let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+      if self.normalizedVersion(tag) == self.normalizedVersion(current) {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "DDump is up to date."
+        }
+        return
+      }
+
+      DispatchQueue.main.async {
+        self.lastUtilityMessage = "DDump \(tag) is available."
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "DDump update available"
+        alert.informativeText = "Installed version: \(current)\nLatest release: \(tag)\n\nDownload the latest DMG from GitHub Releases."
+        alert.addButton(withTitle: "Open Download Page")
+        alert.addButton(withTitle: "Later")
+        let shouldOpen = self.get("AUTO_UPDATES_ENABLED", default: "0") == "1" || alert.runModal() == .alertFirstButtonReturn
+        if shouldOpen, let url = URL(string: releaseURL) {
+          NSWorkspace.shared.open(url)
+        }
+      }
+    }.resume()
+  }
+
+  private func normalizedVersion(_ raw: String) -> String {
+    raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+  }
+
   var shouldWarnBeforeQuit: Bool {
-    if cloudActionInProgress { return true }
     if runActive { return true }
     if ["starting", "scanning", "importing", "stopping"].contains(phase) { return true }
     return false
@@ -490,9 +677,11 @@ final class AppState: ObservableObject {
     let rcloneBin = rcloneBinForUI
     let retryCSV = get("GDRIVE_MOUNT_RETRY_SECONDS", default: "15,30,60,180")
     let waitSeconds = get("GDRIVE_MOUNT_WAIT_SECONDS", default: "30")
+    touchCloudKeepalive()
     DispatchQueue.main.async {
       self.lastUtilityMessage = "\(userMessagePrefix) starting…"
     }
+    appendAppLog("cloud action start: \(userMessagePrefix) mount start requested")
     if showProgress {
       setCloudAction(true, "Starting cloud mount…")
     }
@@ -516,7 +705,7 @@ remote=\(shellDoubleQuoted(remote))
 rclone_bin=\(shellDoubleQuoted(rcloneBin))
 retry_csv=\(shellDoubleQuoted(retryCSV))
 wait_seconds=\(shellDoubleQuoted(waitSeconds))
-legacy_label="com.chase.rclone-gdrive"
+legacy_label="com.ddump.rclone-gdrive.legacy"
 lock_dir="${HOME}/Library/Application Support/DDump/state/cloud-mount-start.lock"
 if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then wait_seconds=30; fi
 if [ "$wait_seconds" -lt 10 ]; then wait_seconds=10; fi
@@ -537,14 +726,55 @@ if ! "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "${remote_name}:"; t
   echo "ddump_reason=rclone remote '${remote_name}:' is not configured; run Cloud setup."
   exit 23
 fi
-if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+run_with_timeout() {
+  seconds="$1"
+  shift
+  "$@" >/dev/null 2>&1 &
+  pid="$!"
+  elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed+1))
+  done
+  /bin/wait "$pid" >/dev/null 2>&1
+}
+mount_entry_exists() {
+  /sbin/mount | /usr/bin/grep -q " on ${mount_point} "
+}
+mount_ready() {
+  mount_entry_exists || return 1
+  run_with_timeout 8 /bin/ls -1 "${mount_point}"
+}
+clear_stale_mount() {
+  mount_entry_exists || return 0
+  mount_ready && return 0
+  /bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+  /bin/launchctl bootout "gui/${uid}/${legacy_label}" >/dev/null 2>&1 || true
+  stale_pids="$(/usr/bin/pgrep -f "rclone (mount|nfsmount).* ${mount_point}" 2>/dev/null || true)"
+  if [ -n "$stale_pids" ]; then
+    /bin/kill -TERM $stale_pids >/dev/null 2>&1 || true
+    /bin/sleep 1
+    /bin/kill -KILL $stale_pids >/dev/null 2>&1 || true
+  fi
+  run_with_timeout 10 /sbin/umount -f "${mount_point}" || true
+  run_with_timeout 10 /usr/sbin/diskutil unmount force "${mount_point}" || true
+}
+uid="$(/usr/bin/id -u)"
+clear_stale_mount
+if mount_ready; then
   echo "ddump_reason=mount already active"
   exit 0
 fi
 if [ -x "${HOME}/.local/bin/finderserver" ]; then
   "${HOME}/.local/bin/finderserver" on >/dev/null 2>&1 || true
 fi
-uid="$(/usr/bin/id -u)"
 plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
 /bin/mkdir -p "${mount_point}"
 /bin/mkdir -p "${HOME}/Library/Application Support/DDump/state"
@@ -578,7 +808,7 @@ if ! [ -d "${lock_dir}" ]; then
   # Another mount worker is active. Wait for it to finish instead of exiting "success".
   i=0
   while [ "$i" -lt "$wait_seconds" ]; do
-    if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+    if mount_ready; then
       exit 0
     fi
     /bin/sleep 1
@@ -604,7 +834,7 @@ fi
 
 attempt_mount() {
   if /bin/launchctl print "gui/${uid}/${mount_label}" >/dev/null 2>&1 \
-     && ! /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+     && ! mount_ready; then
     # Clear any stale scheduled/running agent before retrying.
     /bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
   fi
@@ -612,7 +842,7 @@ attempt_mount() {
   /bin/launchctl kickstart -k "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
   i=0
   while [ "$i" -lt "$wait_seconds" ]; do
-    if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+    if mount_ready; then
       return 0
     fi
     /bin/sleep 1
@@ -682,6 +912,7 @@ exit 1
         }
         if ok {
           self.lastUtilityMessage = "\(userMessagePrefix) is on and ready."
+          self.appendAppLog("cloud action success: \(userMessagePrefix) mount ready")
         } else {
           if didTimeout {
             self.lastUtilityMessage = "\(userMessagePrefix) timed out after \(actionTimeout)s."
@@ -690,6 +921,7 @@ exit 1
           } else {
             self.lastUtilityMessage = "\(userMessagePrefix) did not become ready."
           }
+          self.appendAppLog("cloud action failed: \(userMessagePrefix) mount not ready: \(self.lastUtilityMessage)")
           let missingNote: String
           if self.needsReinsertCount > 0 {
             missingNote = "Missing from prior checks: \(self.needsReinsertCount) file(s)."
@@ -720,8 +952,27 @@ exit 1
       task.arguments = ["-lc", """
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
-legacy_label="com.chase.rclone-gdrive"
+legacy_label="com.ddump.rclone-gdrive.legacy"
 uid="$(/usr/bin/id -u)"
+run_with_timeout() {
+  seconds="$1"
+  shift
+  "$@" >/dev/null 2>&1 &
+  pid="$!"
+  elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed+1))
+  done
+  /bin/wait "$pid" >/dev/null 2>&1
+}
 plist="${HOME}/Library/LaunchAgents/${mount_label}.plist"
 if [ ! -f "$plist" ] && [ -f "${HOME}/Library/LaunchAgents/${legacy_label}.plist" ]; then
   mount_label="$legacy_label"
@@ -739,7 +990,8 @@ if [ -n "${stale_pids}" ]; then
   /bin/kill -KILL ${stale_pids} >/dev/null 2>&1 || true
 fi
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
-  /usr/sbin/diskutil unmount force "${mount_point}" >/dev/null 2>&1 || /sbin/umount -f "${mount_point}" >/dev/null 2>&1 || true
+  run_with_timeout 10 /sbin/umount -f "${mount_point}" || true
+  run_with_timeout 10 /usr/sbin/diskutil unmount force "${mount_point}" || true
 fi
 /bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
 /bin/sleep 2
@@ -778,10 +1030,30 @@ exit 0
       task.arguments = ["-lc", """
 mount_point=\(shellDoubleQuoted(mountPoint))
 mount_label=\(shellDoubleQuoted(mountLabel))
-legacy_label="com.chase.rclone-gdrive"
+legacy_label="com.ddump.rclone-gdrive.legacy"
 uid="$(/usr/bin/id -u)"
+run_with_timeout() {
+  seconds="$1"
+  shift
+  "$@" >/dev/null 2>&1 &
+  pid="$!"
+  elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed+1))
+  done
+  /bin/wait "$pid" >/dev/null 2>&1
+}
 if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
-  /usr/sbin/diskutil unmount "${mount_point}" >/dev/null 2>&1 || /sbin/umount -f "${mount_point}" >/dev/null 2>&1 || true
+  run_with_timeout 10 /sbin/umount -f "${mount_point}" || true
+  run_with_timeout 10 /usr/sbin/diskutil unmount force "${mount_point}" || true
 fi
 /bin/launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
 /bin/launchctl bootout "gui/${uid}/${legacy_label}" >/dev/null 2>&1 || true
@@ -839,6 +1111,30 @@ mount_label=\(shellDoubleQuoted(mountLabel))
 remote=\(shellDoubleQuoted(remote))
 rclone_bin=\(shellDoubleQuoted(rcloneBin))
 
+run_with_timeout() {
+  seconds="$1"
+  shift
+  "$@" >/dev/null 2>&1 &
+  pid="$!"
+  elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed+1))
+  done
+  /bin/wait "$pid" >/dev/null 2>&1
+}
+mount_ready() {
+  /sbin/mount | /usr/bin/grep -q " on ${mount_point} " || return 1
+  run_with_timeout 8 /bin/ls -1 "${mount_point}"
+}
+
 if [ -x "$rclone_bin" ]; then
   rclone="$rclone_bin"
 elif command -v rclone >/dev/null 2>&1; then
@@ -872,7 +1168,7 @@ else
   echo "remote_count=0"
 fi
 
-if /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+if mount_ready; then
   mount_active=1
   echo "mount_active=1"
 else
@@ -887,7 +1183,7 @@ else
 fi
 
 uid="$(/usr/bin/id -u)"
-legacy_label="com.chase.rclone-gdrive"
+legacy_label="com.ddump.rclone-gdrive.legacy"
 if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${mount_point}" >/dev/null 2>&1; then
   rclone_proc=1
 else
@@ -915,6 +1211,8 @@ elif [ "${remote_configured:-0}" = "0" ]; then
   diag="rclone remote '${remote}' is not configured"
 elif [ "${mount_active:-0}" = "1" ]; then
   diag="mount active and ready"
+elif /sbin/mount | /usr/bin/grep -q " on ${mount_point} "; then
+  diag="mount is present but not responding; restart the cloud mount"
 elif [ "${service_loaded:-0}" = "0" ]; then
   diag="mount service is not loaded"
 else
@@ -975,8 +1273,9 @@ echo "checked_at=$(/bin/date '+%Y-%m-%d %H:%M:%S')"
 
   func installRcloneViaApp() {
     let configuredBin = rcloneBinForUI
-    setCloudAction(true, "Installing rclone…")
-    lastUtilityMessage = "Installing rclone…"
+    setCloudAction(true, "Installing cloud helper…")
+    lastUtilityMessage = "Installing the cloud helper…"
+    appendAppLog("cloud setup button: install cloud helper")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
@@ -1061,7 +1360,8 @@ emit_success "$candidate"
         DispatchQueue.main.async {
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
-          self.lastUtilityMessage = "Could not start rclone install: \(error.localizedDescription)"
+          self.lastUtilityMessage = "Could not start cloud helper install: \(error.localizedDescription)"
+          self.appendAppLog("cloud setup install failed to start: \(error.localizedDescription)")
         }
         return
       }
@@ -1078,20 +1378,19 @@ emit_success "$candidate"
           if !installedPath.isEmpty {
             self.set("RCLONE_BIN", installedPath)
           }
-          self.lastUtilityMessage = installMessage.isEmpty ? "rclone installed." : installMessage
+          self.lastUtilityMessage = "Cloud helper installed. Opening Google sign-in…"
+          self.appendAppLog("cloud setup install success: \(installMessage.isEmpty ? installedPath : installMessage)")
           self.refreshCloudMountStatus(showProgress: false)
-          self.showUtilityDialog(
-            title: "rclone ready",
-            text: self.lastUtilityMessage
-          )
-        } else {
-          if installMessage.isEmpty {
-            self.lastUtilityMessage = "rclone install failed. Check internet connection, then retry."
-          } else {
-            self.lastUtilityMessage = installMessage
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            self.launchCloudSetupInBrowser()
           }
+        } else {
+          self.lastUtilityMessage = installMessage.isEmpty
+            ? "Cloud helper install failed. Check the internet connection, then retry."
+            : self.plainCloudFailure(installMessage)
+          self.appendAppLog("cloud setup install failed: \(self.lastUtilityMessage)")
           self.showUtilityDialog(
-            title: "rclone install failed",
+            title: "Cloud helper install failed",
             text: self.lastUtilityMessage
           )
         }
@@ -1132,11 +1431,16 @@ emit_success "$candidate"
 
   func launchCloudSetupInBrowser() {
     if cloudSetupBrowserRunning {
-      lastUtilityMessage = "Cloud setup is already running in your browser."
+      lastUtilityMessage = "Google sign-in is already open. Finish it in the browser, or cancel and try again."
+      appendAppLog("cloud setup button: connect clicked while sign-in already running")
       return
     }
     let configuredBin = rcloneBinForUI
-    setCloudAction(true, "Opening cloud setup in your browser…")
+    let configuredRemote = gdriveRemoteForUI
+    cloudSetupBrowserRunning = true
+    lastUtilityMessage = "Opening Google sign-in in your browser…"
+    setCloudAction(true, "Opening Google sign-in…")
+    appendAppLog("cloud setup button: connect Google Drive")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
@@ -1144,6 +1448,7 @@ emit_success "$candidate"
 set +e
 export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 configured_bin=\(shellDoubleQuoted(configuredBin))
+configured_remote=\(shellDoubleQuoted(configuredRemote))
 expand_user_path() {
   local raw="$1"
   raw="${raw/#\\$HOME/$HOME}"
@@ -1165,49 +1470,182 @@ else
   exit 2
 fi
 echo "rclone_path=$rclone"
-if ! "$rclone" gui --help >/dev/null 2>&1; then
-  echo "setup_error=rclone gui is unavailable (update rclone to v1.74+)"
-  exit 3
+ensure_shared_drive_mount_remote() {
+  local base_name="$1"
+  local conf token drives_file remote_name label upstreams count tmp_conf
+  conf="$("$rclone" config file 2>/dev/null | /usr/bin/tail -n 1)"
+  [[ -n "$conf" && -w "$conf" ]] || return 1
+  token="$("$rclone" config show "$base_name" 2>/dev/null | /usr/bin/sed -n 's/^token = //p')"
+  [[ -n "$token" ]] || return 1
+  drives_file="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ddump-rclone-drives.XXXXXX")"
+  "$rclone" backend drives "${base_name}:" >"$drives_file" 2>/dev/null || { /bin/rm -f "$drives_file"; return 1; }
+  upstreams="MyDrive=${base_name}:"
+  count=0
+  while IFS=$'\\t' read -r drive_id drive_name; do
+    [[ -n "$drive_id" && -n "$drive_name" ]] || continue
+    count=$((count + 1))
+    label="$(printf '%s' "$drive_name" | /usr/bin/tr -cd '[:alnum:]_-' | /usr/bin/cut -c1-32)"
+    [[ -n "$label" ]] || label="Shared${count}"
+    remote_name="ddump-${label}"
+    if ! "$rclone" listremotes 2>/dev/null | /usr/bin/grep -Fxq "${remote_name}:"; then
+      {
+        /bin/echo ""
+        /bin/echo "[${remote_name}]"
+        /bin/echo "type = drive"
+        /bin/echo "scope = drive"
+        /bin/echo "team_drive = ${drive_id}"
+        /bin/echo "token = ${token}"
+      } >>"$conf"
+    fi
+    upstreams="${upstreams} ${label}=${remote_name}:"
+  done < <(/usr/bin/awk '
+    /"id":/ { id=$0; sub(/^.*"id": "/, "", id); sub(/".*$/, "", id) }
+    /"name":/ { name=$0; sub(/^.*"name": "/, "", name); sub(/".*$/, "", name); gsub(/\\\\u0026/, "\\\\&", name); if (id != "") print id "\\t" name; id="" }
+  ' "$drives_file")
+  /bin/rm -f "$drives_file"
+  [[ "$count" -gt 0 ]] || return 1
+  tmp_conf="${conf}.ddump.$$"
+  /usr/bin/awk 'BEGIN { skip=0 } /^\\[combined\\]$/ { skip=1; next } /^\\[/ { skip=0 } !skip { print }' "$conf" >"$tmp_conf" && /bin/mv "$tmp_conf" "$conf"
+  {
+    /bin/echo ""
+    /bin/echo "[combined]"
+    /bin/echo "type = combine"
+    /bin/echo "upstreams = ${upstreams}"
+  } >>"$conf"
+  return 0
+}
+remotes="$("$rclone" listremotes 2>/dev/null || true)"
+configured_name="${configured_remote%%:*}"
+target_name="ddump-gdrive"
+if [ -n "$configured_name" ] && [ "$configured_name" != "combined" ]; then
+  target_name="$configured_name"
 fi
-exec "$rclone" gui --addr localhost:5579 --api-addr localhost:5572
+if [ -n "$configured_name" ] && printf '%s\\n' "$remotes" | /usr/bin/grep -Fxq "${configured_name}:"; then
+  echo "selected_remote=${configured_name}:"
+  echo "setup_status=already_connected"
+  exit 0
+fi
+if printf '%s\\n' "$remotes" | /usr/bin/grep -Fxq "${target_name}:"; then
+  if ensure_shared_drive_mount_remote "$target_name"; then
+    echo "selected_remote=combined:"
+  else
+    echo "selected_remote=${target_name}:"
+  fi
+  echo "setup_status=already_connected"
+  exit 0
+fi
+"$rclone" config create "$target_name" drive scope drive config_is_local true
+create_status=$?
+if [ "$create_status" -ne 0 ]; then
+  echo "setup_error=Google sign-in did not finish."
+  exit "$create_status"
+fi
+remotes="$("$rclone" listremotes 2>/dev/null || true)"
+if printf '%s\\n' "$remotes" | /usr/bin/grep -Fxq "${target_name}:"; then
+  if ensure_shared_drive_mount_remote "$target_name"; then
+    echo "selected_remote=combined:"
+  else
+    echo "selected_remote=${target_name}:"
+  fi
+  echo "setup_status=connected"
+  exit 0
+fi
+count="$(printf '%s\\n' "$remotes" | /usr/bin/sed '/^$/d' | /usr/bin/wc -l | /usr/bin/awk '{print $1}')"
+if [ "$count" = "1" ]; then
+  selected="$(printf '%s\\n' "$remotes" | /usr/bin/sed -n '1p')"
+  echo "selected_remote=$selected"
+  echo "setup_status=connected"
+  exit 0
+fi
+echo "setup_error=Google sign-in finished, but DDump could not identify the connected account."
+exit 4
 """]
       let pipe = Pipe()
       task.standardOutput = pipe
       task.standardError = pipe
+      let outputLock = NSLock()
+      var liveOutput = ""
+      var copiedAuthURL = ""
+      pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let data = handle.availableData
+        guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+        outputLock.lock()
+        liveOutput += chunk
+        let combinedOutput = liveOutput
+        outputLock.unlock()
+        guard let self, let authURL = self.rcloneAuthURL(in: combinedOutput), authURL != copiedAuthURL else { return }
+        copiedAuthURL = authURL
+        DispatchQueue.main.async {
+          self.copyAuthURLForBrowser(authURL)
+        }
+      }
       do {
         try task.run()
       } catch {
+        pipe.fileHandleForReading.readabilityHandler = nil
         DispatchQueue.main.async {
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
-          self.lastUtilityMessage = "Could not start browser setup: \(error.localizedDescription)"
+          self.cloudSetupBrowserRunning = false
+          self.lastUtilityMessage = "Could not open Google sign-in: \(error.localizedDescription)"
+          self.appendAppLog("cloud setup connect failed to start: \(error.localizedDescription)")
         }
         return
       }
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+      DispatchQueue.main.async {
         self.cloudSetupProcess = task
         if task.isRunning {
           self.cloudSetupBrowserRunning = true
-          if let remotesURL = URL(string: "http://127.0.0.1:5579/#/remotes") {
-            _ = NSWorkspace.shared.open(remotesURL)
-          }
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
-          self.lastUtilityMessage = "Browser setup opened. Click New remote, choose Google Drive, finish sign-in, then come back and click I finished setup."
+          self.lastUtilityMessage = "Google sign-in is open. Finish sign-in in the browser; DDump will continue automatically."
+          self.appendAppLog("cloud setup connect running: waiting for browser sign-in")
         }
       }
       task.terminationHandler = { [weak self] finished in
         guard let self else { return }
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        pipe.fileHandleForReading.readabilityHandler = nil
+        outputLock.lock()
+        let output = liveOutput
+        outputLock.unlock()
         let parsed = parseShellEnv(output)
         DispatchQueue.main.async {
           self.cloudSetupProcess = nil
           self.cloudSetupBrowserRunning = false
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
-          if finished.terminationStatus != 0 {
-            let reason = parsed["setup_error"] ?? "Cloud setup helper closed."
+          let selectedRemote = (parsed["selected_remote"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+          if finished.terminationStatus == 0 && !selectedRemote.isEmpty {
+            let rclonePath = parsed["rclone_path"] ?? ""
+            if !rclonePath.isEmpty {
+              self.set("RCLONE_BIN", rclonePath)
+            }
+            self.set("GDRIVE_REMOTE", selectedRemote)
+            self.set("GDRIVE_MOUNT_ENABLED", "1")
+            self.set("ENABLE_POST_EJECT_MOVE", "1")
+            self.set("CLOUD_SETUP_CONNECTION_OK", "0")
+            self.lastUtilityMessage = "Google Drive connected. Next, choose the upload folder."
+            self.appendAppLog("cloud setup connect success: selected_remote=\(selectedRemote)")
+            self.refreshCloudMountStatus(showProgress: false)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+              if self.cloudDestinationReadyForUI {
+                self.testCloudUploadConnection(showProgress: true)
+              } else {
+                self.chooseCloudDestinationFolder()
+              }
+            }
+          } else if finished.terminationStatus != 0 {
+            let reason = self.plainCloudFailure(parsed["setup_error"] ?? "Google sign-in did not finish.")
             self.lastUtilityMessage = reason
+            self.appendAppLog("cloud setup connect failed: \(reason)")
+            self.showUtilityDialog(
+              title: "Google Drive not connected",
+              text: "\(reason)\nClick Connect Google Drive to try again."
+            )
+          } else {
+            self.lastUtilityMessage = "Google sign-in finished, but DDump could not identify the connected account."
+            self.appendAppLog("cloud setup connect failed: no selected remote")
           }
         }
       }
@@ -1217,9 +1655,10 @@ exec "$rclone" gui --addr localhost:5579 --api-addr localhost:5572
   func stopCloudSetupInBrowser(showMessage: Bool = true) {
     guard let task = cloudSetupProcess else {
       if showMessage {
-        lastUtilityMessage = "Cloud setup helper is not running."
+        lastUtilityMessage = "Google sign-in is not running."
       }
       cloudSetupBrowserRunning = false
+      appendAppLog("cloud setup cancel requested: no sign-in process running")
       return
     }
     if task.isRunning {
@@ -1233,12 +1672,15 @@ exec "$rclone" gui --addr localhost:5579 --api-addr localhost:5572
     cloudSetupProcess = nil
     cloudSetupBrowserRunning = false
     if showMessage {
-      lastUtilityMessage = "Stopped browser setup helper."
+      lastUtilityMessage = "Cancelled Google sign-in."
     }
+    appendAppLog("cloud setup cancel requested")
   }
 
   func finishCloudSetupFromBrowser() {
-    setCloudAction(true, "Checking your cloud setup…")
+    setCloudAction(true, "Checking Google Drive connection…")
+    lastUtilityMessage = "Checking Google Drive connection…"
+    appendAppLog("cloud setup button: check Google Drive connection")
     let configuredBin = rcloneBinForUI
     let configuredRemote = gdriveRemoteForUI
     DispatchQueue.global(qos: .utility).async {
@@ -1308,18 +1750,20 @@ exit 0
         self.cloudActionInProgress = false
         self.cloudActionMessage = ""
         if !setupError.isEmpty {
-          self.lastUtilityMessage = setupError
+          self.lastUtilityMessage = self.plainCloudFailure(setupError)
+          self.appendAppLog("cloud setup check failed: \(self.lastUtilityMessage)")
           self.showUtilityDialog(
             title: "Cloud setup incomplete",
-            text: "Install rclone first, then run browser setup."
+            text: "\(self.lastUtilityMessage)\nClick Connect Google Drive to try again."
           )
           return
         }
         if remoteCount <= 0 || selectedRemote.isEmpty {
-          self.lastUtilityMessage = "No cloud account connected yet."
+          self.lastUtilityMessage = "Google Drive is not connected yet."
+          self.appendAppLog("cloud setup check failed: no remote found")
           self.showUtilityDialog(
-            title: "Cloud setup incomplete",
-            text: "In the browser setup page, create a new Google Drive remote first. Then click “I finished setup”."
+            title: "Google Drive not connected",
+            text: "Click Connect Google Drive and finish sign-in in the browser."
           )
           return
         }
@@ -1329,14 +1773,173 @@ exit 0
         self.set("GDRIVE_REMOTE", selectedRemote)
         self.set("GDRIVE_MOUNT_ENABLED", "1")
         self.set("ENABLE_POST_EJECT_MOVE", "1")
+        self.set("CLOUD_SETUP_CONNECTION_OK", "0")
         let currentDest = self.get("POST_MOVE_ROOT", default: "").trimmingCharacters(in: .whitespacesAndNewlines)
         if currentDest.isEmpty {
-          let mountExpanded = NSString(string: self.gdriveMountPointForUI).expandingTildeInPath
-          self.set("POST_MOVE_ROOT", "\(mountExpanded)/DDump Uploads")
+          self.set("POST_MOVE_ROOT", self.defaultCloudUploadFolderForUI)
         }
         self.stopCloudSetupInBrowser(showMessage: false)
-        self.lastUtilityMessage = "Cloud account connected. Starting mount…"
-        self.startCloudMount(userMessagePrefix: "Cloud mount", showProgress: true)
+        self.lastUtilityMessage = "Google Drive connected. Next, choose the upload folder."
+        self.appendAppLog("cloud setup check success: selected_remote=\(selectedRemote)")
+        if self.cloudDestinationReadyForUI {
+          self.testCloudUploadConnection(showProgress: true)
+        } else {
+          self.chooseCloudDestinationFolder()
+        }
+      }
+    }
+  }
+
+  func chooseCloudDestinationFolder() {
+    guard !cloudActionInProgress else { return }
+    lastUtilityMessage = "Opening your Google Drive folder…"
+    setCloudAction(true, "Opening Google Drive folder…")
+    appendAppLog("cloud setup button: choose upload folder")
+    startCloudMount(userMessagePrefix: "Cloud setup", showProgress: false) { ready in
+      DispatchQueue.main.async {
+        self.cloudActionInProgress = false
+        self.cloudActionMessage = ""
+        if !ready {
+          let reason = self.plainCloudFailure(self.lastUtilityMessage)
+          self.lastUtilityMessage = reason
+          self.appendAppLog("cloud setup choose folder failed: \(reason)")
+          self.showUtilityDialog(
+            title: "Could not open Google Drive folder",
+            text: "\(reason)\nClick Choose upload folder to try again."
+          )
+          return
+        }
+        self.presentCloudDestinationPicker()
+      }
+    }
+  }
+
+  private func presentCloudDestinationPicker() {
+    let mountURL = URL(fileURLWithPath: NSString(string: gdriveMountPointForUI).expandingTildeInPath)
+    let defaultURL = URL(fileURLWithPath: defaultCloudUploadFolderForUI)
+    try? FileManager.default.createDirectory(at: defaultURL, withIntermediateDirectories: true)
+
+    NSApplication.shared.activate(ignoringOtherApps: true)
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = true
+    panel.directoryURL = FileManager.default.fileExists(atPath: defaultURL.path) ? defaultURL : mountURL
+    panel.prompt = "Use This Folder"
+    panel.message = "Choose the Google Drive folder where DDump should upload finished dumps."
+    guard panel.runModal() == .OK, let url = panel.url else {
+      lastUtilityMessage = "No upload folder chosen yet. Click Choose upload folder to continue."
+      appendAppLog("cloud setup choose folder cancelled")
+      return
+    }
+
+    let selectedPath = url.path
+    guard pathUsesGDriveMount(selectedPath) else {
+      lastUtilityMessage = "Choose a folder inside the Google Drive folder DDump opened."
+      appendAppLog("cloud setup choose folder rejected outside mount: \(selectedPath)")
+      showUtilityDialog(
+        title: "Choose a Google Drive folder",
+        text: "\(lastUtilityMessage)\nClick Choose upload folder to try again."
+      )
+      return
+    }
+
+    set("POST_MOVE_ROOT", selectedPath)
+    set("ENABLE_POST_EJECT_MOVE", "1")
+    set("GDRIVE_MOUNT_ENABLED", "1")
+    set("CLOUD_SETUP_CONNECTION_OK", "0")
+    lastUtilityMessage = "Upload folder chosen. Testing the connection…"
+    appendAppLog("cloud setup choose folder success: \(selectedPath)")
+    testCloudUploadConnection(showProgress: true)
+  }
+
+  func testCloudUploadConnection(showProgress: Bool = true) {
+    var destination = uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    if destination.isEmpty {
+      destination = defaultCloudUploadFolderForUI
+      set("POST_MOVE_ROOT", destination)
+    }
+    guard pathUsesGDriveMount(destination) else {
+      lastUtilityMessage = "Choose a folder inside the Google Drive folder before testing."
+      set("CLOUD_SETUP_CONNECTION_OK", "0")
+      appendAppLog("cloud setup test blocked: destination outside mount")
+      showUtilityDialog(
+        title: "Upload folder not chosen",
+        text: "\(lastUtilityMessage)\nClick Choose upload folder to continue."
+      )
+      return
+    }
+    let destinationForTest = destination
+
+    if showProgress {
+      setCloudAction(true, "Testing upload folder…")
+    }
+    lastUtilityMessage = "Testing the upload folder…"
+    appendAppLog("cloud setup button: test upload folder")
+    startCloudMount(userMessagePrefix: "Cloud setup", showProgress: false) { ready in
+      if !ready {
+        DispatchQueue.main.async {
+          if showProgress {
+            self.cloudActionInProgress = false
+            self.cloudActionMessage = ""
+          }
+          let reason = self.plainCloudFailure(self.lastUtilityMessage)
+          self.set("CLOUD_SETUP_CONNECTION_OK", "0")
+          self.lastUtilityMessage = reason
+          self.appendAppLog("cloud setup test failed before write: \(reason)")
+          self.showUtilityDialog(
+            title: "Cloud test failed",
+            text: "\(reason)\nClick Retry cloud test to try again."
+          )
+        }
+        return
+      }
+
+      DispatchQueue.global(qos: .utility).async {
+        let destURL = URL(fileURLWithPath: NSString(string: destinationForTest).expandingTildeInPath)
+        let testURL = destURL.appendingPathComponent(".ddump-connection-test-\(UUID().uuidString)")
+        do {
+          try FileManager.default.createDirectory(at: destURL, withIntermediateDirectories: true)
+          try "DDump connection test \(Date())\n".write(to: testURL, atomically: false, encoding: .utf8)
+          let attrs = try FileManager.default.attributesOfItem(atPath: testURL.path)
+          let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+          guard size > 0 else {
+            throw NSError(domain: "DDump", code: 1, userInfo: [NSLocalizedDescriptionKey: "The test file was not written."])
+          }
+          try? FileManager.default.removeItem(at: testURL)
+          DispatchQueue.main.async {
+            if showProgress {
+              self.cloudActionInProgress = false
+              self.cloudActionMessage = ""
+            }
+            self.set("CLOUD_SETUP_CONNECTION_OK", "1")
+            self.set("CLOUD_SETUP_TESTED_AT", self.nowTimestamp())
+            self.lastUtilityMessage = "Cloud setup complete. DDump will upload to \(destinationForTest)."
+            self.appendAppLog("cloud setup test success: \(destinationForTest)")
+            self.refreshCloudMountStatus(showProgress: false)
+            self.showUtilityDialog(
+              title: "Cloud setup complete",
+              text: "DDump will upload finished dumps to:\n\(destinationForTest)"
+            )
+          }
+        } catch {
+          try? FileManager.default.removeItem(at: testURL)
+          DispatchQueue.main.async {
+            if showProgress {
+              self.cloudActionInProgress = false
+              self.cloudActionMessage = ""
+            }
+            self.set("CLOUD_SETUP_CONNECTION_OK", "0")
+            let reason = self.plainCloudFailure(error.localizedDescription)
+            self.lastUtilityMessage = reason
+            self.appendAppLog("cloud setup test failed while writing: \(reason)")
+            self.showUtilityDialog(
+              title: "Cloud test failed",
+              text: "\(reason)\nClick Retry cloud test to try again."
+            )
+          }
+        }
       }
     }
   }
@@ -1350,22 +1953,26 @@ exit 0
     alert.alertStyle = .informational
     alert.messageText = "Cloud setup"
     alert.informativeText = """
-1) Install rclone
-2) Open browser setup and connect Google Drive
-3) Click “I finished setup” in DDump
+DDump will guide this in order:
 
-If you do not want cloud right now, disable it below.
+1) Install the cloud helper
+2) Sign in to Google Drive
+3) Choose the upload folder
+4) Test the connection
 """
-    alert.addButton(withTitle: "Open Browser Setup")
-    alert.addButton(withTitle: "Install rclone")
+    alert.addButton(withTitle: "Start Guided Setup")
     alert.addButton(withTitle: "Dismiss")
     let response = alert.runModal()
     if response == .alertFirstButtonReturn {
-      launchCloudSetupInBrowser()
-      return
-    }
-    if response == .alertSecondButtonReturn {
-      installRcloneViaApp()
+      if !cloudRcloneReady {
+        installRcloneViaApp()
+      } else if !cloudRemoteConfigured {
+        launchCloudSetupInBrowser()
+      } else if !cloudDestinationReadyForUI {
+        chooseCloudDestinationFolder()
+      } else {
+        testCloudUploadConnection(showProgress: true)
+      }
       return
     }
   }
@@ -1770,26 +2377,26 @@ struct SettingsSheet: View {
   @EnvironmentObject var state: AppState
 
   enum SettingsTab: String, CaseIterable {
-    case destination = "Destination"
+    case general = "General"
     case naming = "Naming"
     case detection = "Detection"
+    case notifications = "Notifications"
     case cloud = "Cloud"
     case calendar = "Calendar"
-    case appearance = "Appearance"
 
     var icon: String {
       switch self {
-      case .destination: return "folder"
+      case .general: return "gearshape"
       case .naming: return "character.textbox"
       case .detection: return "camera.aperture"
+      case .notifications: return "bell"
       case .cloud: return "icloud"
       case .calendar: return "calendar"
-      case .appearance: return "paintpalette"
       }
     }
   }
 
-  @State private var tab: SettingsTab = .destination
+  @State private var tab: SettingsTab = .general
 
   var body: some View {
     VStack(spacing: 0) {
@@ -1836,7 +2443,7 @@ struct SettingsSheet: View {
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
     }
-    .frame(minWidth: 880, minHeight: 920)
+    .frame(minWidth: 880, idealWidth: 1040, maxWidth: .infinity, minHeight: 720, idealHeight: 880, maxHeight: .infinity)
     .background(Color.ddumpBG)
   }
 }
@@ -2093,7 +2700,60 @@ struct ProgressDetail: View {
         }
       }
       .font(DDumpFont.ui(12))
+
+      if state.runActive {
+        ManualShootNameControl()
+      }
     }
+  }
+}
+
+struct ManualShootNameControl: View {
+  @State private var shootName: String = ""
+  @State private var savedMessage: String = ""
+
+  private func load() {
+    shootName = (try? String(contentsOf: DDumpPaths.manualShootNameFile, encoding: .utf8))?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+
+  private func save() {
+    do {
+      try FileManager.default.createDirectory(at: DDumpPaths.controlDir, withIntermediateDirectories: true)
+      let cleaned = shootName.trimmingCharacters(in: .whitespacesAndNewlines)
+      if cleaned.isEmpty {
+        try? FileManager.default.removeItem(at: DDumpPaths.manualShootNameFile)
+        savedMessage = "Auto naming"
+      } else {
+        try "\(cleaned)\n".write(to: DDumpPaths.manualShootNameFile, atomically: true, encoding: .utf8)
+        savedMessage = "Will use \"\(cleaned)\""
+      }
+    } catch {
+      savedMessage = "Could not save name"
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Label("Shoot name", systemImage: "textformat")
+        .font(DDumpFont.ui(12, weight: .medium))
+        .foregroundColor(.ddumpFG2)
+      TextField("Optional, e.g. Wedding 123", text: $shootName)
+        .textFieldStyle(.roundedBorder)
+        .onSubmit { save() }
+      Button {
+        save()
+      } label: {
+        Label("Use name", systemImage: "checkmark.circle")
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+      if !savedMessage.isEmpty {
+        Text(savedMessage)
+          .font(DDumpFont.ui(11))
+          .foregroundColor(.ddumpFG3)
+      }
+    }
+    .onAppear { load() }
   }
 }
 
@@ -2272,31 +2932,35 @@ struct SettingsView: View {
   var body: some View {
     Group {
       switch tab {
-      case .destination:
-        DestinationSettings()
+      case .general:
+        GeneralSettings()
       case .naming:
         NamingSettings()
       case .detection:
         DetectionSettings()
+      case .notifications:
+        NotificationsSettings()
       case .cloud:
         CloudSettings()
       case .calendar:
         CalendarSettings()
-      case .appearance:
-        AppearanceSettings()
       }
     }
     .background(Color.ddumpBG)
   }
 }
 
-struct DestinationSettings: View {
+struct GeneralSettings: View {
   @EnvironmentObject var state: AppState
   @State private var localStaging: String = ""
   @State private var enablePostMove: Bool = true
   @State private var uploadRoot: String = ""
   @State private var uploadRoots: String = ""
   @State private var fallbackRoot: String = ""
+  @State private var destinationMode: String = "fixed"
+  @State private var updateChecksEnabled: Bool = false
+  @State private var autoUpdatesEnabled: Bool = false
+  @State private var updateCheckFrequency: String = "weekly"
 
   var body: some View {
     Form {
@@ -2305,6 +2969,19 @@ struct DestinationSettings: View {
           .onChange(of: enablePostMove) { _, v in
             state.set("ENABLE_POST_EJECT_MOVE", v ? "1" : "0")
           }
+        Picker("Destination mode", selection: $destinationMode) {
+          Text("One fixed folder").tag("fixed")
+          Text("Smart year/month/day").tag("smart")
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: destinationMode) { _, v in
+          state.set("FOLDER_NAMING_STRATEGY", v == "smart" ? "smart" : "sequential")
+        }
+        if destinationMode == "smart" {
+          Text("Smart mode uses the sample path in Naming to find the main destination folder, then automatically builds today's YYYY / YYYY.MM / YYYY.MM.DD destination every run.")
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
         TextField("Local staging folder", text: $localStaging, onCommit: {
           state.set("DEST_ROOT", localStaging)
         })
@@ -2338,11 +3015,46 @@ struct DestinationSettings: View {
           }
         }
       } header: {
-        Text("Folders")
+        Text("Destinations")
       } footer: {
         Text("Files go: SD card → staging. Then DDump copies to the destination(s). Disable destination transfer to keep staging-only backups.")
           .font(.caption).foregroundColor(.secondary)
       }
+
+      Section("Check updates") {
+        Toggle("Check for updates", isOn: $updateChecksEnabled)
+          .onChange(of: updateChecksEnabled) { _, v in
+            state.set("UPDATE_CHECKS_ENABLED", v ? "1" : "0")
+          }
+
+        Toggle("Open download page automatically", isOn: $autoUpdatesEnabled)
+          .onChange(of: autoUpdatesEnabled) { _, v in
+            state.set("AUTO_UPDATES_ENABLED", v ? "1" : "0")
+          }
+          .disabled(!updateChecksEnabled)
+
+        HStack {
+          Text("Check frequency")
+          Spacer()
+          Picker("", selection: $updateCheckFrequency) {
+            Text("Upon start").tag("startup")
+            Text("Weekly").tag("weekly")
+            Text("Monthly").tag("monthly")
+          }
+          .labelsHidden()
+          .frame(width: 180)
+          .onChange(of: updateCheckFrequency) { _, v in
+            state.set("UPDATE_CHECK_FREQUENCY", v)
+          }
+        }
+        .disabled(!updateChecksEnabled)
+
+        Text("Update checks are off by default. DDump checks GitHub Releases and opens the download page; signed in-app updates can be added later.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+      }
+
+      AppearanceOptions()
     }
     .formStyle(.grouped)
     .ddumpFormSkin()
@@ -2352,6 +3064,10 @@ struct DestinationSettings: View {
       uploadRoot = state.get("POST_MOVE_ROOT")
       uploadRoots = state.get("POST_MOVE_ROOTS")
       fallbackRoot = state.get("POST_MOVE_FALLBACK_ROOT")
+      destinationMode = state.get("FOLDER_NAMING_STRATEGY", default: "sequential") == "smart" ? "smart" : "fixed"
+      updateChecksEnabled = state.get("UPDATE_CHECKS_ENABLED", default: "0") == "1"
+      autoUpdatesEnabled = state.get("AUTO_UPDATES_ENABLED", default: "0") == "1"
+      updateCheckFrequency = state.get("UPDATE_CHECK_FREQUENCY", default: "weekly")
     }
   }
 }
@@ -2479,7 +3195,7 @@ struct NamingSettings: View {
 
 struct DetectionSettings: View {
   @EnvironmentObject var state: AppState
-  @State private var prefixes: String = "DFP_"
+  @State private var prefixes: String = ""
   @State private var requirePhotos: Bool = true
   @State private var extensions: String = ""
   @State private var ejectOnSuccess: Bool = true
@@ -2489,7 +3205,7 @@ struct DetectionSettings: View {
   @State private var videoExtensions: String = ""
   @State private var promptSourceFoldersOnNewCard: Bool = true
   @State private var sqliteMemoryEnabled: Bool = false
-  @State private var ntfyTopic: String = "dfp-chase-scheduler"
+  @State private var ntfyTopic: String = ""
   @State private var ntfyStagingStarted: Bool = false
   @State private var ntfyCardEjected: Bool = true
   @State private var ntfyUploadStarted: Bool = false
@@ -2568,36 +3284,11 @@ struct DetectionSettings: View {
         TextField("Video extensions for split mode", text: $videoExtensions, onCommit: { state.set("VIDEO_FILE_EXTENSIONS", videoExtensions) })
       }
 
-      Section("ntfy alerts") {
-        TextField("Topic (e.g. dfp-chase-scheduler)", text: $ntfyTopic, onCommit: { state.set("NTFY_TOPIC", ntfyTopic) })
-        HStack {
-          Text("Notification timeout (seconds)")
-          Spacer()
-          TextField("60", text: $notificationTimeoutSeconds)
-            .frame(width: 80)
-            .multilineTextAlignment(.trailing)
-            .onSubmit { state.set("NOTIFICATION_TIMEOUT_SECONDS", notificationTimeoutSeconds) }
-        }
-        Toggle("Staging started", isOn: $ntfyStagingStarted)
-          .onChange(of: ntfyStagingStarted) { _, v in state.set("NTFY_NOTIFY_STAGING_STARTED", v ? "1" : "0") }
-        Toggle("Card ejected", isOn: $ntfyCardEjected)
-          .onChange(of: ntfyCardEjected) { _, v in state.set("NTFY_NOTIFY_CARD_EJECTED", v ? "1" : "0") }
-        Toggle("Upload started", isOn: $ntfyUploadStarted)
-          .onChange(of: ntfyUploadStarted) { _, v in state.set("NTFY_NOTIFY_UPLOAD_STARTED", v ? "1" : "0") }
-        Toggle("Upload complete", isOn: $ntfyUploadComplete)
-          .onChange(of: ntfyUploadComplete) { _, v in state.set("NTFY_NOTIFY_UPLOAD_COMPLETE", v ? "1" : "0") }
-        Toggle("Mount failed", isOn: $ntfyMountFailed)
-          .onChange(of: ntfyMountFailed) { _, v in state.set("NTFY_NOTIFY_MOUNT_FAILED", v ? "1" : "0") }
-        Toggle("Card almost full", isOn: $ntfyCardAlmostFull)
-          .onChange(of: ntfyCardAlmostFull) { _, v in state.set("NTFY_NOTIFY_CARD_ALMOST_FULL", v ? "1" : "0") }
-        Toggle("Integrity warning", isOn: $ntfyIntegrityWarning)
-          .onChange(of: ntfyIntegrityWarning) { _, v in state.set("NTFY_NOTIFY_INTEGRITY_WARNING", v ? "1" : "0") }
-      }
     }
     .formStyle(.grouped)
     .ddumpFormSkin()
     .onAppear {
-      prefixes = state.get("TRUSTED_NAME_PREFIXES", default: "DFP_")
+      prefixes = state.get("TRUSTED_NAME_PREFIXES", default: "")
       requirePhotos = (state.get("REQUIRE_PHOTOS_OR_TRUSTED", default: "1") == "1")
       extensions = state.get("PHOTO_FILE_EXTENSIONS")
       ejectOnSuccess = (state.get("EJECT_ON_SUCCESS", default: "1") == "1")
@@ -2609,18 +3300,175 @@ struct DetectionSettings: View {
       promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "1") == "1")
       sqliteMemoryEnabled = state.sqliteMemoryEnabled
       cardAlmostFullAlertEnabled = (state.get("CARD_ALMOST_FULL_ALERT_ENABLED", default: "1") == "1")
-      ntfyTopic = state.get("NTFY_TOPIC", default: "dfp-chase-scheduler")
+      ntfyTopic = state.get("NTFY_TOPIC", default: "")
       notificationTimeoutSeconds = state.get("NOTIFICATION_TIMEOUT_SECONDS", default: "60")
       ntfyStagingStarted = (state.get("NTFY_NOTIFY_STAGING_STARTED", default: "0") == "1")
       ntfyCardEjected = (state.get("NTFY_NOTIFY_CARD_EJECTED", default: "1") == "1")
       ntfyUploadStarted = (state.get("NTFY_NOTIFY_UPLOAD_STARTED", default: "0") == "1")
       ntfyUploadComplete = (state.get("NTFY_NOTIFY_UPLOAD_COMPLETE", default: "1") == "1")
-      ntfyMountFailed = (state.get("NTFY_NOTIFY_MOUNT_FAILED", default: "1") == "1")
+      ntfyMountFailed = (state.get("NTFY_NOTIFY_MOUNT_FAILED", default: "0") == "1")
       ntfyCardAlmostFull = (state.get("NTFY_NOTIFY_CARD_ALMOST_FULL", default: "1") == "1")
       ntfyIntegrityWarning = (state.get("NTFY_NOTIFY_INTEGRITY_WARNING", default: "1") == "1")
     }
   }
 }
+
+struct NotificationEventConfig: Identifiable {
+  let id: String
+  let title: String
+  let ntfyKey: String
+  let macosKey: String
+  let templateKey: String
+  let defaultNtfy: Bool
+  let defaultMacOS: Bool
+  let defaultTemplate: String
+  let tokens: [String]
+  let example: String
+}
+
+struct NotificationsSettings: View {
+  @EnvironmentObject var state: AppState
+  @State private var ntfyTopic: String = ""
+  @State private var notificationTimeoutSeconds: String = "60"
+  @State private var ntfyEnabled: [String: Bool] = [:]
+  @State private var macosEnabled: [String: Bool] = [:]
+  @State private var templates: [String: String] = [:]
+
+  static let events: [NotificationEventConfig] = [
+    .init(
+      id: "pending_recovery_missing",
+      title: "Recovery needs card",
+      ntfyKey: "NTFY_NOTIFY_PENDING_RECOVERY_MISSING",
+      macosKey: "MACOS_NOTIFY_PENDING_RECOVERY_MISSING",
+      templateKey: "NTFY_TEMPLATE_PENDING_RECOVERY_MISSING",
+      defaultNtfy: true,
+      defaultMacOS: true,
+      defaultTemplate: "{import_time} import is missing {missing_count} of {total_count} items. Please reinsert the same card to retry.",
+      tokens: ["{import_time}", "{missing_count}", "{total_count}", "{examples}", "{roots}", "{message}"],
+      example: "5/26 5:24pm import is missing 2 of 80 items. Please reinsert the same card to retry."
+    ),
+    .init(id: "staging_started", title: "Staging started", ntfyKey: "NTFY_NOTIFY_STAGING_STARTED", macosKey: "MACOS_NOTIFY_STAGING_STARTED", templateKey: "NTFY_TEMPLATE_STAGING_STARTED", defaultNtfy: false, defaultMacOS: true, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Red: staging started."),
+    .init(id: "upload_started", title: "Upload started", ntfyKey: "NTFY_NOTIFY_UPLOAD_STARTED", macosKey: "MACOS_NOTIFY_UPLOAD_STARTED", templateKey: "NTFY_TEMPLATE_UPLOAD_STARTED", defaultNtfy: false, defaultMacOS: true, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Red: upload started for 42 file(s)."),
+    .init(id: "upload_complete", title: "Upload complete", ntfyKey: "NTFY_NOTIFY_UPLOAD_COMPLETE", macosKey: "MACOS_NOTIFY_UPLOAD_COMPLETE", templateKey: "NTFY_TEMPLATE_UPLOAD_COMPLETE", defaultNtfy: true, defaultMacOS: true, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Red: uploaded 42 file(s) to 2026.06.01."),
+    .init(id: "card_ejected", title: "Card ejected", ntfyKey: "NTFY_NOTIFY_CARD_EJECTED", macosKey: "MACOS_NOTIFY_CARD_EJECTED", templateKey: "NTFY_TEMPLATE_CARD_EJECTED", defaultNtfy: true, defaultMacOS: true, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Red: card ejected after import."),
+    .init(id: "card_almost_full", title: "Card almost full", ntfyKey: "NTFY_NOTIFY_CARD_ALMOST_FULL", macosKey: "MACOS_NOTIFY_CARD_ALMOST_FULL", templateKey: "NTFY_TEMPLATE_CARD_ALMOST_FULL", defaultNtfy: true, defaultMacOS: true, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Red: free 14 GB, last import 64 GB."),
+    .init(id: "integrity_warning", title: "Integrity warning", ntfyKey: "NTFY_NOTIFY_INTEGRITY_WARNING", macosKey: "MACOS_NOTIFY_INTEGRITY_WARNING", templateKey: "NTFY_TEMPLATE_INTEGRITY_WARNING", defaultNtfy: true, defaultMacOS: true, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Run finished with copy/verify issues."),
+    .init(id: "mount_failed", title: "Cloud mount failed", ntfyKey: "NTFY_NOTIFY_MOUNT_FAILED", macosKey: "MACOS_NOTIFY_MOUNT_FAILED", templateKey: "NTFY_TEMPLATE_MOUNT_FAILED", defaultNtfy: false, defaultMacOS: false, defaultTemplate: "{message}", tokens: ["{message}", "{title}", "{event}"], example: "Google Drive mount did not become ready.")
+  ]
+
+  var body: some View {
+    Form {
+      Section("Delivery") {
+        TextField("ntfy topic", text: $ntfyTopic, onCommit: { state.set("NTFY_TOPIC", ntfyTopic) })
+        HStack {
+          Text("macOS action timeout (seconds)")
+          Spacer()
+          TextField("60", text: $notificationTimeoutSeconds)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("NOTIFICATION_TIMEOUT_SECONDS", notificationTimeoutSeconds) }
+        }
+      }
+
+      Section("Events") {
+        ForEach(Self.events) { event in
+          notificationEventRow(event)
+        }
+      }
+    }
+    .formStyle(.grouped)
+    .ddumpFormSkin()
+    .onAppear(perform: load)
+  }
+
+  func notificationEventRow(_ event: NotificationEventConfig) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .center, spacing: 14) {
+        Text(event.title)
+          .font(.headline)
+        Spacer()
+        Toggle("NTFY", isOn: boolBinding(event.id, event.ntfyKey, event.defaultNtfy, channel: "ntfy"))
+          .toggleStyle(.checkbox)
+        Toggle("macOS", isOn: boolBinding(event.id, event.macosKey, event.defaultMacOS, channel: "macos"))
+          .toggleStyle(.checkbox)
+      }
+
+      VStack(alignment: .leading, spacing: 6) {
+        Text("ntfy message")
+          .font(.caption)
+          .foregroundColor(.secondary)
+        TextEditor(text: templateBinding(event))
+          .font(.system(.caption, design: .monospaced))
+          .frame(minHeight: 48)
+          .scrollContentBackground(.hidden)
+          .background(Color.ddumpBGAlt)
+          .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+              .stroke(Color.ddumpLine1, lineWidth: 1)
+          )
+          .disabled(!(ntfyEnabled[event.id] ?? event.defaultNtfy))
+      }
+
+      HStack(spacing: 6) {
+        ForEach(event.tokens, id: \.self) { token in
+          Button(token) {
+            let current = templates[event.id] ?? event.defaultTemplate
+            let next = current.isEmpty ? token : "\(current) \(token)"
+            templates[event.id] = next
+            state.set(event.templateKey, next)
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+        }
+      }
+
+      Text("Example: \(event.example)")
+        .font(.caption)
+        .foregroundColor(.secondary)
+    }
+    .padding(.vertical, 6)
+  }
+
+  func boolBinding(_ id: String, _ key: String, _ defaultValue: Bool, channel: String) -> Binding<Bool> {
+    Binding(
+      get: {
+        if channel == "ntfy" {
+          return ntfyEnabled[id] ?? defaultValue
+        }
+        return macosEnabled[id] ?? defaultValue
+      },
+      set: { value in
+        if channel == "ntfy" {
+          ntfyEnabled[id] = value
+        } else {
+          macosEnabled[id] = value
+        }
+        state.set(key, value ? "1" : "0")
+      }
+    )
+  }
+
+  func templateBinding(_ event: NotificationEventConfig) -> Binding<String> {
+    Binding(
+      get: { templates[event.id] ?? event.defaultTemplate },
+      set: { value in
+        templates[event.id] = value
+        state.set(event.templateKey, value)
+      }
+    )
+  }
+
+  func load() {
+    ntfyTopic = state.get("NTFY_TOPIC", default: "")
+    notificationTimeoutSeconds = state.get("NOTIFICATION_TIMEOUT_SECONDS", default: "60")
+    for event in Self.events {
+      ntfyEnabled[event.id] = state.get(event.ntfyKey, default: event.defaultNtfy ? "1" : "0") == "1"
+      macosEnabled[event.id] = state.get(event.macosKey, default: event.defaultMacOS ? "1" : "0") == "1"
+      templates[event.id] = state.get(event.templateKey, default: event.defaultTemplate)
+    }
+  }
+}
+
 struct CloudSettings: View {
   @EnvironmentObject var state: AppState
   @State private var enabled: Bool = true
@@ -2693,47 +3541,20 @@ struct CloudSettings: View {
     )
   }
 
+  private func wizardMilestone(_ done: Bool, _ text: String) -> some View {
+    HStack(spacing: 7) {
+      Image(systemName: done ? "checkmark.circle.fill" : "circle")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundColor(done ? .ddumpSuccess : .ddumpFG3)
+      Text(text)
+        .font(DDumpFont.ui(12, weight: done ? .medium : .regular))
+        .foregroundColor(done ? .ddumpFG2 : .ddumpFG3)
+    }
+  }
+
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 20) {
-        if enabled && (!state.cloudRcloneReady || !state.cloudRemoteConfigured || !state.cloudMountActive) {
-          VStack(alignment: .leading, spacing: 10) {
-            Text("Cloud setup needed")
-              .font(DDumpFont.ui(14, weight: .semibold))
-              .foregroundColor(.ddumpFG1)
-            Text("DDump detected cloud is not fully ready. Run setup now, or disable cloud if you only want local dumps.")
-              .font(DDumpFont.ui(12))
-              .foregroundColor(.ddumpFG2)
-            HStack(spacing: 10) {
-              Button {
-                showSetupGuide = true
-              } label: {
-                Label("Cloud setup", systemImage: "sparkles")
-              }
-              .buttonStyle(DDumpPrimaryButtonStyle())
-
-              Button {
-                enabled = false
-                state.set("GDRIVE_MOUNT_ENABLED", "0")
-                state.refreshCloudMountStatus()
-                state.lastUtilityMessage = "Cloud uploads are disabled."
-              } label: {
-                Label("Disable cloud", systemImage: "icloud.slash")
-              }
-              .buttonStyle(DDumpSecondaryButtonStyle())
-            }
-          }
-          .padding(12)
-          .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .fill(Color.ddumpSurface2)
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .stroke(Color.ddumpLine1, lineWidth: 1)
-          )
-        }
-
         if state.cloudActionInProgress {
           HStack(spacing: 10) {
             ProgressView()
@@ -2755,27 +3576,78 @@ struct CloudSettings: View {
           )
         }
 
-        sectionHeader("Guided setup")
+        sectionHeader("Cloud setup")
         VStack(alignment: .leading, spacing: 12) {
-          let needsInstall = !state.cloudRcloneReady
-          let needsConnect = state.cloudRcloneReady && !state.cloudRemoteConfigured
-          let needsMount = state.cloudRcloneReady && state.cloudRemoteConfigured && !state.cloudMountActive
-          let done = state.cloudRcloneReady && state.cloudRemoteConfigured && state.cloudMountActive
-          let stepText: String = {
-            if needsInstall { return "Step 1 of 3: Install the cloud helper." }
-            if needsConnect { return "Step 2 of 3: Connect your Google Drive account." }
-            if needsMount { return "Step 3 of 3: Start the cloud connection." }
-            if done { return "All set. Cloud is connected and ready." }
-            return "Start setup."
+          let cloudOff = !enabled
+          let needsInstall = enabled && !state.cloudRcloneReady
+          let needsConnect = enabled && state.cloudRcloneReady && !state.cloudRemoteConfigured
+          let needsDestination = enabled && state.cloudRcloneReady && state.cloudRemoteConfigured && !state.cloudDestinationReadyForUI
+          let needsTest = enabled && state.cloudRcloneReady && state.cloudRemoteConfigured && state.cloudDestinationReadyForUI && !state.cloudSetupConnectionOKForUI
+          let done = enabled && state.cloudRcloneReady && state.cloudRemoteConfigured && state.cloudDestinationReadyForUI && state.cloudSetupConnectionOKForUI
+          let stepNumber: Int = {
+            if cloudOff { return 1 }
+            if needsInstall { return 1 }
+            if needsConnect { return 2 }
+            if needsDestination { return 3 }
+            if needsTest { return 4 }
+            return 5
           }()
-          Text(stepText)
-            .font(DDumpFont.ui(14, weight: .semibold))
-            .foregroundColor(.ddumpFG1)
-          Text("This wizard is the only setup most users need.")
+          let titleText: String = {
+            if cloudOff { return "Cloud uploads are turned off." }
+            if needsInstall { return "Install the cloud helper." }
+            if needsConnect {
+              return state.cloudSetupBrowserRunning ? "Finish Google sign-in in the browser." : "Connect Google Drive."
+            }
+            if needsDestination { return "Choose the upload folder." }
+            if needsTest { return "Test the upload connection." }
+            return "Cloud setup complete."
+          }()
+          let detailText: String = {
+            if cloudOff { return "Turn cloud uploads on to start the guided setup." }
+            if needsInstall { return "DDump installs the small helper it needs to talk to Google Drive." }
+            if needsConnect { return "DDump opens Google sign-in directly. You do not need to create or name anything manually." }
+            if needsDestination { return "Pick the Google Drive folder where finished dumps should land." }
+            if needsTest { return "DDump writes and removes a tiny test file to prove the upload folder works." }
+            return "DDump is ready to upload finished dumps."
+          }()
+
+          HStack(alignment: .center, spacing: 10) {
+            Text("Step \(stepNumber) of 5")
+              .font(DDumpFont.ui(12, weight: .semibold))
+              .foregroundColor(.ddumpPeach)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 5)
+              .background(Capsule().fill(Color.ddumpPeach.opacity(0.12)))
+            Text(titleText)
+              .font(DDumpFont.ui(15, weight: .semibold))
+              .foregroundColor(.ddumpFG1)
+            Spacer()
+          }
+
+          Text(detailText)
             .font(DDumpFont.ui(12))
-            .foregroundColor(.ddumpFG3)
+            .foregroundColor(.ddumpFG2)
+            .fixedSize(horizontal: false, vertical: true)
+
+          HStack(spacing: 12) {
+            wizardMilestone(state.cloudRcloneReady, "Helper")
+            wizardMilestone(state.cloudRemoteConfigured, "Google Drive")
+            wizardMilestone(state.cloudDestinationReadyForUI, "Folder")
+            wizardMilestone(state.cloudSetupConnectionOKForUI, "Tested")
+          }
+
           HStack(spacing: 10) {
-            if needsInstall {
+            if cloudOff {
+              Button {
+                enabled = true
+                state.set("GDRIVE_MOUNT_ENABLED", "1")
+                state.refreshCloudMountStatus()
+                state.lastUtilityMessage = "Cloud uploads are on. Continue setup below."
+              } label: {
+                Label("Turn on cloud uploads", systemImage: "icloud")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+            } else if needsInstall {
               Button {
                 state.installRcloneViaApp()
               } label: {
@@ -2783,32 +3655,36 @@ struct CloudSettings: View {
               }
               .buttonStyle(DDumpPrimaryButtonStyle())
             } else if needsConnect {
-              if state.cloudSetupBrowserRunning {
-                Button {
+              Button {
+                if state.cloudSetupBrowserRunning {
                   state.finishCloudSetupFromBrowser()
-                } label: {
-                  Label("I finished Google sign-in", systemImage: "checkmark.circle")
+                } else {
+                  state.launchCloudSetupInBrowser()
                 }
-                .buttonStyle(DDumpPrimaryButtonStyle())
+              } label: {
+                Label(state.cloudSetupBrowserRunning ? "Check Google sign-in" : "Connect Google Drive", systemImage: "globe")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+              if state.cloudSetupBrowserRunning {
                 Button {
                   state.stopCloudSetupInBrowser()
                 } label: {
-                  Label("Cancel setup", systemImage: "xmark.circle")
+                  Label("Cancel", systemImage: "xmark.circle")
                 }
                 .buttonStyle(DDumpSecondaryButtonStyle())
-              } else {
-                Button {
-                  state.launchCloudSetupInBrowser()
-                } label: {
-                  Label("Connect Google Drive", systemImage: "globe")
-                }
-                .buttonStyle(DDumpPrimaryButtonStyle())
               }
-            } else if needsMount {
+            } else if needsDestination {
               Button {
-                state.startCloudMount(showProgress: true)
+                state.chooseCloudDestinationFolder()
               } label: {
-                Label("Start cloud connection", systemImage: "play.circle")
+                Label("Choose upload folder", systemImage: "folder.badge.plus")
+              }
+              .buttonStyle(DDumpPrimaryButtonStyle())
+            } else if needsTest {
+              Button {
+                state.testCloudUploadConnection(showProgress: true)
+              } label: {
+                Label(state.cloudSetupConnectionOKForUI ? "Reconnect cloud folder" : "Test upload connection", systemImage: "checkmark.seal")
               }
               .buttonStyle(DDumpPrimaryButtonStyle())
             } else {
@@ -2819,13 +3695,43 @@ struct CloudSettings: View {
               }
               .buttonStyle(DDumpPrimaryButtonStyle())
             }
-            Button {
-              showSetupGuide = true
-            } label: {
-              Label("Full setup guide", systemImage: "sparkles")
+
+            if enabled {
+              Button {
+                enabled = false
+                state.set("GDRIVE_MOUNT_ENABLED", "0")
+                state.refreshCloudMountStatus()
+                state.lastUtilityMessage = "Cloud uploads are disabled."
+              } label: {
+                Label("Turn off cloud uploads", systemImage: "icloud.slash")
+              }
+              .buttonStyle(DDumpSecondaryButtonStyle())
             }
-            .buttonStyle(DDumpSecondaryButtonStyle())
           }
+          .disabled(state.cloudActionInProgress)
+
+          if !state.lastUtilityMessage.isEmpty {
+            HStack(alignment: .top, spacing: 10) {
+              Image(systemName: done ? "checkmark.circle.fill" : "info.circle.fill")
+                .foregroundColor(done ? .ddumpSuccess : .ddumpPeach)
+                .font(.system(size: 14, weight: .semibold))
+              Text(state.lastUtilityMessage)
+                .font(DDumpFont.ui(12, weight: .medium))
+                .foregroundColor(.ddumpFG2)
+                .fixedSize(horizontal: false, vertical: true)
+              Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.ddumpSurface2)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.ddumpLine1, lineWidth: 1)
+            )
+          }
+
           if done {
             Text("Upload destination: \(state.uploadRootForUI)")
               .font(DDumpFont.ui(12))
@@ -2850,7 +3756,7 @@ struct CloudSettings: View {
         .buttonStyle(DDumpSecondaryButtonStyle())
 
         if showAdvanced {
-          sectionHeader("Connection", caption: "rclone-backed upload mount")
+          sectionHeader("Connection", caption: "advanced repair controls")
 
           VStack(spacing: 0) {
           HStack(alignment: .top, spacing: 12) {
@@ -2908,8 +3814,8 @@ struct CloudSettings: View {
           sectionHeader("Status", caption: state.cloudLastCheckedAt.isEmpty ? nil : "Last check \(state.cloudLastCheckedAt)")
           if enabled {
           VStack(spacing: 10) {
-            statusCard(state.cloudRcloneReady, okText: "rclone found", failText: "rclone missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Set the rclone path or install rclone.")
-            statusCard(state.cloudRemoteConfigured, okText: "Cloud account connected", failText: "Cloud account not connected", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Use Browser setup, connect Google Drive, then click I finished setup.")
+            statusCard(state.cloudRcloneReady, okText: "Cloud helper found", failText: "Cloud helper missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Install the cloud helper from guided setup.")
+            statusCard(state.cloudRemoteConfigured, okText: "Google Drive connected", failText: "Google Drive not connected", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Use Connect Google Drive in guided setup.")
             statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
             statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")
             statusCard(state.networkOnline, okText: "Network reachable", failText: "Network unavailable", icon: "wifi", hint: state.networkOnline ? "" : "DDump waits and retries automatically when connection returns.")
@@ -2973,34 +3879,6 @@ struct CloudSettings: View {
             .buttonStyle(DDumpSecondaryButtonStyle())
 
             Button {
-              state.installRcloneViaApp()
-            } label: {
-              Label("Install rclone", systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(DDumpSecondaryButtonStyle())
-
-            Button {
-              state.launchCloudSetupInBrowser()
-            } label: {
-              Label("Open browser setup", systemImage: "globe")
-            }
-            .buttonStyle(DDumpSecondaryButtonStyle())
-
-            Button {
-              state.finishCloudSetupFromBrowser()
-            } label: {
-              Label("I finished setup", systemImage: "checkmark.circle")
-            }
-            .buttonStyle(DDumpSecondaryButtonStyle())
-
-            Button {
-              state.stopCloudSetupInBrowser()
-            } label: {
-              Label("Stop setup helper", systemImage: "xmark.circle")
-            }
-            .buttonStyle(DDumpSecondaryButtonStyle())
-
-            Button {
               openInFinder(state.gdriveMountPointForUI)
             } label: {
               Label("Open mount folder", systemImage: "folder")
@@ -3014,19 +3892,52 @@ struct CloudSettings: View {
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
 
-            Button {
-              state.openNetworkVolumePrivacySettings()
+            Menu {
+              Button {
+                state.installRcloneViaApp()
+              } label: {
+                Label("Install cloud helper", systemImage: "square.and.arrow.down")
+              }
+              Button {
+                state.launchCloudSetupInBrowser()
+              } label: {
+                Label("Connect Google Drive", systemImage: "globe")
+              }
+              Button {
+                state.finishCloudSetupFromBrowser()
+              } label: {
+                Label("Check Google Drive", systemImage: "checkmark.circle")
+              }
+              Button {
+                state.stopCloudSetupInBrowser()
+              } label: {
+                Label("Cancel sign-in", systemImage: "xmark.circle")
+              }
+              Button {
+                state.chooseCloudDestinationFolder()
+              } label: {
+                Label("Choose upload folder", systemImage: "folder.badge.plus")
+              }
+              Button {
+                state.testCloudUploadConnection(showProgress: true)
+              } label: {
+                Label("Test upload folder", systemImage: "checkmark.seal")
+              }
+              Button {
+                state.openNetworkVolumePrivacySettings()
+              } label: {
+                Label("Open privacy settings", systemImage: "hand.raised")
+              }
+              Button {
+                showSetupGuide = true
+              } label: {
+                Label("Guided setup help", systemImage: "sparkles")
+              }
             } label: {
-              Label("Open privacy settings", systemImage: "hand.raised")
+              Label("More setup actions", systemImage: "ellipsis.circle")
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
-
-            Button {
-              showSetupGuide = true
-            } label: {
-              Label("Cloud setup", systemImage: "sparkles")
-            }
-            .buttonStyle(DDumpSecondaryButtonStyle())
+            Spacer(minLength: 0)
           }
           .disabled(state.cloudActionInProgress || !enabled)
 
@@ -3123,7 +4034,7 @@ struct CloudSettings: View {
             Text("Friend install flow")
               .font(DDumpFont.ui(13, weight: .semibold))
               .foregroundColor(.ddumpFG1)
-            Text("Run installer, click Browser setup, connect Google Drive on the web page, click I finished setup, done.")
+            Text("Run installer, open Cloud setup, follow the one-button guided steps, and wait for the upload-folder test to pass.")
               .font(DDumpFont.ui(12))
               .foregroundColor(.ddumpFG2)
             Text("macOS requires you to allow network-volume access once per app identity. There is no system-level ‘approve all’ button.")
@@ -3143,7 +4054,7 @@ struct CloudSettings: View {
     }
     .background(Color.ddumpBG)
     .onAppear {
-      enabled = state.get("GDRIVE_MOUNT_ENABLED", default: "1") == "1"
+      enabled = state.get("GDRIVE_MOUNT_ENABLED", default: "0") == "1"
       mountPoint = state.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
       remote = state.get("GDRIVE_REMOTE", default: "combined:")
       rcloneBin = state.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")
@@ -3181,10 +4092,10 @@ struct CloudSetupGuideSheet: View {
         .foregroundColor(.ddumpFG2)
 
       VStack(alignment: .leading, spacing: 8) {
-        Text("1. Install rclone")
-        Text("2. Open Browser setup")
-        Text("3. In browser: Configs → New remote → Google Drive")
-        Text("4. Back in DDump: click I finished setup")
+        Text("1. Install the cloud helper")
+        Text("2. Sign in to Google Drive")
+        Text("3. Choose the Google Drive upload folder")
+        Text("4. Let DDump test the upload folder")
       }
       .font(DDumpFont.ui(12))
       .foregroundColor(.ddumpFG2)
@@ -3193,14 +4104,14 @@ struct CloudSetupGuideSheet: View {
         Button {
           state.installRcloneViaApp()
         } label: {
-          Label("Install rclone", systemImage: "square.and.arrow.down")
+          Label("Install cloud helper", systemImage: "square.and.arrow.down")
         }
         .buttonStyle(DDumpPrimaryButtonStyle())
 
         Button {
           state.launchCloudSetupInBrowser()
         } label: {
-          Label("Open browser setup", systemImage: "globe")
+          Label("Connect Google Drive", systemImage: "globe")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
       }
@@ -3209,28 +4120,28 @@ struct CloudSetupGuideSheet: View {
         Button {
           state.finishCloudSetupFromBrowser()
         } label: {
-          Label("I finished setup", systemImage: "checkmark.circle")
+          Label("Check Google Drive", systemImage: "checkmark.circle")
         }
         .buttonStyle(DDumpPrimaryButtonStyle())
 
         Button {
-          state.startCloudMount(showProgress: true)
+          state.chooseCloudDestinationFolder()
         } label: {
-          Label("Start mount", systemImage: "play.circle")
+          Label("Choose upload folder", systemImage: "folder.badge.plus")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
 
         Button {
-          state.refreshCloudMountStatus(showProgress: true)
+          state.testCloudUploadConnection(showProgress: true)
         } label: {
-          Label("Re-check status", systemImage: "arrow.clockwise")
+          Label("Test upload folder", systemImage: "checkmark.seal")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
 
         Button {
           state.stopCloudSetupInBrowser()
         } label: {
-          Label("Stop setup helper", systemImage: "xmark.circle")
+          Label("Cancel sign-in", systemImage: "xmark.circle")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
       }
@@ -3373,7 +4284,7 @@ struct IconPreset: Codable, Identifiable, Hashable {
   let createdAt: TimeInterval
 }
 
-struct AppearanceSettings: View {
+struct AppearanceOptions: View {
   @EnvironmentObject var state: AppState
   @Environment(\.colorScheme) var colorScheme
   @State private var notice: String = ""
@@ -3386,7 +4297,7 @@ struct AppearanceSettings: View {
   @State private var lastAppliedSignature: String = ""
 
   var body: some View {
-    Form {
+    Group {
       Section("Theme") {
         Picker("Appearance", selection: $colorSchemeChoice) {
           Label("System", systemImage: "circle.lefthalf.filled").tag("system")
@@ -3454,8 +4365,6 @@ struct AppearanceSettings: View {
           .font(.caption).foregroundColor(.secondary)
       }
     }
-    .formStyle(.grouped)
-    .ddumpFormSkin()
     .onAppear {
       colorSchemeChoice = state.get("APP_COLOR_SCHEME", default: "system")
       defaultLightPresetID = state.get("APP_ICON_DEFAULT_LIGHT")
@@ -3754,6 +4663,10 @@ class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
     let response = alert.runModal()
     return response == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
   }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    try? FileManager.default.removeItem(at: DDumpPaths.appCloudKeepaliveFile)
+  }
 }
 
 // MARK: - App entry point
@@ -3777,7 +4690,6 @@ struct DDumpApp: App {
           appDelegate.appState = state
         }
     }
-    .windowResizability(.contentSize)
     // Settings are opened through ContentView's sheet. The native Settings scene
     // was unreliable on this Mac and created a competing Cmd+, path.
   }

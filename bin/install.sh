@@ -5,14 +5,14 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 LABEL="com.ddump"
 NETWORK_WATCH_LABEL="com.ddump.network-watch"
-OLD_LABEL="com.dfp.dump"
+CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
-OLD_MOUNT_LABEL="com.chase.rclone-gdrive"
+OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
+APP_VERSION="${DDUMP_VERSION:-0.3.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 APP_SUPPORT_DIR="${HOME}/Library/Application Support/DDump"
-OLD_APP_SUPPORT_DIR="${HOME}/Library/Application Support/DFPDump"
 BIN_DIR="${APP_SUPPORT_DIR}/bin"
 STATE_DIR="${APP_SUPPORT_DIR}/state"
 LOG_DIR="${APP_SUPPORT_DIR}/logs"
@@ -22,31 +22,9 @@ APP_BUNDLE="${HOME}/Applications/DDump.app"
 
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${LAUNCH_AGENT_DIR}/${LABEL}.plist"
-OLD_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_LABEL}.plist"
 OLD_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_MOUNT_LABEL}.plist"
 
 uid="$(id -u)"
-
-# ---------------------------------------------------------------------------
-# Migration: DFPDump → DDump
-# ---------------------------------------------------------------------------
-if [[ -d "$OLD_APP_SUPPORT_DIR" && ! -d "$APP_SUPPORT_DIR" ]]; then
-  echo "Migrating $OLD_APP_SUPPORT_DIR → $APP_SUPPORT_DIR"
-  # Stop the old launch agent first (best effort)
-  launchctl bootout "gui/${uid}/${OLD_LABEL}" >/dev/null 2>&1 || true
-  # Rename the directory, preserving all state files (trusted UUIDs, manifest, etc.)
-  mv "$OLD_APP_SUPPORT_DIR" "$APP_SUPPORT_DIR"
-elif [[ -d "$OLD_APP_SUPPORT_DIR" && -d "$APP_SUPPORT_DIR" ]]; then
-  echo "Note: both $OLD_APP_SUPPORT_DIR and $APP_SUPPORT_DIR exist."
-  echo "      Leaving them alone — please reconcile manually."
-fi
-
-# Bootout the old LaunchAgent and remove its plist if present
-if [[ -f "$OLD_PLIST_PATH" ]]; then
-  echo "Removing stale LaunchAgent: $OLD_LABEL"
-  launchctl bootout "gui/${uid}" "$OLD_PLIST_PATH" >/dev/null 2>&1 || true
-  rm -f "$OLD_PLIST_PATH"
-fi
 
 mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 
@@ -56,7 +34,7 @@ mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 for s in ddump.sh ddump-trust.sh ddump-monitor.sh ddump-control.sh \
          ddump-settings.sh ddump-debug-snapshot.sh \
          ddump-notify.sh ddump-cluster.sh ddump-calendar-lookup.sh \
-         rclone-gdrive-mount.sh ddump-network-watch.sh; do
+         rclone-gdrive-mount.sh ddump-network-watch.sh ddump-cloud-idle-watch.sh; do
   if [[ -f "${PROJECT_DIR}/bin/${s}" ]]; then
     cp "${PROJECT_DIR}/bin/${s}" "${BIN_DIR}/${s}"
     chmod +x "${BIN_DIR}/${s}"
@@ -81,9 +59,9 @@ if [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
   <key>CFBundleIdentifier</key>
   <string>com.ddump.app</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleExecutable</key>
   <string>DDump</string>
   <key>CFBundleIconFile</key>
@@ -119,12 +97,6 @@ PLIST
     echo "Note: swiftc not found; skipping Mac app build."
   fi
 fi
-
-# Remove legacy script names that are no longer used (don't leave stale copies).
-for legacy in dfp-dump.sh dfp-dump-trust.sh dfp-dump-monitor.sh dfp-dump-control.sh \
-              dfp-dump-settings.sh dfp-dump-debug-snapshot.sh; do
-  rm -f "${BIN_DIR}/${legacy}"
-done
 
 # ---------------------------------------------------------------------------
 # User config — keep existing, add missing keys, migrate renamed keys
@@ -223,7 +195,7 @@ add_missing_key 'MIN_FREE_SPACE_GB' '"100"' "Minimum local staging free space re
 add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper command for starting/refreshing shared Finder mounts."
 add_missing_key 'FINDERSERVER_TIMER_CHECK_SECONDS' '"300"' "During upload, check timer this often."
 add_missing_key 'FINDERSERVER_TIMER_MIN_SECONDS' '"300"' "If timer is at/below this value, refresh it."
-add_missing_key 'GDRIVE_MOUNT_ENABLED' '"1"' "Enable DDump-managed rclone mount automation."
+add_missing_key 'GDRIVE_MOUNT_ENABLED' '"0"' "Enable DDump-managed rclone mount automation only after cloud uploads are selected in the app."
 add_missing_key 'GDRIVE_MOUNT_POINT' '"$HOME/GoogleDrive"' "Mounted cloud folder path used for uploads."
 add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDump."
 add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
@@ -232,10 +204,11 @@ add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent la
 add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"15,30,60,180"' "Mount retry backoff schedule in seconds."
 add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt waits for readiness."
 add_missing_key 'GDRIVE_ACTION_TIMEOUT_SECONDS' '"180"' "Maximum seconds DDump waits for a mount action before timing out."
+add_missing_key 'CLOUD_IDLE_UNMOUNT_SECONDS' '"180"' "Unmount cloud drive after this many idle seconds without the DDump app or an active transfer."
 replace_key_if_exact 'GDRIVE_MOUNT_RETRY_SECONDS' '5,15,60,180,360,600' '15,30,60,180'
 
 # v2 keys (new)
-add_missing_key 'TRUSTED_NAME_PREFIXES' '"DFP_"' "Volume name prefixes that auto-trust (comma-separated)."
+add_missing_key 'TRUSTED_NAME_PREFIXES' '""' "Volume name prefixes that auto-trust (comma-separated)."
 add_missing_key 'REQUIRE_PHOTOS_OR_TRUSTED' '"1"' "Silent-skip non-photo volumes (no photo files, no trust)."
 add_missing_key 'PHOTO_FILE_EXTENSIONS' '"jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr"' "File extensions that count as photos for detection."
 add_missing_key 'VIDEO_FILE_EXTENSIONS' '"mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"' "Extensions treated as video when SPLIT_PHOTO_VIDEO is enabled."
@@ -270,14 +243,31 @@ add_missing_key 'SAFE_CLEANUP_DAYS' '"7"' "Mac app cleanup only offers staging f
 add_missing_key 'SLACK_WEBHOOK_URL' '""' "Optional Slack incoming-webhook URL for admin-only run notifications."
 add_missing_key 'SLACK_NOTIFY_ON_COMPLETE' '"0"'
 add_missing_key 'SLACK_NOTIFY_ON_ERROR' '"1"'
-add_missing_key 'NTFY_TOPIC' '"dfp-chase-scheduler"' "Optional ntfy topic for push alerts."
+add_missing_key 'NTFY_TOPIC' '""' "Optional ntfy topic for push alerts."
 add_missing_key 'NTFY_NOTIFY_STAGING_STARTED' '"0"'
 add_missing_key 'NTFY_NOTIFY_CARD_EJECTED' '"1"'
 add_missing_key 'NTFY_NOTIFY_UPLOAD_STARTED' '"0"'
 add_missing_key 'NTFY_NOTIFY_UPLOAD_COMPLETE' '"1"'
-add_missing_key 'NTFY_NOTIFY_MOUNT_FAILED' '"1"'
+add_missing_key 'NTFY_NOTIFY_MOUNT_FAILED' '"0"'
 add_missing_key 'NTFY_NOTIFY_CARD_ALMOST_FULL' '"1"'
 add_missing_key 'NTFY_NOTIFY_INTEGRITY_WARNING' '"1"'
+add_missing_key 'NTFY_NOTIFY_PENDING_RECOVERY_MISSING' '"1"'
+add_missing_key 'MACOS_NOTIFY_STAGING_STARTED' '"1"'
+add_missing_key 'MACOS_NOTIFY_CARD_EJECTED' '"1"'
+add_missing_key 'MACOS_NOTIFY_UPLOAD_STARTED' '"1"'
+add_missing_key 'MACOS_NOTIFY_UPLOAD_COMPLETE' '"1"'
+add_missing_key 'MACOS_NOTIFY_MOUNT_FAILED' '"0"'
+add_missing_key 'MACOS_NOTIFY_CARD_ALMOST_FULL' '"1"'
+add_missing_key 'MACOS_NOTIFY_INTEGRITY_WARNING' '"1"'
+add_missing_key 'MACOS_NOTIFY_PENDING_RECOVERY_MISSING' '"1"'
+add_missing_key 'NTFY_TEMPLATE_STAGING_STARTED' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_CARD_EJECTED' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_UPLOAD_STARTED' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_UPLOAD_COMPLETE' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_MOUNT_FAILED' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_CARD_ALMOST_FULL' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_INTEGRITY_WARNING' '"{message}"'
+add_missing_key 'NTFY_TEMPLATE_PENDING_RECOVERY_MISSING' '"{import_time} import is missing {missing_count} of {total_count} items. Please reinsert the same card to retry."'
 add_missing_key 'CARD_ALMOST_FULL_ALERT_ENABLED' '"1"' "Warn when free card space is below the size of the most recent import from that card."
 add_missing_key 'NETWORK_RESUME_ENABLED' '"1"' "When internet reconnects and pending uploads exist, automatically trigger a retry run."
 add_missing_key 'NETWORK_RESUME_CHECK_SECONDS' '"20"' "Network watcher poll interval."
@@ -285,6 +275,10 @@ add_missing_key 'NETWORK_RESUME_COOLDOWN_SECONDS' '"120"' "Minimum seconds betwe
 add_missing_key 'APP_COLOR_SCHEME' '"system"' "App appearance: system | light | dark."
 add_missing_key 'APP_ICON_DEFAULT_LIGHT' '""' "Stored icon preset ID used when app appearance is light."
 add_missing_key 'APP_ICON_DEFAULT_DARK' '""' "Stored icon preset ID used when app appearance is dark."
+add_missing_key 'UPDATE_CHECKS_ENABLED' '"0"' "Enable public-release update checks."
+add_missing_key 'AUTO_UPDATES_ENABLED' '"0"' "Open the GitHub download page automatically when a newer release is found."
+add_missing_key 'UPDATE_CHECK_FREQUENCY' '"weekly"' "Update check cadence: startup | weekly | monthly."
+add_missing_key 'UPDATE_GITHUB_REPO' '"chaserobertsonn/ddump"' "GitHub owner/repo used for release update checks."
 
 normalize_escaped_home_path 'RCLONE_BIN'
 normalize_escaped_home_path 'FINDERSERVER_BIN'
@@ -313,11 +307,6 @@ fi
 if grep -q '^DB_ENABLED="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^DB_ENABLED="1"$/DB_ENABLED="0"/' "$USER_CONFIG"
   echo "Updated DB_ENABLED to 0 (staging-folder memory is now the default; SQLite remains optional beta)."
-fi
-
-if grep -q '^GDRIVE_MOUNT_LABEL="com.chase.rclone-gdrive"$' "$USER_CONFIG"; then
-  /usr/bin/sed -i '' 's/^GDRIVE_MOUNT_LABEL="com.chase.rclone-gdrive"$/GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"/' "$USER_CONFIG"
-  echo "Updated GDRIVE_MOUNT_LABEL to com.ddump.rclone-gdrive."
 fi
 
 # Default-off legacy UI
@@ -398,6 +387,7 @@ fi
 MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${mount_label}.plist"
 COMPAT_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_MOUNT_LABEL}.plist"
 NETWORK_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${NETWORK_WATCH_LABEL}.plist"
+CLOUD_IDLE_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${CLOUD_IDLE_WATCH_LABEL}.plist"
 
 cat >"$MOUNT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -428,7 +418,7 @@ PLIST
 launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
 
-# Compatibility mount agent for finderserver (it still references com.chase.rclone-gdrive).
+# Compatibility mount agent for older DDump installs.
 if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
   cat >"$COMPAT_MOUNT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -491,6 +481,38 @@ PLIST
 launchctl bootout "gui/${uid}" "$NETWORK_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/${uid}" "$NETWORK_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------------------
+# Cloud idle unmount watcher (avoid long-lived stale rclone mounts)
+# ---------------------------------------------------------------------------
+cat >"$CLOUD_IDLE_WATCH_PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CLOUD_IDLE_WATCH_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${BIN_DIR}/ddump-cloud-idle-watch.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>${LOG_DIR}/cloud-idle-watch.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>${LOG_DIR}/cloud-idle-watch.stderr.log</string>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+</dict>
+</plist>
+PLIST
+
+launchctl bootout "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+
 echo ""
 echo "Installed DDump launch agent."
 echo "Main script: ${BIN_DIR}/ddump.sh"
@@ -505,4 +527,5 @@ if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
   echo "Compat mount: ${COMPAT_MOUNT_PLIST_PATH}"
 fi
 echo "Net watcher: ${NETWORK_WATCH_PLIST_PATH}"
+echo "Cloud idle:  ${CLOUD_IDLE_WATCH_PLIST_PATH}"
 echo "Log file:    ${LOG_DIR}/ddump.log"

@@ -23,7 +23,8 @@
 #
 # Configurable via env:
 #   DDUMP_NOTIFIER_TIMEOUT      seconds to wait for action click (default 60)
-#   DDUMP_NOTIFIER_SENDER       app bundle id used as sender icon (default com.apple.Finder)
+#   DDUMP_NOTIFIER_SENDER       app bundle id used as sender icon (default com.ddump.app)
+#   DDUMP_NOTIFIER_APP_ID       app bundle id used for osascript notifications
 #   DDUMP_NOTIFIER_FORCE        force "alerter" / "terminal-notifier" / "osascript"
 
 set -euo pipefail
@@ -31,7 +32,8 @@ set -euo pipefail
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 TIMEOUT="${DDUMP_NOTIFIER_TIMEOUT:-60}"
-SENDER="${DDUMP_NOTIFIER_SENDER:-com.apple.Finder}"
+SENDER="${DDUMP_NOTIFIER_SENDER:-com.ddump.app}"
+APP_ID="${DDUMP_NOTIFIER_APP_ID:-$SENDER}"
 FORCE="${DDUMP_NOTIFIER_FORCE:-}"
 
 resolve_tool() {
@@ -75,10 +77,20 @@ notify_plain() {
       msg_esc="${msg_esc//\"/\\\"}"
       local title_esc="${title//\\/\\\\}"
       title_esc="${title_esc//\"/\\\"}"
-      if [[ -n "$sound" ]]; then
-        osascript -e "display notification \"${msg_esc}\" with title \"${title_esc}\" sound name \"${sound}\"" >/dev/null 2>&1 || true
+      local app_id_esc="${APP_ID//\\/\\\\}"
+      app_id_esc="${app_id_esc//\"/\\\"}"
+      if [[ -n "$app_id_esc" ]]; then
+        if [[ -n "$sound" ]]; then
+          osascript -e "tell application id \"${app_id_esc}\" to display notification \"${msg_esc}\" with title \"${title_esc}\" sound name \"${sound}\"" >/dev/null 2>&1 || true
+        else
+          osascript -e "tell application id \"${app_id_esc}\" to display notification \"${msg_esc}\" with title \"${title_esc}\"" >/dev/null 2>&1 || true
+        fi
       else
-        osascript -e "display notification \"${msg_esc}\" with title \"${title_esc}\"" >/dev/null 2>&1 || true
+        if [[ -n "$sound" ]]; then
+          osascript -e "display notification \"${msg_esc}\" with title \"${title_esc}\" sound name \"${sound}\"" >/dev/null 2>&1 || true
+        else
+          osascript -e "display notification \"${msg_esc}\" with title \"${title_esc}\"" >/dev/null 2>&1 || true
+        fi
       fi
       ;;
   esac
