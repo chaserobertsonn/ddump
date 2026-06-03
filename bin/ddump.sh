@@ -136,11 +136,14 @@ ntfy_notify() {
     text="$(render_notification_template "$template" "title=$title" "event=$event_key" "message=$text" "$@")"
   fi
 
+  local sender_host
+  sender_host="$(/usr/sbin/scutil --get ComputerName 2>/dev/null || /bin/hostname 2>/dev/null || printf 'unknown-mac')"
   local body
-  body="$(printf '%s\n%s\n%s' "$title" "$event_key" "$text")"
+  body="$(printf '%s\n%s\n%s\nsource=%s' "$title" "$event_key" "$text" "$sender_host")"
   if ! /usr/bin/curl -fsS -m 10 \
     -H "Title: ${title}" \
     -H "Tags: camera" \
+    -H "X-DDump-Source: ${sender_host}" \
     --data-binary "$body" \
     "https://ntfy.sh/${topic}" >/dev/null 2>&1; then
     log "ntfy notification failed for event=${event_key} topic=${topic}"
