@@ -334,6 +334,14 @@ final class AppState: ObservableObject {
     return self.get("GDRIVE_MOUNT_ENABLED", default: "0") == "1"
   }
 
+  var cloudUploadsEnabledForUI: Bool {
+    let explicit = self.get("CLOUD_UPLOADS_ENABLED", default: "")
+    if !explicit.isEmpty {
+      return explicit == "1"
+    }
+    return self.get("GDRIVE_MOUNT_ENABLED", default: "0") == "1"
+  }
+
   var gdriveMountPointForUI: String {
     return expandConfiguredPath(self.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive"))
   }
@@ -364,8 +372,9 @@ final class AppState: ObservableObject {
   }
 
   var cloudSetupNeedsAttentionForUI: Bool {
-    return gdriveMountEnabledForUI
-      && (!cloudRcloneReady || !cloudRemoteConfigured || !cloudDestinationReadyForUI || !cloudSetupConnectionOKForUI || !cloudMountActive)
+    let directUpload = get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1"
+    return cloudUploadsEnabledForUI
+      && (!cloudRcloneReady || !cloudRemoteConfigured || !cloudDestinationReadyForUI || !cloudSetupConnectionOKForUI || (!directUpload && !cloudMountActive))
   }
 
   func pathUsesGDriveMount(_ path: String) -> Bool {
@@ -374,6 +383,152 @@ final class AppState: ObservableObject {
     let expandedPath = expandConfiguredPath(path)
       .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     return expandedPath == expandedMount || expandedPath.hasPrefix(expandedMount + "/")
+  }
+
+  func cloudRelativePath(_ path: String) -> String? {
+    let expandedMount = expandConfiguredPath(gdriveMountPointForUI)
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let expandedPath = expandConfiguredPath(path)
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    if expandedPath == expandedMount { return "" }
+    let prefix = expandedMount + "/"
+    guard expandedPath.hasPrefix(prefix) else { return nil }
+    return String(expandedPath.dropFirst(prefix.count))
+  }
+
+  func cloudPseudoLocalPath(relativePath: String) -> String {
+    let cleaned = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
+    if cleaned.isEmpty { return gdriveMountPointForUI }
+    return "\(gdriveMountPointForUI)/\(cleaned)"
+  }
+
+  func rcloneRemoteJoin(_ base: String, _ rel: String) -> String {
+    let cleanedRel = rel.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    if cleanedRel.isEmpty { return base }
+    if base.hasSuffix(":") { return base + cleanedRel }
+    return base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" + cleanedRel
+  }
+
+  func cloudRemotePath(for pseudoLocalPath: String) -> String? {
+    guard let rel = cloudRelativePath(pseudoLocalPath) else { return nil }
+    var remote = gdriveRemoteForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    if remote.isEmpty { remote = "combined:" }
+    if !remote.contains(":") { remote += ":" }
+    return rcloneRemoteJoin(remote, rel)
+  }
+
+  func dateFormatFromShellFormat(_ shellFormat: String, fallback: String) -> String {
+    var out = shellFormat
+    out = out.replacingOccurrences(of: "%Y", with: "yyyy")
+    out = out.replacingOccurrences(of: "%m", with: "MM")
+    out = out.replacingOccurrences(of: "%d", with: "dd")
+    out = out.replacingOccurrences(of: "%H", with: "HH")
+    out = out.replacingOccurrences(of: "%M", with: "mm")
+    out = out.replacingOccurrences(of: "%S", with: "ss")
+    return out.contains("%") ? fallback : out
+  }
+
+  func formattedDateFolder(_ shellFormat: String, fallback: String) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = dateFormatFromShellFormat(shellFormat, fallback: fallback)
+    return formatter.string(from: Date())
+  }
+
+  var todaysUploadDestinationForUI: String {
+    let root = uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !root.isEmpty else { return root }
+    let year = formattedDateFolder(get("POST_MOVE_YEAR_FORMAT", default: "%Y"), fallback: "yyyy")
+    let month = formattedDateFolder(get("POST_MOVE_MONTH_FORMAT", default: "%Y.%m"), fallback: "yyyy.MM")
+    let day = formattedDateFolder(get("POST_MOVE_DAY_FORMAT", default: "%Y.%m.%d"), fallback: "yyyy.MM.dd")
+    return "\(root)/\(year)/\(month)/\(day)"
+  }
+
+  func openUploadDestination(openTodayFolder: Bool = true) {
+    let destination = (openTodayFolder ? todaysUploadDestinationForUI : uploadRootForUI)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1",
+       let remoteDest = cloudRemotePath(for: destination) {
+      openCloudRemoteDestination(remoteDest)
+      return
+    }
+    openInFinder(destination)
+  }
+
+  private func openCloudRemoteDestination(_ remoteDest: String) {
+    let configuredBin = rcloneBinForUI
+    setCloudAction(true, "Opening Google Drive folder…")
+    lastUtilityMessage = "Opening Google Drive folder…"
+    appendAppLog("open cloud destination requested: \(remoteDest)")
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+set -euo pipefail
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+configured_bin=\(shellDoubleQuoted(configuredBin))
+remote_dest=\(shellDoubleQuoted(remoteDest))
+expand_user_path() {
+  local raw="$1"
+  raw="${raw/#\\$HOME/$HOME}"
+  raw="${raw/#$HOME/$HOME}"
+  raw="${raw/#\\~/$HOME}"
+  printf '%s' "$raw"
+}
+configured_bin="$(expand_user_path "$configured_bin")"
+if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
+  rclone="$configured_bin"
+elif command -v rclone >/dev/null 2>&1; then
+  rclone="$(command -v rclone)"
+elif [ -x "/opt/homebrew/bin/rclone" ]; then
+  rclone="/opt/homebrew/bin/rclone"
+elif [ -x "/usr/local/bin/rclone" ]; then
+  rclone="/usr/local/bin/rclone"
+else
+  echo "error=rclone missing"
+  exit 2
+fi
+"$rclone" mkdir "$remote_dest" --tpslimit 1 --tpslimit-burst 1 >/dev/null
+link="$("$rclone" link "$remote_dest" --tpslimit 1 --tpslimit-burst 1)"
+printf 'url=%s\\n' "$link"
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = pipe
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          self.lastUtilityMessage = "Could not open Google Drive folder: \(error.localizedDescription)"
+          self.showUtilityDialog(title: "Could not open Google Drive folder", text: self.lastUtilityMessage)
+        }
+        return
+      }
+      task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      DispatchQueue.main.async {
+        self.cloudActionInProgress = false
+        self.cloudActionMessage = ""
+        if task.terminationStatus == 0,
+           let rawURL = parsed["url"],
+           let url = URL(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)) {
+          NSWorkspace.shared.open(url)
+          self.lastUtilityMessage = "Opened Google Drive folder \(remoteDest)."
+          self.appendAppLog("open cloud destination success: \(remoteDest)")
+        } else {
+          let reason = parsed["error"] ?? out.trimmingCharacters(in: .whitespacesAndNewlines)
+          self.lastUtilityMessage = reason.isEmpty ? "Could not get a Google Drive folder link." : self.plainCloudFailure(reason)
+          self.appendAppLog("open cloud destination failed: \(self.lastUtilityMessage)")
+          self.showUtilityDialog(
+            title: "Could not open Google Drive folder",
+            text: "\(self.lastUtilityMessage)\nDDump verified the folder through rclone, but Google Drive did not return a web link."
+          )
+        }
+      }
+    }
   }
 
   func set(_ key: String, _ value: String) {
@@ -493,6 +648,7 @@ final class AppState: ObservableObject {
 
   func ensureUploadServerForAppSession(showProgress: Bool = false, reason: String = "Upload server") {
     guard gdriveMountEnabledForUI else { return }
+    guard get("GDRIVE_DIRECT_UPLOAD", default: "1") != "1" else { return }
     guard cloudSetupConnectionOKForUI else {
       refreshCloudMountStatus(showProgress: false)
       return
@@ -1084,7 +1240,7 @@ exit 0
     let mountLabel = gdriveMountLabelForUI
     let remote = gdriveRemoteForUI
     let rcloneBin = rcloneBinForUI
-    if !gdriveMountEnabledForUI {
+    if !cloudUploadsEnabledForUI {
       DispatchQueue.main.async {
         if showProgress {
           self.cloudActionInProgress = false
@@ -1094,6 +1250,20 @@ exit 0
         self.cloudServiceLoaded = false
         self.cloudRemoteConfigured = false
         self.cloudDiagnosticMessage = "Cloud uploads are disabled in settings."
+        self.cloudLastCheckedAt = self.nowTimestamp()
+      }
+      return
+    }
+    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1" {
+      DispatchQueue.main.async {
+        if showProgress {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+        }
+        self.cloudMountActive = false
+        self.cloudServiceLoaded = false
+        self.cloudRemoteConfigured = !remote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        self.cloudDiagnosticMessage = "Direct rclone upload mode is active; no Finder mount is required."
         self.cloudLastCheckedAt = self.nowTimestamp()
       }
       return
@@ -1621,7 +1791,9 @@ exit 4
               self.set("RCLONE_BIN", rclonePath)
             }
             self.set("GDRIVE_REMOTE", selectedRemote)
-            self.set("GDRIVE_MOUNT_ENABLED", "1")
+            self.set("CLOUD_UPLOADS_ENABLED", "1")
+            self.set("GDRIVE_MOUNT_ENABLED", "0")
+            self.set("GDRIVE_DIRECT_UPLOAD", "1")
             self.set("ENABLE_POST_EJECT_MOVE", "1")
             self.set("CLOUD_SETUP_CONNECTION_OK", "0")
             self.lastUtilityMessage = "Google Drive connected. Next, choose the upload folder."
@@ -1771,7 +1943,9 @@ exit 0
           self.set("RCLONE_BIN", rclonePath)
         }
         self.set("GDRIVE_REMOTE", selectedRemote)
-        self.set("GDRIVE_MOUNT_ENABLED", "1")
+        self.set("CLOUD_UPLOADS_ENABLED", "1")
+        self.set("GDRIVE_MOUNT_ENABLED", "0")
+        self.set("GDRIVE_DIRECT_UPLOAD", "1")
         self.set("ENABLE_POST_EJECT_MOVE", "1")
         self.set("CLOUD_SETUP_CONNECTION_OK", "0")
         let currentDest = self.get("POST_MOVE_ROOT", default: "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1792,26 +1966,71 @@ exit 0
 
   func chooseCloudDestinationFolder() {
     guard !cloudActionInProgress else { return }
-    lastUtilityMessage = "Opening your Google Drive folder…"
-    setCloudAction(true, "Opening Google Drive folder…")
     appendAppLog("cloud setup button: choose upload folder")
-    startCloudMount(userMessagePrefix: "Cloud setup", showProgress: false) { ready in
-      DispatchQueue.main.async {
-        self.cloudActionInProgress = false
-        self.cloudActionMessage = ""
-        if !ready {
-          let reason = self.plainCloudFailure(self.lastUtilityMessage)
-          self.lastUtilityMessage = reason
-          self.appendAppLog("cloud setup choose folder failed: \(reason)")
-          self.showUtilityDialog(
-            title: "Could not open Google Drive folder",
-            text: "\(reason)\nClick Choose upload folder to try again."
-          )
-          return
+    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1" {
+      presentCloudPathPrompt()
+    } else {
+      lastUtilityMessage = "Opening your Google Drive folder…"
+      setCloudAction(true, "Opening Google Drive folder…")
+      startCloudMount(userMessagePrefix: "Cloud setup", showProgress: false) { ready in
+        DispatchQueue.main.async {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+          if !ready {
+            let reason = self.plainCloudFailure(self.lastUtilityMessage)
+            self.lastUtilityMessage = reason
+            self.appendAppLog("cloud setup choose folder failed: \(reason)")
+            self.showUtilityDialog(
+              title: "Could not open Google Drive folder",
+              text: "\(reason)\nClick Choose upload folder to try again."
+            )
+            return
+          }
+          self.presentCloudDestinationPicker()
         }
-        self.presentCloudDestinationPicker()
       }
     }
+  }
+
+  private func presentCloudPathPrompt() {
+    let current = uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    let currentRel = cloudRelativePath(current)
+    let defaultRel = currentRel?.isEmpty == false ? currentRel! : "DDump Uploads"
+
+    NSApplication.shared.activate(ignoringOtherApps: true)
+    let alert = NSAlert()
+    alert.messageText = "Choose Google Drive upload folder"
+    alert.informativeText = "Enter the folder path inside Google Drive. Shared drives and My Drive folders are both available through the connected rclone remote."
+    alert.addButton(withTitle: "Use Folder")
+    alert.addButton(withTitle: "Cancel")
+    let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 520, height: 24))
+    input.stringValue = defaultRel
+    input.placeholderString = "Example: Densley/1 — Media/1 — Uploads/1 — Photo"
+    alert.accessoryView = input
+
+    guard alert.runModal() == .alertFirstButtonReturn else {
+      lastUtilityMessage = "No upload folder chosen yet. Click Choose upload folder to continue."
+      appendAppLog("cloud setup choose remote path cancelled")
+      return
+    }
+
+    let rel = input.stringValue.trimmingCharacters(in: CharacterSet(charactersIn: " \n\r\t/"))
+    guard !rel.isEmpty else {
+      lastUtilityMessage = "Enter a Google Drive folder path before testing."
+      showUtilityDialog(title: "Upload folder not chosen", text: lastUtilityMessage)
+      return
+    }
+
+    let selectedPath = cloudPseudoLocalPath(relativePath: rel)
+    set("POST_MOVE_ROOT", selectedPath)
+    set("ENABLE_POST_EJECT_MOVE", "1")
+    set("CLOUD_UPLOADS_ENABLED", "1")
+    set("GDRIVE_MOUNT_ENABLED", "0")
+    set("GDRIVE_DIRECT_UPLOAD", "1")
+    set("CLOUD_SETUP_CONNECTION_OK", "0")
+    lastUtilityMessage = "Upload folder chosen. Testing \(rel)…"
+    appendAppLog("cloud setup choose remote path success: \(rel)")
+    testCloudUploadConnection(showProgress: true)
   }
 
   private func presentCloudDestinationPicker() {
@@ -1827,7 +2046,7 @@ exit 0
     panel.canCreateDirectories = true
     panel.directoryURL = FileManager.default.fileExists(atPath: defaultURL.path) ? defaultURL : mountURL
     panel.prompt = "Use This Folder"
-    panel.message = "Choose the Google Drive folder where DDump should upload finished dumps."
+    panel.message = "Choose the mounted Google Drive folder where DDump should upload finished dumps."
     guard panel.runModal() == .OK, let url = panel.url else {
       lastUtilityMessage = "No upload folder chosen yet. Click Choose upload folder to continue."
       appendAppLog("cloud setup choose folder cancelled")
@@ -1836,7 +2055,7 @@ exit 0
 
     let selectedPath = url.path
     guard pathUsesGDriveMount(selectedPath) else {
-      lastUtilityMessage = "Choose a folder inside the Google Drive folder DDump opened."
+      lastUtilityMessage = "Choose a folder inside the mounted Google Drive folder DDump opened."
       appendAppLog("cloud setup choose folder rejected outside mount: \(selectedPath)")
       showUtilityDialog(
         title: "Choose a Google Drive folder",
@@ -1847,7 +2066,9 @@ exit 0
 
     set("POST_MOVE_ROOT", selectedPath)
     set("ENABLE_POST_EJECT_MOVE", "1")
+    set("CLOUD_UPLOADS_ENABLED", "1")
     set("GDRIVE_MOUNT_ENABLED", "1")
+    set("GDRIVE_DIRECT_UPLOAD", "0")
     set("CLOUD_SETUP_CONNECTION_OK", "0")
     lastUtilityMessage = "Upload folder chosen. Testing the connection…"
     appendAppLog("cloud setup choose folder success: \(selectedPath)")
@@ -1877,6 +2098,10 @@ exit 0
     }
     lastUtilityMessage = "Testing the upload folder…"
     appendAppLog("cloud setup button: test upload folder")
+    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1" {
+      testDirectCloudUploadConnection(destination: destinationForTest, showProgress: showProgress)
+      return
+    }
     startCloudMount(userMessagePrefix: "Cloud setup", showProgress: false) { ready in
       if !ready {
         DispatchQueue.main.async {
@@ -1939,6 +2164,110 @@ exit 0
               text: "\(reason)\nClick Retry cloud test to try again."
             )
           }
+        }
+      }
+    }
+  }
+
+  private func testDirectCloudUploadConnection(destination: String, showProgress: Bool) {
+    guard let remoteDest = cloudRemotePath(for: destination) else {
+      if showProgress {
+        cloudActionInProgress = false
+        cloudActionMessage = ""
+      }
+      set("CLOUD_SETUP_CONNECTION_OK", "0")
+      lastUtilityMessage = "Choose a Google Drive folder before testing."
+      showUtilityDialog(title: "Upload folder not chosen", text: lastUtilityMessage)
+      return
+    }
+
+    let configuredBin = rcloneBinForUI
+    let testName = ".ddump-connection-test-\(UUID().uuidString)"
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+set -euo pipefail
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+configured_bin=\(shellDoubleQuoted(configuredBin))
+remote_dest=\(shellDoubleQuoted(remoteDest))
+test_name=\(shellDoubleQuoted(testName))
+expand_user_path() {
+  local raw="$1"
+  raw="${raw/#\\$HOME/$HOME}"
+  raw="${raw/#$HOME/$HOME}"
+  raw="${raw/#\\~/$HOME}"
+  printf '%s' "$raw"
+}
+configured_bin="$(expand_user_path "$configured_bin")"
+if [ -n "$configured_bin" ] && [ -x "$configured_bin" ]; then
+  rclone="$configured_bin"
+elif command -v rclone >/dev/null 2>&1; then
+  rclone="$(command -v rclone)"
+elif [ -x "/opt/homebrew/bin/rclone" ]; then
+  rclone="/opt/homebrew/bin/rclone"
+elif [ -x "/usr/local/bin/rclone" ]; then
+  rclone="/usr/local/bin/rclone"
+else
+  echo "setup_error=rclone missing"
+  exit 2
+fi
+tmp="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/ddump-cloud-test.XXXXXX")"
+cleanup() {
+  /bin/rm -f "$tmp" >/dev/null 2>&1 || true
+  "$rclone" deletefile "${remote_dest}/${test_name}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+printf 'DDump cloud connection test\\n' > "$tmp"
+"$rclone" mkdir "$remote_dest" --tpslimit 1 --tpslimit-burst 1 >/dev/null
+"$rclone" copyto "$tmp" "${remote_dest}/${test_name}" --drive-chunk-size 8M --multi-thread-streams 0 --tpslimit 1 --tpslimit-burst 1 --contimeout 10s --timeout 30s --retries 6 --low-level-retries 6 --retries-sleep 10s >/dev/null
+"$rclone" lsf "$remote_dest" --max-depth 1 --tpslimit 1 --tpslimit-burst 1 | /usr/bin/grep -Fxq "$test_name"
+echo "remote_dest=$remote_dest"
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = pipe
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          if showProgress {
+            self.cloudActionInProgress = false
+            self.cloudActionMessage = ""
+          }
+          self.set("CLOUD_SETUP_CONNECTION_OK", "0")
+          self.lastUtilityMessage = "Cloud test failed: \(error.localizedDescription)"
+          self.showUtilityDialog(title: "Cloud test failed", text: self.lastUtilityMessage)
+        }
+        return
+      }
+      task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      DispatchQueue.main.async {
+        if showProgress {
+          self.cloudActionInProgress = false
+          self.cloudActionMessage = ""
+        }
+        if task.terminationStatus == 0 {
+          self.set("CLOUD_SETUP_CONNECTION_OK", "1")
+          self.set("CLOUD_SETUP_TESTED_AT", self.nowTimestamp())
+          self.lastUtilityMessage = "Cloud setup complete. DDump verified \(parsed["remote_dest"] ?? remoteDest)."
+          self.appendAppLog("cloud setup direct test success: \(remoteDest)")
+          self.refreshCloudMountStatus(showProgress: false)
+          self.showUtilityDialog(
+            title: "Cloud setup complete",
+            text: "DDump verified uploads to:\n\(remoteDest)"
+          )
+        } else {
+          self.set("CLOUD_SETUP_CONNECTION_OK", "0")
+          let reason = self.plainCloudFailure(parsed["setup_error"] ?? out.trimmingCharacters(in: .whitespacesAndNewlines))
+          self.lastUtilityMessage = reason.isEmpty ? "Cloud test failed." : reason
+          self.appendAppLog("cloud setup direct test failed: \(self.lastUtilityMessage)")
+          self.showUtilityDialog(
+            title: "Cloud test failed",
+            text: "\(self.lastUtilityMessage)\nClick Test upload folder to try again."
+          )
         }
       }
     }
@@ -2341,7 +2670,7 @@ struct ContentView: View {
         Spacer()
 
         Button {
-          openInFinder(state.uploadRootForUI)
+          state.openUploadDestination()
         } label: {
           Label("Open Uploads", systemImage: "folder")
         }
@@ -2870,7 +3199,7 @@ struct RunChecklistPanel: View {
     }
   }
 
-  private func row(_ title: String, step: StepState, linkTitle: String? = nil, linkPath: String? = nil) -> some View {
+  private func row(_ title: String, step: StepState, linkTitle: String? = nil, linkPath: String? = nil, cloudDestination: Bool = false) -> some View {
     HStack(spacing: 10) {
       Image(systemName: icon(for: step))
         .foregroundColor(color(for: step))
@@ -2879,7 +3208,11 @@ struct RunChecklistPanel: View {
       Spacer()
       if let linkTitle, let linkPath, !linkPath.isEmpty {
         Button(linkTitle) {
-          openInFinder(linkPath)
+          if cloudDestination {
+            state.openUploadDestination()
+          } else {
+            openInFinder(linkPath)
+          }
         }
         .buttonStyle(.link)
         .foregroundColor(.ddumpPeach)
@@ -2909,7 +3242,7 @@ struct RunChecklistPanel: View {
       }
       row("1. Transfer to staging folder", step: step1State, linkTitle: "Open staging", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
       row("2. Eject card", step: step2State)
-      row("3. Transfer to destination folder", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI)
+      row("3. Transfer to destination folder", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI, cloudDestination: true)
       row("4. All complete!", step: step4State)
     }
     .padding(14)
@@ -3082,7 +3415,7 @@ struct NamingSettings: View {
   @State private var clusterGroupingEnabled: Bool = true
   @State private var clusterAttachMinutes: String = "120"
   @State private var smartSamplePath: String = ""
-  @State private var smartAssignExisting: Bool = true
+  @State private var smartAssignExisting: Bool = false
   @State private var splitPhotoVideo: Bool = false
 
   let strategies = ["sequential", "custom", "calendar", "smart", "camera"]
@@ -3170,6 +3503,9 @@ struct NamingSettings: View {
           .onChange(of: smartAssignExisting) { _, v in
             state.set("SMART_ASSIGN_EXISTING_FOLDERS", v ? "1" : "0")
           }
+        Text("Advanced. Leave off unless those destination folders were made for your shoots today.")
+          .font(.caption)
+          .foregroundColor(.secondary)
         Toggle("Split videos to sibling 2 — Video folder", isOn: $splitPhotoVideo)
           .onChange(of: splitPhotoVideo) { _, v in
             state.set("SPLIT_PHOTO_VIDEO", v ? "1" : "0")
@@ -3187,7 +3523,7 @@ struct NamingSettings: View {
       clusterGroupingEnabled = (state.get("CLUSTER_GROUPING_ENABLED", default: "1") == "1")
       clusterAttachMinutes = state.get("CLUSTER_ATTACH_MINUTES", default: "120")
       smartSamplePath = state.get("SMART_SAMPLE_PATH")
-      smartAssignExisting = (state.get("SMART_ASSIGN_EXISTING_FOLDERS", default: "1") == "1")
+      smartAssignExisting = (state.get("SMART_ASSIGN_EXISTING_FOLDERS", default: "0") == "1")
       splitPhotoVideo = (state.get("SPLIT_PHOTO_VIDEO", default: "0") == "1")
     }
   }
@@ -3203,7 +3539,7 @@ struct DetectionSettings: View {
   @State private var verifyHash: Bool = false
   @State private var lookbackHours: String = "24"
   @State private var videoExtensions: String = ""
-  @State private var promptSourceFoldersOnNewCard: Bool = true
+  @State private var promptSourceFoldersOnNewCard: Bool = false
   @State private var sqliteMemoryEnabled: Bool = false
   @State private var ntfyTopic: String = ""
   @State private var ntfyStagingStarted: Bool = false
@@ -3252,8 +3588,11 @@ struct DetectionSettings: View {
       }
 
       Section("Scan window") {
-        Toggle("Prompt to choose folders when a new card is first seen", isOn: $promptSourceFoldersOnNewCard)
+        Toggle("Ask me to choose card folders manually", isOn: $promptSourceFoldersOnNewCard)
           .onChange(of: promptSourceFoldersOnNewCard) { _, v in state.set("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", v ? "1" : "0") }
+        Text("Advanced. Leave off to scan the whole card for media inside the time window.")
+          .font(.caption)
+          .foregroundColor(.secondary)
 
         HStack(spacing: 6) {
           Text("Candidate mode")
@@ -3297,7 +3636,7 @@ struct DetectionSettings: View {
       state.set("CANDIDATE_MODE", "lookback")
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr")
-      promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "1") == "1")
+      promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "0") == "1")
       sqliteMemoryEnabled = state.sqliteMemoryEnabled
       cardAlmostFullAlertEnabled = (state.get("CARD_ALMOST_FULL_ALERT_ENABLED", default: "1") == "1")
       ntfyTopic = state.get("NTFY_TOPIC", default: "")
@@ -3472,6 +3811,7 @@ struct NotificationsSettings: View {
 struct CloudSettings: View {
   @EnvironmentObject var state: AppState
   @State private var enabled: Bool = true
+  @State private var managedMountEnabled: Bool = false
   @State private var showSetupGuide: Bool = false
   @State private var showAdvanced: Bool = false
   @State private var mountPoint: String = ""
@@ -3640,7 +3980,11 @@ struct CloudSettings: View {
             if cloudOff {
               Button {
                 enabled = true
-                state.set("GDRIVE_MOUNT_ENABLED", "1")
+                managedMountEnabled = false
+                state.set("CLOUD_UPLOADS_ENABLED", "1")
+                state.set("ENABLE_POST_EJECT_MOVE", "1")
+                state.set("GDRIVE_MOUNT_ENABLED", "0")
+                state.set("GDRIVE_DIRECT_UPLOAD", "1")
                 state.refreshCloudMountStatus()
                 state.lastUtilityMessage = "Cloud uploads are on. Continue setup below."
               } label: {
@@ -3699,7 +4043,11 @@ struct CloudSettings: View {
             if enabled {
               Button {
                 enabled = false
+                managedMountEnabled = false
+                state.set("CLOUD_UPLOADS_ENABLED", "0")
+                state.set("ENABLE_POST_EJECT_MOVE", "0")
                 state.set("GDRIVE_MOUNT_ENABLED", "0")
+                state.set("GDRIVE_DIRECT_UPLOAD", "1")
                 state.refreshCloudMountStatus()
                 state.lastUtilityMessage = "Cloud uploads are disabled."
               } label: {
@@ -3764,17 +4112,23 @@ struct CloudSettings: View {
               Text("Enable DDump-managed cloud mount")
                 .font(DDumpFont.ui(14, weight: .medium))
                 .foregroundColor(.ddumpFG1)
-              Text("DDump keeps your Finder upload mount in sync and retries before failing.")
+              Text("Advanced fallback only. Direct rclone upload is preferred and does not keep a Finder mount alive.")
                 .font(DDumpFont.ui(12))
                 .foregroundColor(.ddumpFG3)
             }
             Spacer()
-            Toggle("", isOn: $enabled)
+            Toggle("", isOn: $managedMountEnabled)
               .labelsHidden()
               .toggleStyle(.switch)
               .tint(.ddumpPeach)
               .onChange(of: enabled) { _, v in
+                managedMountEnabled = state.gdriveMountEnabledForUI
+              }
+              .onChange(of: managedMountEnabled) { _, v in
+                state.set("CLOUD_UPLOADS_ENABLED", "1")
+                state.set("ENABLE_POST_EJECT_MOVE", "1")
                 state.set("GDRIVE_MOUNT_ENABLED", v ? "1" : "0")
+                state.set("GDRIVE_DIRECT_UPLOAD", v ? "0" : "1")
                 state.refreshCloudMountStatus()
               }
           }
@@ -4054,7 +4408,8 @@ struct CloudSettings: View {
     }
     .background(Color.ddumpBG)
     .onAppear {
-      enabled = state.get("GDRIVE_MOUNT_ENABLED", default: "0") == "1"
+      enabled = state.cloudUploadsEnabledForUI
+      managedMountEnabled = state.gdriveMountEnabledForUI
       mountPoint = state.get("GDRIVE_MOUNT_POINT", default: "\(NSHomeDirectory())/GoogleDrive")
       remote = state.get("GDRIVE_REMOTE", default: "combined:")
       rcloneBin = state.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone")

@@ -15,6 +15,7 @@ RCLONE_MOUNT_LOCK_DIR="$STATE_DIR/rclone-mount.lock"
 LOG="$LOG_DIR/rclone-gdrive.log"
 
 GDRIVE_MOUNT_ENABLED="0"
+GDRIVE_DIRECT_UPLOAD="1"
 GDRIVE_MOUNT_POINT="$HOME/GoogleDrive"
 GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
 CLOUD_IDLE_UNMOUNT_SECONDS="180"
@@ -34,6 +35,7 @@ fi
 
 mkdir -p "$LOG_DIR" "$CONTROL_DIR"
 [[ "${GDRIVE_MOUNT_ENABLED:-0}" == "1" ]] || exit 0
+[[ "${GDRIVE_DIRECT_UPLOAD:-1}" != "1" ]] || exit 0
 
 MOUNT="$(expand_user_path "${GDRIVE_MOUNT_POINT:-$HOME/GoogleDrive}")"
 LABEL="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"

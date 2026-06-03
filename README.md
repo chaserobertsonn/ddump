@@ -50,7 +50,7 @@ It is built for high-confidence transfer workflows:
 - Cloud setup wizard only runs when cloud uploads are enabled.
 - Wizard installs/uses rclone, opens Google sign-in, creates the Drive remote, and builds a combined mount when shared drives are available.
 - Google Drive shared drives mount as top-level folders so both personal and team drives can be selected.
-- Uses rclone `nfsmount`; macFUSE is not required for the default DDump Google Drive mount path.
+- Uses macFUSE-backed `rclone mount` when macFUSE is installed; otherwise falls back to rclone `nfsmount`. macFUSE is recommended for Finder-stable Google Drive syncing.
 - DDump uses a passive app keepalive and an idle watcher: it does not remount every minute, and the cloud mount is unmounted after the idle timeout when DDump is closed and no transfer is running.
 - Mount preflight checks before transfer.
 - Mount retry backoff schedule (`15,30,60,180` by default).
@@ -216,6 +216,7 @@ Important keys:
 - `POST_MOVE_ROOTS`
 - `POST_MOVE_FALLBACK_ROOT`
 - `LOOKBACK_HOURS`
+- `PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE`
 - `FOLDER_NAMING_STRATEGY`
 - `FOLDER_NAMING_FALLBACK`
 - `SMART_SAMPLE_PATH`
@@ -224,10 +225,14 @@ Important keys:
 - `CLUSTER_GAP_MINUTES`
 - `CLUSTER_ATTACH_MINUTES`
 - `DB_ENABLED`
+- `CLOUD_UPLOADS_ENABLED`
 - `GDRIVE_MOUNT_ENABLED`
+- `GDRIVE_DIRECT_UPLOAD`
 - `GDRIVE_REMOTE`
 - `GDRIVE_MOUNT_POINT`
 - `GDRIVE_MOUNT_RETRY_SECONDS`
+- `RCLONE_CACHE_DIR`
+- `PREVENT_FINDER_NETWORK_METADATA`
 - `CLOUD_IDLE_UNMOUNT_SECONDS`
 - `NETWORK_RESUME_ENABLED`
 - `NETWORK_RESUME_CHECK_SECONDS`
@@ -241,14 +246,28 @@ Important keys:
 - `UPDATE_CHECK_FREQUENCY`
 - `UPDATE_GITHUB_REPO`
 
+Cloud uploads are off by default for new installs. When a user turns them on in
+the app, DDump now uploads Google Drive destinations directly with `rclone copy`
+by default (`GDRIVE_DIRECT_UPLOAD=1`). A configured destination such as
+`$HOME/GoogleDrive/Densley/1 — Media/1 — Uploads/1 — Photo` is mapped to the
+matching rclone remote path, for example `combined:Densley/1 — Media/1 — Uploads/1 — Photo`.
+This avoids requiring Finder, macFUSE, or an always-on mounted Google Drive
+folder during normal imports. The old mounted-folder flow remains available for
+advanced testing by setting `GDRIVE_DIRECT_UPLOAD=0` and `GDRIVE_MOUNT_ENABLED=1`.
+`CLOUD_UPLOADS_ENABLED=1` means cloud upload is enabled; it does not imply that
+the Finder mount helper should be installed or started.
+
 ## Current Defaults Worth Noting
 
 - Lookback mode is enforced for safe card ingest behavior.
+- DDump scans the whole card for eligible media inside the lookback window by default. The folder chooser is an advanced opt-in.
+- Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.
 - SQLite memory is OFF by default (staging memory mode is default).
 - Card eject grace defaults to 60 seconds.
 - Update checks and auto updates are OFF by default until a public release/update feed is configured.
 - Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.
 - Default ntfy toggles prioritize card ejected, upload complete, and pending recovery. Mount-failure ntfy alerts are off by default because cloud mounts are short lived and retried from the app.
+- The Google Drive mount uses a DDump-owned rclone cache and prevents Finder network `.DS_Store` writes by default. This avoids stale metadata uploads at the root of the combined Drive mount.
 
 ## Development Checks
 

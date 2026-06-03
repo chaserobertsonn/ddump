@@ -8,6 +8,7 @@ NETWORK_WATCH_LABEL="com.ddump.network-watch"
 CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
+LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
 APP_VERSION="${DDUMP_VERSION:-0.3.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -172,6 +173,34 @@ normalize_escaped_home_path() {
   fi
 }
 
+config_value() {
+  local key="$1"
+  local fallback="${2:-}"
+  /usr/bin/awk -F= -v k="$key" -v fallback="$fallback" '
+    $1 == k { v=$2 }
+    END {
+      gsub(/^"|"$/, "", v)
+      if (v == "") v=fallback
+      print v
+    }
+  ' "$USER_CONFIG"
+}
+
+preserve_existing_direct_cloud_upload() {
+  if grep -q '^CLOUD_UPLOADS_ENABLED=' "$USER_CONFIG"; then
+    return
+  fi
+  local mount_enabled direct_upload post_move_root
+  mount_enabled="$(config_value 'GDRIVE_MOUNT_ENABLED' '0')"
+  direct_upload="$(config_value 'GDRIVE_DIRECT_UPLOAD' '1')"
+  post_move_root="$(config_value 'POST_MOVE_ROOT' '')"
+  if [[ "$mount_enabled" == "1" && "$direct_upload" == "1" && "$post_move_root" == *'GoogleDrive'* ]]; then
+    /bin/echo 'CLOUD_UPLOADS_ENABLED="1"' >>"$USER_CONFIG"
+    /usr/bin/sed -i '' 's|^GDRIVE_MOUNT_ENABLED=.*|GDRIVE_MOUNT_ENABLED="0"|' "$USER_CONFIG"
+    echo "Migrated direct cloud uploads: CLOUD_UPLOADS_ENABLED=1, managed mount disabled."
+  fi
+}
+
 # v1 → v2 key renames
 migrate_key "TRUSTED_NAME_PREFIX" "TRUSTED_NAME_PREFIXES"
 migrate_key "REQUIRE_DCIM_OR_TRUSTED" "REQUIRE_PHOTOS_OR_TRUSTED"
@@ -183,28 +212,41 @@ if grep -q '^AUTO_TRUST_PREFIX=' "$USER_CONFIG"; then
 fi
 
 # v1 keys that still apply
-add_missing_key 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '"1"' "Prompt for folder selection the first time a trusted card UUID is seen."
+add_missing_key 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '"0"' "Advanced: prompt for folder selection the first time a trusted card UUID is seen; default scans the whole card within the lookback window."
+replace_key_if_exact 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '1' '0'
+add_missing_key 'OPEN_APP_ON_CARD_INSERT' '"1"' "Bring DDump forward when a trusted card starts processing."
 add_missing_key 'PROMPT_FOR_UNKNOWN_CARD_ACTION' '"1"'
 add_missing_key 'SKIP_INTERNAL_VOLUMES' '"1"'
 add_missing_key 'IGNORE_VOLUME_NAMES' '"Macintosh HD,Recovery"'
 add_missing_key 'IGNORE_NO_UUID_VOLUMES' '"1"'
 add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
+add_missing_key 'EJECT_TIMEOUT_SECONDS' '"20"' "Maximum seconds to wait for macOS card eject before continuing with upload."
 add_missing_key 'SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION' '"1"'
 add_missing_key 'USE_FAST_SEEN_INDEX' '"1"'
 add_missing_key 'MIN_FREE_SPACE_GB' '"100"' "Minimum local staging free space required before import; 0 disables."
 add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper command for starting/refreshing shared Finder mounts."
 add_missing_key 'FINDERSERVER_TIMER_CHECK_SECONDS' '"300"' "During upload, check timer this often."
 add_missing_key 'FINDERSERVER_TIMER_MIN_SECONDS' '"300"' "If timer is at/below this value, refresh it."
-add_missing_key 'GDRIVE_MOUNT_ENABLED' '"0"' "Enable DDump-managed rclone mount automation only after cloud uploads are selected in the app."
+preserve_existing_direct_cloud_upload
+add_missing_key 'CLOUD_UPLOADS_ENABLED' '"0"' "Enable cloud uploads. Direct rclone upload is used by default; this does not enable a Finder mount."
+add_missing_key 'GDRIVE_MOUNT_ENABLED' '"0"' "Advanced: enable DDump-managed Finder mount automation instead of direct rclone uploads."
+add_missing_key 'GDRIVE_DIRECT_UPLOAD' '"1"' "Upload Google Drive destinations directly with rclone copy instead of requiring a mounted Finder folder."
 add_missing_key 'GDRIVE_MOUNT_POINT' '"$HOME/GoogleDrive"' "Mounted cloud folder path used for uploads."
 add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDump."
 add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
-add_missing_key 'RCLONE_MOUNT_COMMAND' '"auto"' "Mount command: auto (prefer nfsmount), mount, or nfsmount."
+add_missing_key 'RCLONE_CACHE_DIR' '"$HOME/Library/Application Support/DDump/cache/rclone"' "DDump-owned rclone VFS cache directory."
+add_missing_key 'RCLONE_MOUNT_COMMAND' '"auto"' "Mount command: auto (prefer macFUSE-backed rclone mount when available), mount, or nfsmount."
+add_missing_key 'RCLONE_FILE_TIMEOUT_SECONDS' '"180"' "Maximum seconds to allow one direct rclone file upload before retrying later."
+add_missing_key 'RCLONE_BATCH_TIMEOUT_SECONDS' '"3600"' "Maximum seconds to allow one direct rclone bucket upload before retrying later."
+add_missing_key 'RCLONE_DRIVE_CHUNK_SIZE' '"8M"' "Google Drive upload chunk size for direct rclone uploads."
+add_missing_key 'RCLONE_TPS_LIMIT' '"2"' "Maximum rclone HTTP transactions per second during direct cloud uploads."
+add_missing_key 'RCLONE_TPS_BURST' '"2"' "Burst size for rclone HTTP transaction throttling."
 add_missing_key 'GDRIVE_MOUNT_LABEL' '"com.ddump.rclone-gdrive"' "LaunchAgent label for DDump's mount helper."
 add_missing_key 'GDRIVE_MOUNT_RETRY_SECONDS' '"15,30,60,180"' "Mount retry backoff schedule in seconds."
 add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt waits for readiness."
 add_missing_key 'GDRIVE_ACTION_TIMEOUT_SECONDS' '"180"' "Maximum seconds DDump waits for a mount action before timing out."
 add_missing_key 'CLOUD_IDLE_UNMOUNT_SECONDS' '"180"' "Unmount cloud drive after this many idle seconds without the DDump app or an active transfer."
+add_missing_key 'PREVENT_FINDER_NETWORK_METADATA' '"1"' "Prevent Finder .DS_Store metadata writes from poisoning the combined rclone mount."
 replace_key_if_exact 'GDRIVE_MOUNT_RETRY_SECONDS' '5,15,60,180,360,600' '15,30,60,180'
 
 # v2 keys (new)
@@ -220,7 +262,8 @@ add_missing_key 'NOTIFICATION_TIMEOUT_SECONDS' '"60"'
 add_missing_key 'FOLDER_NAMING_STRATEGY' '"sequential"' "How to name shoot folders: smart | calendar | sequential | custom | camera."
 add_missing_key 'FOLDER_NAMING_FALLBACK' '"sequential"'
 add_missing_key 'SMART_SAMPLE_PATH' '""' "Real shoot folder path used by smart naming to infer the daily Drive structure."
-add_missing_key 'SMART_ASSIGN_EXISTING_FOLDERS' '"1"' "Smart naming maps clusters into existing folders under today's Drive date folder."
+add_missing_key 'SMART_ASSIGN_EXISTING_FOLDERS' '"0"' "Advanced smart naming: map clusters into existing folders under today's Drive date folder."
+replace_key_if_exact 'SMART_ASSIGN_EXISTING_FOLDERS' '1' '0'
 add_missing_key 'SPLIT_PHOTO_VIDEO' '"0"' "Optional smart-mode split: videos go to the sibling 2 — Video date ladder."
 add_missing_key 'FOLDER_NAME_SEQUENTIAL_PREFIX' '"Shoot-"'
 add_missing_key 'FOLDER_NAME_CUSTOM_VALUES' '""'
@@ -386,10 +429,15 @@ if [[ -z "$mount_label" ]]; then
 fi
 MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${mount_label}.plist"
 COMPAT_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_MOUNT_LABEL}.plist"
+LEGACY_CHASE_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${LEGACY_CHASE_MOUNT_LABEL}.plist"
 NETWORK_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${NETWORK_WATCH_LABEL}.plist"
 CLOUD_IDLE_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${CLOUD_IDLE_WATCH_LABEL}.plist"
 
-cat >"$MOUNT_PLIST_PATH" <<PLIST
+mount_enabled="$(config_value 'GDRIVE_MOUNT_ENABLED' '0')"
+direct_upload="$(config_value 'GDRIVE_DIRECT_UPLOAD' '1')"
+
+if [[ "$mount_enabled" == "1" && "$direct_upload" != "1" ]]; then
+  cat >"$MOUNT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -415,12 +463,12 @@ cat >"$MOUNT_PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
 
-# Compatibility mount agent for older DDump installs.
-if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
-  cat >"$COMPAT_MOUNT_PLIST_PATH" <<PLIST
+  # Compatibility mount agent for older DDump installs.
+  if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
+    cat >"$COMPAT_MOUNT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -445,8 +493,18 @@ if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
 </dict>
 </plist>
 PLIST
+    launchctl bootout "gui/${uid}" "$COMPAT_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/${uid}" "$COMPAT_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  fi
+else
+  launchctl bootout "gui/${uid}" "$MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
   launchctl bootout "gui/${uid}" "$COMPAT_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/${uid}" "$COMPAT_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}" "$LEGACY_CHASE_MOUNT_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}/${mount_label}" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}/${OLD_MOUNT_LABEL}" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}/${LEGACY_CHASE_MOUNT_LABEL}" >/dev/null 2>&1 || true
+  /bin/rm -f "$MOUNT_PLIST_PATH" "$COMPAT_MOUNT_PLIST_PATH" "$LEGACY_CHASE_MOUNT_PLIST_PATH"
+  echo "Skipped cloud mount LaunchAgents (direct upload mode or mount disabled)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -484,7 +542,8 @@ launchctl bootstrap "gui/${uid}" "$NETWORK_WATCH_PLIST_PATH" >/dev/null 2>&1 || 
 # ---------------------------------------------------------------------------
 # Cloud idle unmount watcher (avoid long-lived stale rclone mounts)
 # ---------------------------------------------------------------------------
-cat >"$CLOUD_IDLE_WATCH_PLIST_PATH" <<PLIST
+if [[ "$mount_enabled" == "1" && "$direct_upload" != "1" ]]; then
+  cat >"$CLOUD_IDLE_WATCH_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -510,8 +569,14 @@ cat >"$CLOUD_IDLE_WATCH_PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-launchctl bootout "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+else
+  launchctl bootout "gui/${uid}" "$CLOUD_IDLE_WATCH_PLIST_PATH" >/dev/null 2>&1 || true
+  launchctl bootout "gui/${uid}/${CLOUD_IDLE_WATCH_LABEL}" >/dev/null 2>&1 || true
+  /bin/rm -f "$CLOUD_IDLE_WATCH_PLIST_PATH"
+  echo "Skipped cloud idle watcher (direct upload mode or mount disabled)."
+fi
 
 echo ""
 echo "Installed DDump launch agent."
@@ -522,10 +587,18 @@ echo "Calendar:    ${BIN_DIR}/ddump-calendar-lookup.sh"
 echo "Config:      ${USER_CONFIG}"
 echo "Mac app:     ${APP_BUNDLE}"
 echo "LaunchAgent: ${PLIST_PATH}"
-echo "Mount agent: ${MOUNT_PLIST_PATH}"
-if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
-  echo "Compat mount: ${COMPAT_MOUNT_PLIST_PATH}"
+if [[ "$mount_enabled" == "1" && "$direct_upload" != "1" ]]; then
+  echo "Mount agent: ${MOUNT_PLIST_PATH}"
+  if [[ "$mount_label" != "$OLD_MOUNT_LABEL" ]]; then
+    echo "Compat mount: ${COMPAT_MOUNT_PLIST_PATH}"
+  fi
+else
+  echo "Mount agent: disabled (direct upload mode)"
 fi
 echo "Net watcher: ${NETWORK_WATCH_PLIST_PATH}"
-echo "Cloud idle:  ${CLOUD_IDLE_WATCH_PLIST_PATH}"
+if [[ "$mount_enabled" == "1" && "$direct_upload" != "1" ]]; then
+  echo "Cloud idle:  ${CLOUD_IDLE_WATCH_PLIST_PATH}"
+else
+  echo "Cloud idle:  disabled (direct upload mode)"
+fi
 echo "Log file:    ${LOG_DIR}/ddump.log"

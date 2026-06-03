@@ -12,11 +12,14 @@ LOG_DIR="$APP_SUPPORT_DIR/logs"
 STATE_DIR="$APP_SUPPORT_DIR/state"
 
 # Defaults (overridden by config files)
-GDRIVE_MOUNT_ENABLED="1"
+GDRIVE_MOUNT_ENABLED="0"
+GDRIVE_DIRECT_UPLOAD="1"
 GDRIVE_MOUNT_POINT="$HOME/GoogleDrive"
 GDRIVE_REMOTE="combined:"
 RCLONE_BIN="$HOME/bin/rclone"
 RCLONE_MOUNT_COMMAND="auto"
+RCLONE_CACHE_DIR="$APP_SUPPORT_DIR/cache/rclone"
+PREVENT_FINDER_NETWORK_METADATA="1"
 LOG="$LOG_DIR/rclone-gdrive.log"
 
 expand_user_path() {
@@ -42,6 +45,7 @@ mkdir -p "$LOG_DIR"
 mkdir -p "$STATE_DIR"
 GDRIVE_MOUNT_POINT="$(expand_user_path "${GDRIVE_MOUNT_POINT:-$HOME/GoogleDrive}")"
 RCLONE_BIN="$(expand_user_path "${RCLONE_BIN:-$HOME/bin/rclone}")"
+RCLONE_CACHE_DIR="$(expand_user_path "${RCLONE_CACHE_DIR:-$APP_SUPPORT_DIR/cache/rclone}")"
 MOUNT="$GDRIVE_MOUNT_POINT"
 REMOTE="$GDRIVE_REMOTE"
 LOCK_DIR="$STATE_DIR/rclone-mount.lock"
@@ -88,6 +92,11 @@ if [[ "${GDRIVE_MOUNT_ENABLED:-1}" != "1" ]]; then
   exit 0
 fi
 
+if [[ "${GDRIVE_DIRECT_UPLOAD:-1}" == "1" ]]; then
+  echo "$(date)  mount skipped: GDRIVE_DIRECT_UPLOAD=1" >> "$LOG"
+  exit 0
+fi
+
 if [[ -z "$MOUNT" || -z "$REMOTE" ]]; then
   echo "$(date)  mount skipped: missing GDRIVE_MOUNT_POINT or GDRIVE_REMOTE" >> "$LOG"
   exit 1
@@ -103,6 +112,11 @@ else
 fi
 
 mkdir -p "$MOUNT"
+mkdir -p "$RCLONE_CACHE_DIR"
+
+if [[ "${PREVENT_FINDER_NETWORK_METADATA:-1}" == "1" ]]; then
+  /usr/bin/defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool TRUE >/dev/null 2>&1 || true
+fi
 
 run_with_timeout() {
   local seconds="$1"
@@ -133,6 +147,42 @@ mount_responds() {
   run_with_timeout 8 /bin/ls -1 "$MOUNT"
 }
 
+rclone_mount_pid() {
+  /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" 2>/dev/null | /usr/bin/head -n 1
+}
+
+rclone_mount_age_seconds() {
+  local pid
+  pid="$(rclone_mount_pid)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  /bin/ps -o etimes= -p "$pid" 2>/dev/null | /usr/bin/awk '{print $1}'
+}
+
+macfuse_available() {
+  [[ -d "/Library/Filesystems/macfuse.fs" || -d "/Library/Filesystems/osxfuse.fs" ]]
+}
+
+metadata_cache_poison_present() {
+  local cache_root
+  for cache_root in "$HOME/Library/Caches/rclone" "$RCLONE_CACHE_DIR"; do
+    [[ -d "$cache_root" ]] || continue
+    if /usr/bin/find "$cache_root/vfs/combined" "$cache_root/vfsMeta/combined" \
+      -maxdepth 1 \( -name ".DS_Store" -o -name "._*" \) -print -quit 2>/dev/null | /usr/bin/grep -q .; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+purge_metadata_cache_poison() {
+  local cache_root
+  for cache_root in "$HOME/Library/Caches/rclone" "$RCLONE_CACHE_DIR"; do
+    [[ -d "$cache_root" ]] || continue
+    /usr/bin/find "$cache_root/vfs/combined" "$cache_root/vfsMeta/combined" \
+      -maxdepth 1 \( -name ".DS_Store" -o -name "._*" \) -delete 2>/dev/null || true
+  done
+}
+
 force_unmount_mountpoint() {
   run_with_timeout 10 /sbin/umount -f "$MOUNT" || true
   run_with_timeout 10 /usr/sbin/diskutil unmount force "$MOUNT" || true
@@ -142,8 +192,11 @@ MOUNT_COMMAND="${RCLONE_MOUNT_COMMAND:-auto}"
 if [[ "$MOUNT_COMMAND" == "auto" || -z "$MOUNT_COMMAND" ]]; then
   # Probing the subcommand directly is more reliable than parsing `rclone help`
   # output, which can include formatting/escape sequences.
-  if "$RCLONE" nfsmount --help >/dev/null 2>&1; then
+  if macfuse_available && "$RCLONE" mount --help >/dev/null 2>&1; then
+    MOUNT_COMMAND="mount"
+  elif "$RCLONE" nfsmount --help >/dev/null 2>&1; then
     MOUNT_COMMAND="nfsmount"
+    echo "$(date)  macFUSE not found; falling back to rclone nfsmount" >> "$LOG"
   else
     MOUNT_COMMAND="mount"
   fi
@@ -156,11 +209,18 @@ fi
 
 # If a healthy mount already exists, keep it and exit cleanly.
 if mount_entry_exists; then
-  if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" >/dev/null 2>&1 && mount_responds; then
+  if /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${MOUNT}" >/dev/null 2>&1 && mount_responds && ! metadata_cache_poison_present; then
     echo "$(date)  mount already active at $MOUNT; leaving existing session in place" >> "$LOG"
     exit 0
   fi
-  echo "$(date)  stale/unresponsive mount found, force-unmounting $MOUNT" >> "$LOG"
+  if metadata_cache_poison_present; then
+    echo "$(date)  Finder metadata cache poison found, restarting $MOUNT" >> "$LOG"
+  elif mount_age="$(rclone_mount_age_seconds 2>/dev/null || true)" && [[ "$mount_age" =~ ^[0-9]+$ && "$mount_age" -lt 180 ]]; then
+    echo "$(date)  mount process is still starting (${mount_age}s old); leaving existing session in place" >> "$LOG"
+    exit 0
+  else
+    echo "$(date)  stale/unresponsive mount found, force-unmounting $MOUNT" >> "$LOG"
+  fi
   force_unmount_mountpoint
   sleep 2
 fi
@@ -176,6 +236,8 @@ if [[ -n "${stale_pids}" ]]; then
   sleep 1
 fi
 
+purge_metadata_cache_poison
+
 if find "$MOUNT" -mindepth 1 -maxdepth 1 \
   ! -name ".DS_Store" \
   ! -name ".localized" \
@@ -188,6 +250,7 @@ fi
 echo "$(date)  starting rclone ${MOUNT_COMMAND} remote=$REMOTE mount=$MOUNT binary=$RCLONE" >> "$LOG"
 exec "$RCLONE" "$MOUNT_COMMAND" "$REMOTE" "$MOUNT" \
   --vfs-cache-mode writes \
+  --cache-dir "$RCLONE_CACHE_DIR" \
   --vfs-cache-max-size 8G \
   --vfs-cache-max-age 6h \
   --vfs-read-chunk-size 8M \

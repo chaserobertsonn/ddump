@@ -15,6 +15,7 @@ mkdir -p "$STATE_DIR" "$LOG_DIR" "$REPORT_DIR"
 
 LOG_FILE="${LOG_DIR}/ddump.log"
 LOCK_DIR="${STATE_DIR}/run.lock"
+RUN_LOCK_PID_FILE="${LOCK_DIR}/pid"
 
 log() {
   local msg="$1"
@@ -159,6 +160,30 @@ render_notification_template() {
   printf '%s' "$rendered"
 }
 
+notification_dedupe_allows() {
+  local event_key="$1"
+  local fingerprint="$2"
+  local cooldown_hours="${NOTIFICATION_DEDUPE_HOURS:-12}"
+  if ! [[ "$cooldown_hours" =~ ^[0-9]+$ ]]; then
+    cooldown_hours="12"
+  fi
+  local cooldown_seconds=$((cooldown_hours * 3600))
+  local digest marker_dir marker now mtime
+  digest="$(printf '%s' "${event_key}:${fingerprint}" | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+  marker_dir="${STATE_DIR}/notification_dedupe"
+  marker="${marker_dir}/${event_key}.${digest}.sent"
+  /bin/mkdir -p "$marker_dir"
+  now="$(/bin/date '+%s')"
+  if [[ -f "$marker" ]]; then
+    mtime="$(/usr/bin/stat -f '%m' "$marker" 2>/dev/null || echo 0)"
+    if [[ "$mtime" =~ ^[0-9]+$ ]] && (( now - mtime < cooldown_seconds )); then
+      return 1
+    fi
+  fi
+  /usr/bin/touch "$marker"
+  return 0
+}
+
 is_trusted_name_prefix() {
   local vol_name="$1"
   local raw_list="${TRUSTED_NAME_PREFIXES:-}"
@@ -243,14 +268,56 @@ trim() {
   printf '%s' "$s"
 }
 
-if ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
-  log "Another run is in progress; exiting."
-  exit 0
-fi
+acquire_run_lock() {
+  if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+    /bin/echo "$$" >"$RUN_LOCK_PID_FILE"
+    return 0
+  fi
+
+  local existing_pid=""
+  if [[ -f "$RUN_LOCK_PID_FILE" ]]; then
+    existing_pid="$(/bin/cat "$RUN_LOCK_PID_FILE" 2>/dev/null || true)"
+  fi
+  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && /bin/kill -0 "$existing_pid" >/dev/null 2>&1; then
+    log "Another run is in progress (pid ${existing_pid}); exiting."
+    exit 0
+  fi
+
+  local now lock_mtime lock_age
+  now="$(/bin/date '+%s')"
+  lock_mtime="$(/usr/bin/stat -f '%m' "$LOCK_DIR" 2>/dev/null || echo 0)"
+  lock_age=$((now - lock_mtime))
+  if [[ "$lock_age" -lt 900 ]]; then
+    log "Run lock exists without a live owner but is recent (${lock_age}s old); exiting."
+    exit 0
+  fi
+
+  log "Removing stale run lock (${lock_age}s old, previous pid: ${existing_pid:-none})."
+  /bin/rm -f "$RUN_LOCK_PID_FILE" 2>/dev/null || true
+  /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
+  if ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+    log "Another run acquired the lock; exiting."
+    exit 0
+  fi
+  /bin/echo "$$" >"$RUN_LOCK_PID_FILE"
+}
+
+release_run_lock() {
+  local owner_pid=""
+  if [[ -f "$RUN_LOCK_PID_FILE" ]]; then
+    owner_pid="$(/bin/cat "$RUN_LOCK_PID_FILE" 2>/dev/null || true)"
+  fi
+  if [[ "$owner_pid" == "$$" ]]; then
+    /bin/rm -f "$RUN_LOCK_PID_FILE" 2>/dev/null || true
+    /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+
+acquire_run_lock
 cleanup() {
   stop_finderserver_timer_guard 2>/dev/null || true
   /bin/rm -f "${PAUSE_FLAG:-}" "${STOP_AFTER_FILE_FLAG:-}" "${KEEP_MOUNTED_FLAG:-}" "${EJECT_NOW_FLAG:-}" 2>/dev/null || true
-  /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
+  release_run_lock
 }
 trap cleanup EXIT
 
@@ -265,11 +332,13 @@ PROMPT_FOR_UNKNOWN_CARD_ACTION="1"
 SKIP_INTERNAL_VOLUMES="1"
 IGNORE_VOLUME_NAMES="Macintosh HD,Recovery"
 IGNORE_NO_UUID_VOLUMES="1"
-PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE="1"
+PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE="0"
+OPEN_APP_ON_CARD_INSERT="1"
 CREATE_DAILY_FOLDER="1"
 DAILY_FOLDER_FORMAT="%Y-%m-%d-ddump"
 EJECT_ON_SUCCESS="1"
 PROMPT_NO_EJECT_ON_START="0"
+EJECT_TIMEOUT_SECONDS="20"
 EJECT_GRACE_SECONDS="60"
 ENABLE_NOTIFICATIONS="0"
 USE_NOTIFICATIONS="1"
@@ -296,6 +365,7 @@ REQUIRE_PHOTOS_OR_TRUSTED="1"
 PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr"
 VIDEO_FILE_EXTENSIONS="mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"
 PHOTO_RECENCY_HOURS="24"
+CLOUD_UPLOADS_ENABLED="0"
 ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
 POST_MOVE_ROOTS=""
@@ -306,7 +376,7 @@ POST_MOVE_DAY_FORMAT="%Y.%m.%d"
 FOLDER_NAMING_STRATEGY="sequential"
 FOLDER_NAMING_FALLBACK="sequential"
 SMART_SAMPLE_PATH=""
-SMART_ASSIGN_EXISTING_FOLDERS="1"
+SMART_ASSIGN_EXISTING_FOLDERS="0"
 SPLIT_PHOTO_VIDEO="0"
 FOLDER_NAME_SEQUENTIAL_PREFIX="Shoot-"
 FOLDER_NAME_CUSTOM_VALUES=""
@@ -339,10 +409,16 @@ FINDERSERVER_BIN="${HOME}/.local/bin/finderserver"
 FINDERSERVER_TIMER_CHECK_SECONDS="300"
 FINDERSERVER_TIMER_MIN_SECONDS="300"
 FINDERSERVER_GUARD_PID_FILE="${STATE_DIR}/finderserver-guard.pid"
-GDRIVE_MOUNT_ENABLED="1"
+GDRIVE_MOUNT_ENABLED="0"
+GDRIVE_DIRECT_UPLOAD="1"
 GDRIVE_MOUNT_POINT="${HOME}/GoogleDrive"
 GDRIVE_REMOTE="combined:"
 RCLONE_BIN="${HOME}/bin/rclone"
+RCLONE_FILE_TIMEOUT_SECONDS="180"
+RCLONE_BATCH_TIMEOUT_SECONDS="3600"
+RCLONE_DRIVE_CHUNK_SIZE="8M"
+RCLONE_TPS_LIMIT="2"
+RCLONE_TPS_BURST="2"
 GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
 GDRIVE_MOUNT_RETRY_SECONDS="15,30,60,180"
 GDRIVE_MOUNT_WAIT_SECONDS="30"
@@ -700,7 +776,7 @@ effective_post_move_root() {
   if [[ -n "$fallback" ]]; then
     if [[ -z "$root" ]]; then
       root="$fallback"
-    elif path_uses_gdrive_mount "$root" && ! gdrive_mount_active; then
+    elif path_uses_gdrive_mount "$root" && ! direct_cloud_upload_enabled_for_root "$root" && ! gdrive_mount_active; then
       root="$fallback"
     elif [[ ! -d "$root" ]]; then
       root="$fallback"
@@ -774,12 +850,194 @@ collect_post_move_roots() {
 
 path_uses_gdrive_mount() {
   local path="$1"
-  local gdrive="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
-  [[ "${GDRIVE_MOUNT_ENABLED:-1}" == "1" ]] || return 1
+  [[ "${GDRIVE_MOUNT_ENABLED:-0}" == "1" ]] || return 1
+  [[ "${GDRIVE_DIRECT_UPLOAD:-1}" != "1" ]] || return 1
+  path_is_gdrive_path "$path"
+}
+
+expand_config_path() {
+  local raw="$1"
+  case "$raw" in
+    "\$HOME"/*) raw="${HOME}/${raw#"\$HOME"/}" ;;
+    "\${HOME}"/*) raw="${HOME}/${raw#"\${HOME}"/}" ;;
+    "~"/*) raw="${HOME}/${raw#"~"/}" ;;
+  esac
+  printf '%s' "$raw"
+}
+
+path_is_gdrive_path() {
+  local path="$1"
+  local gdrive
+  gdrive="$(expand_config_path "${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}")"
+  gdrive="${gdrive%/}"
   case "$path" in
     "$gdrive"|"$gdrive"/*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+direct_cloud_upload_enabled_for_root() {
+  [[ "${CLOUD_UPLOADS_ENABLED:-0}" == "1" ]] || return 1
+  [[ "${GDRIVE_DIRECT_UPLOAD:-1}" == "1" ]] || return 1
+  path_is_gdrive_path "$1"
+}
+
+rclone_binary() {
+  local configured
+  configured="$(expand_config_path "${RCLONE_BIN:-${HOME}/bin/rclone}")"
+  if [[ -x "$configured" ]]; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+  if command -v rclone >/dev/null 2>&1; then
+    command -v rclone
+    return 0
+  fi
+  if [[ -x "/opt/homebrew/bin/rclone" ]]; then
+    printf '%s\n' "/opt/homebrew/bin/rclone"
+    return 0
+  fi
+  if [[ -x "/usr/local/bin/rclone" ]]; then
+    printf '%s\n' "/usr/local/bin/rclone"
+    return 0
+  fi
+  return 1
+}
+
+rclone_remote_base() {
+  local remote
+  remote="$(trim "${GDRIVE_REMOTE:-combined:}")"
+  [[ -n "$remote" ]] || remote="combined:"
+  if [[ "$remote" != *:* ]]; then
+    remote="${remote}:"
+  fi
+  printf '%s\n' "$remote"
+}
+
+rclone_remote_join() {
+  local base="$1"
+  local rel="$2"
+  rel="${rel#/}"
+  if [[ -z "$rel" ]]; then
+    printf '%s\n' "$base"
+  elif [[ "$base" == *: ]]; then
+    printf '%s%s\n' "$base" "$rel"
+  else
+    printf '%s/%s\n' "${base%/}" "$rel"
+  fi
+}
+
+gdrive_local_path_to_remote_path() {
+  local path="$1"
+  local gdrive rel remote
+  gdrive="$(expand_config_path "${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}")"
+  gdrive="${gdrive%/}"
+  case "$path" in
+    "$gdrive") rel="" ;;
+    "$gdrive"/*) rel="${path#"$gdrive"/}" ;;
+    *) return 1 ;;
+  esac
+  remote="$(rclone_remote_base)"
+  rclone_remote_join "$remote" "$rel"
+}
+
+rclone_copy_path_to_remote_target() {
+  local src_path="$1"
+  local remote_target_dir="$2"
+  local rclone_bin base_name remote_dest
+  if ! rclone_bin="$(rclone_binary)"; then
+    log "Direct cloud upload failed: rclone not found."
+    return 1
+  fi
+  base_name="$(basename "$src_path")"
+  remote_dest="$(rclone_remote_join "$remote_target_dir" "$base_name")"
+
+  if [[ -d "$src_path" ]]; then
+    rclone_copy_directory_to_remote_target "$rclone_bin" "$src_path" "$remote_dest"
+  else
+    rclone_copyto_with_watchdog "$rclone_bin" "$src_path" "$remote_dest"
+  fi
+}
+
+rclone_copyto_with_watchdog() {
+  local rclone_bin="$1"
+  local src_file="$2"
+  local remote_dest="$3"
+  local timeout chunk pid elapsed rc
+  timeout="$(sanitize_positive_int "${RCLONE_FILE_TIMEOUT_SECONDS:-180}" "180")"
+  if [[ "$timeout" -lt 30 ]]; then
+    timeout=30
+  fi
+  chunk="${RCLONE_DRIVE_CHUNK_SIZE:-8M}"
+
+  "$rclone_bin" copyto "$src_file" "$remote_dest" \
+    --exclude '.DS_Store' --exclude '._*' \
+    --drive-chunk-size "$chunk" \
+    --tpslimit "${RCLONE_TPS_LIMIT:-2}" --tpslimit-burst "${RCLONE_TPS_BURST:-2}" \
+    --multi-thread-streams 0 \
+    --contimeout 10s --timeout 30s --retries 2 --low-level-retries 3 --retries-sleep 3s \
+    --stats 0 --log-level ERROR >>"$LOG_FILE" 2>&1 &
+  pid="$!"
+  elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if [[ "$elapsed" -ge "$timeout" ]]; then
+      log "Direct rclone upload timed out after ${timeout}s: ${src_file} -> ${remote_dest}"
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 3
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if /bin/wait "$pid"; then
+    return 0
+  fi
+  rc="$?"
+  log "Direct rclone upload failed with exit ${rc}: ${src_file} -> ${remote_dest}"
+  return "$rc"
+}
+
+rclone_copy_directory_to_remote_target() {
+  local rclone_bin="$1"
+  local src_dir="$2"
+  local remote_dest_dir="$3"
+  local timeout chunk pid elapsed rc
+  timeout="$(sanitize_positive_int "${RCLONE_BATCH_TIMEOUT_SECONDS:-3600}" "3600")"
+  if [[ "$timeout" -lt 300 ]]; then
+    timeout=300
+  fi
+  chunk="${RCLONE_DRIVE_CHUNK_SIZE:-8M}"
+
+  "$rclone_bin" copy "$src_dir" "$remote_dest_dir" \
+    --exclude '.DS_Store' --exclude '._*' \
+    --transfers 1 --checkers 1 \
+    --drive-chunk-size "$chunk" \
+    --tpslimit "${RCLONE_TPS_LIMIT:-2}" --tpslimit-burst "${RCLONE_TPS_BURST:-2}" \
+    --multi-thread-streams 0 \
+    --contimeout 10s --timeout 30s --retries 10 --low-level-retries 6 --retries-sleep 15s \
+    --stats 30s --stats-one-line --log-level INFO >>"$LOG_FILE" 2>&1 &
+  pid="$!"
+  elapsed=0
+  while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+    if [[ "$elapsed" -ge "$timeout" ]]; then
+      log "Direct rclone bucket upload timed out after ${timeout}s: ${src_dir} -> ${remote_dest_dir}"
+      /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
+      /bin/sleep 3
+      /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
+      /bin/wait "$pid" >/dev/null 2>&1 || true
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if /bin/wait "$pid"; then
+    return 0
+  fi
+  rc="$?"
+  log "Direct rclone bucket upload failed with exit ${rc}: ${src_dir} -> ${remote_dest_dir}"
+  return "$rc"
 }
 
 gdrive_mount_active() {
@@ -800,6 +1058,23 @@ gdrive_mount_active() {
     elapsed=$((elapsed + 1))
   done
   /bin/wait "$probe_pid" >/dev/null 2>&1
+}
+
+gdrive_mount_present() {
+  local mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
+  /sbin/mount | /usr/bin/grep -q " on ${mount_dir} "
+}
+
+gdrive_mount_process_pid() {
+  local mount_dir="${GDRIVE_MOUNT_POINT:-${HOME}/GoogleDrive}"
+  /usr/bin/pgrep -f "rclone (mount|nfsmount).* ${mount_dir}" 2>/dev/null | /usr/bin/head -n 1
+}
+
+gdrive_mount_process_age_seconds() {
+  local pid
+  pid="$(gdrive_mount_process_pid)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  /bin/ps -o etimes= -p "$pid" 2>/dev/null | /usr/bin/awk '{print $1}'
 }
 
 gdrive_mount_plist_path() {
@@ -945,7 +1220,7 @@ ensure_gdrive_mount_for_post_move() {
     return 1
   fi
 
-  local uid plist label mount_dir wait_seconds retry_csv
+  local uid plist label mount_dir wait_seconds retry_csv mount_proc_age
   uid="$(/usr/bin/id -u)"
   plist="$(gdrive_mount_plist_path)"
   label="${GDRIVE_MOUNT_LABEL:-com.ddump.rclone-gdrive}"
@@ -976,9 +1251,22 @@ ensure_gdrive_mount_for_post_move() {
       fi
     fi
 
-    /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
-    /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
-    ddump_started_gdrive_mount=1
+    mount_proc_age="$(gdrive_mount_process_age_seconds 2>/dev/null || true)"
+    if gdrive_mount_present || [[ "$mount_proc_age" =~ ^[0-9]+$ ]]; then
+      if [[ "$mount_proc_age" =~ ^[0-9]+$ && "$mount_proc_age" -lt 180 ]]; then
+        log "Google Drive mount process is starting (${mount_proc_age}s old); waiting instead of restarting."
+      elif [[ "$attempt" -le 2 ]]; then
+        log "Google Drive mount is present but not ready; waiting before force restart."
+      else
+        /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+        /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+        ddump_started_gdrive_mount=1
+      fi
+    else
+      /bin/launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1 || true
+      /bin/launchctl kickstart -k "gui/${uid}/${label}" >/dev/null 2>&1 || true
+      ddump_started_gdrive_mount=1
+    fi
 
     local i
     for ((i = 1; i <= wait_seconds; i++)); do
@@ -1163,6 +1451,46 @@ copy_bucket_split_photo_video() {
   [[ "$total_count" -gt 0 && "$failed_count" -eq 0 ]]
 }
 
+rclone_copy_bucket_split_photo_video_remote() {
+  local src_dir="$1"
+  local photo_remote_dest="$2"
+  local video_remote_dest="$3"
+  local rclone_bin file_list
+  if ! rclone_bin="$(rclone_binary)"; then
+    log "Direct split cloud upload failed: rclone not found."
+    return 1
+  fi
+
+  file_list="$(/usr/bin/mktemp "${STATE_DIR}/split-remote-files.${run_id}.XXXXXX")"
+  /usr/bin/find "$src_dir" -type f ! -name '.DS_Store' ! -name '._*' -print0 >"$file_list"
+
+  local file rel rel_dir remote_base remote_dest failed_count total_count
+  failed_count=0
+  total_count=0
+  while IFS= read -r -d '' file; do
+    total_count=$((total_count + 1))
+    rel="${file#"$src_dir"/}"
+    rel_dir="$(dirname "$rel")"
+    if is_video_file "$file"; then
+      remote_base="$video_remote_dest"
+    else
+      remote_base="$photo_remote_dest"
+    fi
+    if [[ "$rel_dir" == "." ]]; then
+      remote_dest="$(rclone_remote_join "$remote_base" "$(basename "$rel")")"
+    else
+      remote_dest="$(rclone_remote_join "$remote_base" "$rel")"
+    fi
+    if ! rclone_copyto_with_watchdog "$rclone_bin" "$file" "$remote_dest"; then
+      failed_count=$((failed_count + 1))
+      log "Direct split cloud upload failed: ${file} -> ${remote_dest}"
+    fi
+  done <"$file_list"
+  /bin/rm -f "$file_list"
+
+  [[ "$total_count" -gt 0 && "$failed_count" -eq 0 ]]
+}
+
 move_queued_paths_to_post_target() {
   local queue_file="$1"
   local vol_name="$2"
@@ -1201,52 +1529,80 @@ move_queued_paths_to_post_target() {
     return 1
   fi
 
-  local overall_copied=0
-  local overall_failed=0
-  local destination_count=0
-  local target_list=""
-  local primary_target=""
-  local root target_dir copied_count failed_count src_path base_name dest_path
+	  local overall_copied=0
+	  local overall_failed=0
+	  local destination_count=0
+	  local target_list=""
+	  local primary_target=""
+  local root target_dir display_target direct_cloud remote_target_dir remote_video_target_dir copied_count failed_count src_path base_name dest_path
   while IFS= read -r root || [[ -n "$root" ]]; do
     [[ -n "$root" ]] || continue
     destination_count=$((destination_count + 1))
     target_dir="$(build_post_move_target_dir_for_root "$root")"
-    if [[ -z "$primary_target" ]]; then
-      primary_target="$target_dir"
-    fi
-    if [[ -z "$target_list" ]]; then
-      target_list="$target_dir"
-    else
-      target_list="${target_list}, ${target_dir}"
-    fi
-
-    if ! ensure_gdrive_mount_for_post_move "$root"; then
-      overall_failed=$((overall_failed + 1))
-      log "Post-move blocked for ${vol_name}: ${move_last_detail}"
-      notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
-      continue
-    fi
-
-    if [[ ! -d "$root" ]]; then
-      if ! /bin/mkdir -p "$root"; then
+    display_target="$target_dir"
+    direct_cloud=0
+    remote_target_dir=""
+    remote_video_target_dir=""
+    if direct_cloud_upload_enabled_for_root "$root"; then
+      if remote_target_dir="$(gdrive_local_path_to_remote_path "$target_dir")"; then
+        direct_cloud=1
+        display_target="$remote_target_dir"
+        if [[ "$split_video_enabled" == "1" && -n "$video_target_dir" ]]; then
+          remote_video_target_dir="$(gdrive_local_path_to_remote_path "$video_target_dir" 2>/dev/null || true)"
+        fi
+      else
         overall_failed=$((overall_failed + 1))
-        log "Post-move blocked for ${vol_name}: cannot create destination root ${root}"
+        log "Post-move blocked for ${vol_name}: cannot map ${target_dir} to ${GDRIVE_REMOTE:-combined:}"
         continue
       fi
     fi
-    if [[ ! -w "$root" ]]; then
-      overall_failed=$((overall_failed + 1))
-      log "Post-move blocked for ${vol_name}: destination root not writable ${root}"
-      continue
+    if [[ -z "$primary_target" ]]; then
+      primary_target="$display_target"
     fi
+	    if [[ -z "$target_list" ]]; then
+	      target_list="$display_target"
+	    else
+	      target_list="${target_list}, ${display_target}"
+	    fi
+	    set_status_phase "uploading" "Uploading to ${display_target}."
 
-    if ! /bin/mkdir -p "$target_dir"; then
-      overall_failed=$((overall_failed + 1))
-      log "Post-move blocked for ${vol_name}: cannot create target dir ${target_dir}"
-      continue
-    fi
-    if ! check_directory_write_probe "$target_dir"; then
-      log "Post-move preflight write probe failed for ${vol_name}; continuing anyway: ${target_dir}"
+	    if [[ "$direct_cloud" == "1" ]]; then
+      if ! rclone_binary >/dev/null 2>&1; then
+        overall_failed=$((overall_failed + 1))
+        move_last_detail="rclone not found for direct cloud upload"
+        log "Post-move blocked for ${vol_name}: ${move_last_detail}"
+        continue
+      fi
+      log "Post-transfer using direct rclone upload for ${vol_name}: target=${remote_target_dir}"
+    else
+      if ! ensure_gdrive_mount_for_post_move "$root"; then
+        overall_failed=$((overall_failed + 1))
+        log "Post-move blocked for ${vol_name}: ${move_last_detail}"
+        notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
+        continue
+      fi
+
+      if [[ ! -d "$root" ]]; then
+        if ! /bin/mkdir -p "$root"; then
+          overall_failed=$((overall_failed + 1))
+          log "Post-move blocked for ${vol_name}: cannot create destination root ${root}"
+          continue
+        fi
+      fi
+      if [[ ! -w "$root" ]]; then
+        overall_failed=$((overall_failed + 1))
+        log "Post-move blocked for ${vol_name}: destination root not writable ${root}"
+        continue
+      fi
+
+      if ! /bin/mkdir -p "$target_dir"; then
+        overall_failed=$((overall_failed + 1))
+        log "Post-move blocked for ${vol_name}: cannot create target dir ${target_dir}"
+        continue
+      fi
+      if ! check_directory_write_probe "$target_dir"; then
+        log "Post-move preflight write probe failed for ${vol_name}; continuing anyway: ${target_dir}"
+      fi
     fi
 
     copied_count=0
@@ -1256,6 +1612,34 @@ move_queued_paths_to_post_target() {
       [[ -e "$src_path" ]] || continue
 
       base_name="$(basename "$src_path")"
+      if [[ "$direct_cloud" == "1" ]]; then
+        dest_path="$(rclone_remote_join "$remote_target_dir" "$base_name")"
+        db_upsert_upload_job "$src_path" "$remote_target_dir" "uploading" "0" "0" ""
+        db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
+        if [[ "$split_video_enabled" == "1" && -d "$src_path" && -n "$remote_video_target_dir" ]]; then
+          if rclone_copy_bucket_split_photo_video_remote "$src_path" "$dest_path" "$(rclone_remote_join "$remote_video_target_dir" "$base_name")"; then
+            db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+            db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+            copied_count=$((copied_count + 1))
+          else
+            failed_count=$((failed_count + 1))
+            db_update_upload_job_status "$src_path" "failed" "0" "0" "direct rclone split upload failed"
+            db_mark_media_status_by_local_prefix "$src_path" "organized" "direct rclone split upload failed"
+            log "Post-move direct rclone split upload failed: ${src_path} -> ${remote_target_dir}"
+          fi
+        elif rclone_copy_path_to_remote_target "$src_path" "$remote_target_dir"; then
+          db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
+          db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
+          copied_count=$((copied_count + 1))
+        else
+          failed_count=$((failed_count + 1))
+          db_update_upload_job_status "$src_path" "failed" "0" "0" "direct rclone upload failed"
+          db_mark_media_status_by_local_prefix "$src_path" "organized" "direct rclone upload failed"
+          log "Post-move direct rclone upload failed: ${src_path} -> ${dest_path}"
+        fi
+        continue
+      fi
+
       dest_path="${target_dir}/${base_name}"
       db_upsert_upload_job "$src_path" "$target_dir" "uploading" "0" "0" ""
       db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
@@ -1324,7 +1708,7 @@ move_queued_paths_to_post_target() {
 
     overall_copied=$((overall_copied + copied_count))
     overall_failed=$((overall_failed + failed_count))
-    log "Post-transfer destination result for ${vol_name}: target=${target_dir}, copied=${copied_count}, failed=${failed_count}"
+    log "Post-transfer destination result for ${vol_name}: target=${display_target}, copied=${copied_count}, failed=${failed_count}"
   done <"$roots_file"
   /bin/rm -f "$roots_file"
 
@@ -1608,6 +1992,22 @@ check_post_move_ready() {
     return 1
   fi
 
+  if direct_cloud_upload_enabled_for_root "$ready_root"; then
+    if ! rclone_binary >/dev/null 2>&1; then
+      move_last_status="blocked"
+      move_last_detail="rclone not found for direct cloud upload"
+      return 1
+    fi
+    if ! gdrive_local_path_to_remote_path "$(build_post_move_target_dir_for_root "$ready_root")" >/dev/null 2>&1; then
+      move_last_status="blocked"
+      move_last_detail="cannot map Google Drive destination to rclone remote"
+      return 1
+    fi
+    move_last_status="ready"
+    move_last_detail="direct rclone upload ready"
+    return 0
+  fi
+
   if path_uses_gdrive_mount "$ready_root" && ! gdrive_mount_active; then
     move_last_status="blocked"
     move_last_detail="Google Drive mount not active"
@@ -1747,32 +2147,46 @@ write_upload_receipt() {
     /bin/echo "- card: ${vol_name}"
     /bin/echo "- status: ${receipt_status}"
     /bin/echo "- destination: ${target_dir}"
-    /bin/echo "- detail: ${move_last_detail:-}"
-    /bin/echo ""
-    /bin/echo "## Folders"
-    local src_path base_name dest_path video_dest_path stats receipt_video_target
-    receipt_video_target=""
-    if [[ "${SPLIT_PHOTO_VIDEO:-0}" == "1" ]]; then
-      receipt_video_target="$(build_video_post_move_target_dir 2>/dev/null || true)"
-    fi
-    while IFS= read -r src_path || [[ -n "$src_path" ]]; do
-      [[ -n "$src_path" ]] || continue
-      base_name="$(basename "$src_path")"
-      dest_path="${target_dir}/${base_name}"
-      video_dest_path="${receipt_video_target}/${base_name}"
-      if [[ -e "$dest_path" ]]; then
-        stats="$(path_content_stats "$dest_path")"
-        /usr/bin/printf -- '- %s\t%s\n' "$dest_path" "$stats"
-      elif [[ -n "$receipt_video_target" && -e "$video_dest_path" ]]; then
-        stats="$(path_content_stats "$video_dest_path")"
-        /usr/bin/printf -- '- %s\t%s\n' "$video_dest_path" "$stats"
-      elif [[ -e "$src_path" ]]; then
-        stats="$(path_content_stats "$src_path")"
-        /usr/bin/printf -- '- pending: %s\t%s\n' "$src_path" "$stats"
-      else
-        /usr/bin/printf -- '- missing after attempt: %s\n' "$src_path"
-      fi
-    done <"$queue_file"
+	    /bin/echo "- detail: ${move_last_detail:-}"
+	    /bin/echo ""
+	    /bin/echo "## Folders"
+	    local src_path base_name dest_path video_dest_path stats receipt_video_target
+	    if [[ "$target_dir" != /* && "$target_dir" == *:* ]]; then
+	      while IFS= read -r src_path || [[ -n "$src_path" ]]; do
+	        [[ -n "$src_path" ]] || continue
+	        base_name="$(basename "$src_path")"
+	        dest_path="$(rclone_remote_join "$target_dir" "$base_name")"
+	        if [[ -e "$src_path" ]]; then
+	          stats="$(path_content_stats "$src_path")"
+	          /usr/bin/printf -- '- uploaded: %s\t%s\n' "$dest_path" "$stats"
+	        else
+	          /usr/bin/printf -- '- uploaded: %s\n' "$dest_path"
+	        fi
+	      done <"$queue_file"
+	    else
+	      receipt_video_target=""
+	      if [[ "${SPLIT_PHOTO_VIDEO:-0}" == "1" ]]; then
+	        receipt_video_target="$(build_video_post_move_target_dir 2>/dev/null || true)"
+	      fi
+	      while IFS= read -r src_path || [[ -n "$src_path" ]]; do
+	        [[ -n "$src_path" ]] || continue
+	        base_name="$(basename "$src_path")"
+	        dest_path="${target_dir}/${base_name}"
+	        video_dest_path="${receipt_video_target}/${base_name}"
+	        if [[ -e "$dest_path" ]]; then
+	          stats="$(path_content_stats "$dest_path")"
+	          /usr/bin/printf -- '- %s\t%s\n' "$dest_path" "$stats"
+	        elif [[ -n "$receipt_video_target" && -e "$video_dest_path" ]]; then
+	          stats="$(path_content_stats "$video_dest_path")"
+	          /usr/bin/printf -- '- %s\t%s\n' "$video_dest_path" "$stats"
+	        elif [[ -e "$src_path" ]]; then
+	          stats="$(path_content_stats "$src_path")"
+	          /usr/bin/printf -- '- pending: %s\t%s\n' "$src_path" "$stats"
+	        else
+	          /usr/bin/printf -- '- missing after attempt: %s\n' "$src_path"
+	        fi
+	      done <"$queue_file"
+	    fi
   } >"$receipt_file"
   log "Wrote upload receipt: ${receipt_file}"
 }
@@ -1844,6 +2258,42 @@ wait_for_min_eject_grace() {
   fi
 }
 
+diskutil_eject_with_timeout() {
+  local vol_path="$1"
+  local vol_name="$2"
+  local timeout
+  timeout="$(sanitize_positive_int "${EJECT_TIMEOUT_SECONDS:-20}" "20")"
+  if [[ "$timeout" -lt 5 ]]; then
+    timeout=5
+  fi
+
+  /usr/sbin/diskutil eject "$vol_path" >/dev/null 2>&1 &
+  local eject_pid="$!"
+  local elapsed=0
+  while /bin/kill -0 "$eject_pid" >/dev/null 2>&1; do
+    if [[ "$elapsed" -ge "$timeout" ]]; then
+      /bin/kill -TERM "$eject_pid" >/dev/null 2>&1 || true
+      /bin/sleep 1
+      /bin/kill -KILL "$eject_pid" >/dev/null 2>&1 || true
+      /bin/wait "$eject_pid" >/dev/null 2>&1 || true
+      log "Eject timed out after ${timeout}s for ${vol_name}; continuing with upload."
+      return 124
+    fi
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  /bin/wait "$eject_pid" >/dev/null 2>&1
+}
+
+activate_ddump_app_for_card() {
+  [[ "${OPEN_APP_ON_CARD_INSERT:-1}" == "1" ]] || return 0
+  if [[ -d "$HOME/Applications/DDump.app" ]]; then
+    /usr/bin/open "$HOME/Applications/DDump.app" >/dev/null 2>&1 &
+  else
+    /usr/bin/open -b "com.ddump.app" >/dev/null 2>&1 &
+  fi
+}
+
 find_candidates() {
   local source_root="$1"
   local out_file="$2"
@@ -1860,6 +2310,10 @@ find_candidates() {
 has_allowed_extension() {
   local file="$1"
   local ext_list="$2"
+
+  if [[ -z "$ext_list" ]]; then
+    ext_list="${PHOTO_FILE_EXTENSIONS:-}"
+  fi
 
   if [[ -z "$ext_list" ]]; then
     return 0
@@ -1879,6 +2333,23 @@ has_allowed_extension() {
     fi
   done
 
+  return 1
+}
+
+is_ignored_source_file() {
+  local file="$1"
+  local base
+  base="$(basename "$file")"
+  case "$base" in
+    .DS_Store|._*|fseventsd-uuid|.metadata_never_index|.VolumeIcon.icns)
+      return 0
+      ;;
+  esac
+  case "$file" in
+    */.fseventsd/*|*/.Spotlight-V100/*|*/.Trashes/*|*/.TemporaryItems/*|*/.DocumentRevisions-V100/*)
+      return 0
+      ;;
+  esac
   return 1
 }
 
@@ -2210,6 +2681,13 @@ resolve_source_roots_for_volume() {
   local out_file="$4"
 
   : >"$out_file"
+
+  if [[ "${PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE:-0}" != "1" ]]; then
+    queue_path_unique "$out_file" "$vol_path"
+    log "Scanning entire card for ${vol_name}; folder chooser is disabled."
+    return 0
+  fi
+
   local policy_mode
   policy_mode="$(get_card_policy_mode "$uuid" 2>/dev/null || true)"
   if [[ -z "$policy_mode" ]]; then
@@ -2714,7 +3192,7 @@ compute_buckets_cluster() {
 
 existing_smart_bucket_for_index() {
   local index="$1"
-  [[ "${SMART_ASSIGN_EXISTING_FOLDERS:-1}" == "1" ]] || return 1
+  [[ "${SMART_ASSIGN_EXISTING_FOLDERS:-0}" == "1" ]] || return 1
 
   local target_dir
   if ! target_dir="$(build_post_move_target_dir)"; then
@@ -3298,6 +3776,7 @@ recover_pending_imports() {
     local imported_list queue_file dest_dir row_dest row_file queued_mode pending_row_count missing_row_count not_due
     local row_root recovery_msg
     local missing_examples missing_example_count missing_roots missing_root_count
+    local max_pending_attempts
     imported_list="$(/usr/bin/mktemp "${STATE_DIR}/recover-imported.${run_id}.XXXXXX")"
     queue_file="$(/usr/bin/mktemp "${STATE_DIR}/recover-queue.${run_id}.XXXXXX")"
     dest_dir=""
@@ -3309,6 +3788,7 @@ recover_pending_imports() {
     missing_example_count=0
     missing_roots=""
     missing_root_count=0
+    max_pending_attempts=0
 
     local row_mode row_attempts row_next now_epoch
     now_epoch="$(/bin/date '+%s')"
@@ -3321,6 +3801,10 @@ recover_pending_imports() {
       fi
       [[ -n "$row_dest" && -n "$row_file" ]] || continue
       pending_row_count=$((pending_row_count + 1))
+      [[ "$row_attempts" =~ ^[0-9]+$ ]] || row_attempts=0
+      if [[ "$row_attempts" -gt "$max_pending_attempts" ]]; then
+        max_pending_attempts="$row_attempts"
+      fi
       if [[ "$row_next" =~ ^[0-9]+$ && "$row_next" -gt "$now_epoch" ]]; then
         not_due=1
         continue
@@ -3364,14 +3848,18 @@ recover_pending_imports() {
       if [[ "$pending_row_count" -gt 0 && "$missing_row_count" -gt 0 ]]; then
         recovery_msg="$(missing_pending_recovery_message "$pending_file" "$missing_row_count" "$pending_row_count" "$missing_examples" "$missing_roots")"
         log "Pending recovery cannot continue because staged files are missing: ${recovery_msg} Pending file: ${pending_file}"
-        notify "DDump" "$recovery_msg" warn "pending_recovery_missing"
-        ntfy_notify "pending_recovery_missing" "DDump: recovery needs card" "$recovery_msg" \
-          "import=$(pending_import_label "$pending_file")" \
-          "import_time=$(pending_import_time_label "$pending_file")" \
-          "missing_count=$missing_row_count" \
-          "total_count=$pending_row_count" \
-          "examples=$missing_examples" \
-          "roots=$missing_roots"
+        if [[ "$max_pending_attempts" -eq 0 ]] && notification_dedupe_allows "pending_recovery_missing" "$recovery_msg"; then
+          notify "DDump" "$recovery_msg" warn "pending_recovery_missing"
+          ntfy_notify "pending_recovery_missing" "DDump: recovery needs card" "$recovery_msg" \
+            "import=$(pending_import_label "$pending_file")" \
+            "import_time=$(pending_import_time_label "$pending_file")" \
+            "missing_count=$missing_row_count" \
+            "total_count=$pending_row_count" \
+            "examples=$missing_examples" \
+            "roots=$missing_roots"
+        else
+          log "Pending recovery missing-staging notification already sent or deduped for ${pending_file}; suppressing repeat alert."
+        fi
         bump_pending_retry "$pending_file" "local staged file missing; card/staging restore needed"
       else
         log "Pending recovery had no existing files; clearing ${pending_file}."
@@ -3381,19 +3869,22 @@ recover_pending_imports() {
       continue
     fi
 
-    log "Recovering pending staged files: ${pending_file}"
-    if [[ "$queued_mode" -eq 1 ]] \
-       || rebucket_imported_files "$imported_list" "$dest_dir" "$queue_file"; then
-      :
-    else
-      log "Pending recovery rebucket failed; keeping ${pending_file} for next run."
+	    log "Recovering pending staged files: ${pending_file}"
+	    set_status_phase "recovering" "Recovering pending upload batch."
+	    if [[ "$queued_mode" -eq 1 ]] \
+	       || rebucket_imported_files "$imported_list" "$dest_dir" "$queue_file"; then
+	      if [[ "$queued_mode" -ne 1 && -s "$queue_file" ]]; then
+	        record_pending_queue "$pending_file" "$dest_dir" "$queue_file"
+	      fi
+	    else
+	      log "Pending recovery rebucket failed; keeping ${pending_file} for next run."
       summary_errors_total=$((summary_errors_total + 1))
       bump_pending_retry "$pending_file" "rebucket failed"
       /bin/rm -f "$imported_list" "$queue_file"
       continue
     fi
 
-    if move_queued_paths_to_post_target "$queue_file" "pending recovery"; then
+	    if move_queued_paths_to_post_target "$queue_file" "pending recovery"; then
       if [[ -n "$move_last_target" ]]; then
         write_upload_receipt "pending recovery" "success" "$move_last_target" "$queue_file"
       fi
@@ -3556,6 +4047,7 @@ for vol_path in /Volumes/*; do
   fi
 
   processed_volume_count=$((processed_volume_count + 1))
+  activate_ddump_app_for_card
   volume_started_epoch="$(/bin/date '+%s')"
   no_eject_hold_file="${STATE_DIR}/hold-eject.${vol_name//[^A-Za-z0-9._-]/_}.flag"
   start_no_eject_prompt "$vol_name" "$no_eject_hold_file" &
@@ -3568,7 +4060,7 @@ for vol_path in /Volumes/*; do
   last_dest_dir="$dest_dir"
   if [[ "$ENABLE_POST_EJECT_MOVE" == "1" ]]; then
     preflight_move_root="$(effective_post_move_root)"
-    if path_uses_gdrive_mount "$preflight_move_root"; then
+    if path_uses_gdrive_mount "$preflight_move_root" && ! direct_cloud_upload_enabled_for_root "$preflight_move_root"; then
       if ! ensure_gdrive_mount_for_post_move "$preflight_move_root"; then
         log "Preflight mount check failed for ${vol_name}: ${move_last_detail}. Continuing with staging import."
       else
@@ -3608,11 +4100,6 @@ for vol_path in /Volumes/*; do
   else
     notify "DDump" "📷 ${vol_name}: scanning..." info "staging_started"
     ntfy_notify "staging_started" "DDump: staging started" "${vol_name}: staging started."
-  fi
-
-  # Open the DDump app so the user sees a live progress window.
-  if [[ -d "$HOME/Applications/DDump.app" ]]; then
-    /usr/bin/open -g "$HOME/Applications/DDump.app" >/dev/null 2>&1 &
   fi
 
   while IFS= read -r source_root || [[ -n "$source_root" ]]; do
@@ -3672,6 +4159,18 @@ for vol_path in /Volumes/*; do
       fi
       if [[ "$current_status_phase" != "importing" ]]; then
         set_status_phase "importing" "Importing from ${vol_name}."
+      fi
+
+      if is_ignored_source_file "$src_file"; then
+        skipped_extension_this_volume=$((skipped_extension_this_volume + 1))
+        record_missed_file "$vol_name" "skipped_system_file" "$src_file" "ignored macOS metadata file"
+        processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+        current_status_processed="$processed_candidates_this_volume"
+        current_status_imported="$imported_this_volume"
+        current_status_skipped="$skipped_existing_this_volume"
+        current_status_failed="$failed_copy"
+        write_status
+        continue
       fi
 
       file_size="$(/usr/bin/stat -f '%z' "$src_file")"
@@ -3850,12 +4349,12 @@ for vol_path in /Volumes/*; do
         else
           summary_kept_mounted_volumes="${summary_kept_mounted_volumes}, ${vol_name}"
         fi
-      elif /usr/sbin/diskutil eject "$vol_path" >/dev/null 2>&1; then
+      elif diskutil_eject_with_timeout "$vol_path" "$vol_name"; then
         log "Ejected volume: ${vol_name}"
         ejected_msg="card ejected."
         ntfy_notify "card_ejected" "DDump: card ejected" "${vol_name}: card ejected after no-new-files check."
       else
-        log "Failed to eject volume: ${vol_name}"
+        log "Failed to eject volume: ${vol_name}; leaving mounted."
         ejected_msg="could not eject card."
         summary_errors_total=$((summary_errors_total + 1))
       fi
@@ -3896,13 +4395,12 @@ for vol_path in /Volumes/*; do
       else
         summary_kept_mounted_volumes="${summary_kept_mounted_volumes}, ${vol_name}"
       fi
-    elif /usr/sbin/diskutil eject "$vol_path" >/dev/null 2>&1; then
+    elif diskutil_eject_with_timeout "$vol_path" "$vol_name"; then
       log "Ejected volume: ${vol_name}"
       did_eject_msg="card ejected."
       ntfy_notify "card_ejected" "DDump: card ejected" "${vol_name}: card ejected after import."
     else
-      log "Failed to eject volume: ${vol_name}"
-      failed_copy=1
+      log "Failed to eject volume: ${vol_name}; continuing with upload."
       did_eject_msg="could not eject card."
       summary_errors_total=$((summary_errors_total + 1))
     fi
