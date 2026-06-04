@@ -116,6 +116,13 @@ ntfy_notify() {
   local topic="${NTFY_TOPIC:-}"
   [[ -n "$topic" ]] || return 0
 
+  if [[ "$event_key" == "mount_failed" ]]; then
+    if [[ "${GDRIVE_DIRECT_UPLOAD:-1}" == "1" || "${GDRIVE_MOUNT_ENABLED:-0}" != "1" ]]; then
+      log "Suppressing mount_failed ntfy because direct upload is active or Google Drive mount mode is disabled."
+      return 0
+    fi
+  fi
+
   local enabled_key=""
   local template_key=""
   case "$event_key" in
@@ -1311,6 +1318,11 @@ stop_finderserver_timer_guard() {
 ensure_gdrive_mount_for_post_move() {
   local target_root="$1"
   path_uses_gdrive_mount "$target_root" || return 0
+  if [[ "${GDRIVE_DIRECT_UPLOAD:-1}" == "1" ]]; then
+    move_last_status="ready"
+    move_last_detail="Direct cloud upload mode is enabled; mount is not required."
+    return 0
+  fi
   gdrive_mount_active && return 0
   if [[ "${GDRIVE_MOUNT_ENABLED:-1}" != "1" ]]; then
     move_last_status="blocked"
