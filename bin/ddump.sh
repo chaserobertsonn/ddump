@@ -600,6 +600,17 @@ current_status_processed="0"
 current_status_imported="0"
 current_status_skipped="0"
 current_status_failed="0"
+current_upload_total="0"
+current_upload_done="0"
+current_upload_failed="0"
+current_upload_percent=""
+current_upload_speed=""
+current_upload_eta=""
+current_upload_target=""
+current_upload_item=""
+current_upload_last_error=""
+current_card_ejected="0"
+current_eject_status="pending"
 startup_cause="launchd StartOnMount event"
 startup_volume=""
 startup_path=""
@@ -627,6 +638,17 @@ write_status() {
     /bin/echo "imported=\"$(status_escape "$current_status_imported")\""
     /bin/echo "skipped=\"$(status_escape "$current_status_skipped")\""
     /bin/echo "failed=\"$(status_escape "$current_status_failed")\""
+    /bin/echo "upload_total=\"$(status_escape "$current_upload_total")\""
+    /bin/echo "upload_done=\"$(status_escape "$current_upload_done")\""
+    /bin/echo "upload_failed=\"$(status_escape "$current_upload_failed")\""
+    /bin/echo "upload_percent=\"$(status_escape "$current_upload_percent")\""
+    /bin/echo "upload_speed=\"$(status_escape "$current_upload_speed")\""
+    /bin/echo "upload_eta=\"$(status_escape "$current_upload_eta")\""
+    /bin/echo "upload_target=\"$(status_escape "$current_upload_target")\""
+    /bin/echo "upload_item=\"$(status_escape "$current_upload_item")\""
+    /bin/echo "upload_last_error=\"$(status_escape "$current_upload_last_error")\""
+    /bin/echo "card_ejected=\"$(status_escape "$current_card_ejected")\""
+    /bin/echo "eject_status=\"$(status_escape "$current_eject_status")\""
     /bin/echo "startup_cause=\"$(status_escape "$startup_cause")\""
     /bin/echo "startup_volume=\"$(status_escape "$startup_volume")\""
     /bin/echo "startup_path=\"$(status_escape "$startup_path")\""
@@ -645,6 +667,63 @@ set_status_phase() {
   current_status_phase="$phase"
   current_status_message="$message"
   write_status
+}
+
+set_upload_status() {
+  current_status_phase="uploading"
+  current_status_message="${1:-Uploading to cloud destination.}"
+  current_upload_target="${2:-$current_upload_target}"
+  current_upload_item="${3:-$current_upload_item}"
+  current_upload_done="${4:-$current_upload_done}"
+  current_upload_failed="${5:-$current_upload_failed}"
+  current_upload_total="${6:-$current_upload_total}"
+  current_upload_percent="${7:-$current_upload_percent}"
+  current_upload_speed="${8:-$current_upload_speed}"
+  current_upload_eta="${9:-$current_upload_eta}"
+  write_status
+}
+
+set_eject_status() {
+  current_eject_status="${1:-pending}"
+  if [[ "$current_eject_status" == "ejected" ]]; then
+    current_card_ejected="1"
+  else
+    current_card_ejected="0"
+  fi
+  write_status
+}
+
+update_upload_status_from_rclone_log() {
+  local target="$1"
+  local item="$2"
+  local done="$3"
+  local failed="$4"
+  local total="$5"
+  local stats_line error_line percent speed eta xfr_done xfr_total message
+
+  stats_line="$(/usr/bin/tail -n 160 "$LOG_FILE" 2>/dev/null | /usr/bin/grep 'INFO  : .*ETA .*xfr#' | /usr/bin/tail -n 1 || true)"
+  error_line="$(/usr/bin/tail -n 80 "$LOG_FILE" 2>/dev/null | /usr/bin/grep 'ERROR :' | /usr/bin/tail -n 1 || true)"
+
+  if [[ -n "$stats_line" ]]; then
+    percent="$(printf '%s' "$stats_line" | /usr/bin/sed -nE 's/.* ([0-9]+)%, .*/\1/p')"
+    speed="$(printf '%s' "$stats_line" | /usr/bin/sed -nE 's/.* [0-9]+%, ([^,]+), ETA .*/\1/p')"
+    eta="$(printf '%s' "$stats_line" | /usr/bin/sed -nE 's/.* ETA ([^ ]+) \(xfr#[0-9]+\/[0-9]+\).*/\1/p')"
+    xfr_done="$(printf '%s' "$stats_line" | /usr/bin/sed -nE 's/.*\(xfr#([0-9]+)\/([0-9]+)\).*/\1/p')"
+    xfr_total="$(printf '%s' "$stats_line" | /usr/bin/sed -nE 's/.*\(xfr#([0-9]+)\/([0-9]+)\).*/\2/p')"
+    [[ -n "$xfr_done" ]] && done="$xfr_done"
+    [[ -n "$xfr_total" ]] && total="$xfr_total"
+  fi
+
+  if [[ -n "$error_line" ]]; then
+    current_upload_last_error="$(printf '%s' "$error_line" | /usr/bin/sed -E 's/^.*ERROR : //; s/[[:space:]]+/ /g' | /usr/bin/cut -c1-220)"
+  fi
+
+  if [[ -n "$current_upload_last_error" && -z "$stats_line" ]]; then
+    message="Uploading to ${target}; retrying after network/cloud error."
+  else
+    message="Uploading to ${target}."
+  fi
+  set_upload_status "$message" "$target" "$item" "$done" "$failed" "$total" "$percent" "$speed" "$eta"
 }
 
 start_progress_window() {
@@ -966,12 +1045,14 @@ rclone_copyto_with_watchdog() {
   local rclone_bin="$1"
   local src_file="$2"
   local remote_dest="$3"
-  local timeout chunk pid elapsed rc
+  local timeout chunk pid elapsed rc item_name
   timeout="$(sanitize_positive_int "${RCLONE_FILE_TIMEOUT_SECONDS:-180}" "180")"
   if [[ "$timeout" -lt 30 ]]; then
     timeout=30
   fi
   chunk="${RCLONE_DRIVE_CHUNK_SIZE:-8M}"
+  item_name="$(basename "$src_file")"
+  update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
 
   "$rclone_bin" copyto "$src_file" "$remote_dest" \
     --exclude '.DS_Store' --exclude '._*' \
@@ -993,12 +1074,18 @@ rclone_copyto_with_watchdog() {
     fi
     /bin/sleep 1
     elapsed=$((elapsed + 1))
+    if (( elapsed % 5 == 0 )); then
+      update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
+    fi
   done
   if /bin/wait "$pid"; then
+    update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     return 0
   fi
   rc="$?"
   log "Direct rclone upload failed with exit ${rc}: ${src_file} -> ${remote_dest}"
+  current_upload_last_error="rclone copy failed with exit ${rc}"
+  update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
   return "$rc"
 }
 
@@ -1006,12 +1093,14 @@ rclone_copy_directory_to_remote_target() {
   local rclone_bin="$1"
   local src_dir="$2"
   local remote_dest_dir="$3"
-  local timeout chunk pid elapsed rc
+  local timeout chunk pid elapsed rc item_name
   timeout="$(sanitize_positive_int "${RCLONE_BATCH_TIMEOUT_SECONDS:-3600}" "3600")"
   if [[ "$timeout" -lt 300 ]]; then
     timeout=300
   fi
   chunk="${RCLONE_DRIVE_CHUNK_SIZE:-8M}"
+  item_name="$(basename "$src_dir")"
+  update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
 
   "$rclone_bin" copy "$src_dir" "$remote_dest_dir" \
     --exclude '.DS_Store' --exclude '._*' \
@@ -1034,12 +1123,18 @@ rclone_copy_directory_to_remote_target() {
     fi
     /bin/sleep 1
     elapsed=$((elapsed + 1))
+    if (( elapsed % 5 == 0 )); then
+      update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
+    fi
   done
   if /bin/wait "$pid"; then
+    update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     return 0
   fi
   rc="$?"
   log "Direct rclone bucket upload failed with exit ${rc}: ${src_dir} -> ${remote_dest_dir}"
+  current_upload_last_error="rclone copy failed with exit ${rc}"
+  update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
   return "$rc"
 }
 
@@ -1537,6 +1632,8 @@ move_queued_paths_to_post_target() {
 	  local destination_count=0
 	  local target_list=""
 	  local primary_target=""
+  local queue_total
+  queue_total="$(/usr/bin/awk 'NF { count++ } END { print count + 0 }' "$queue_file" 2>/dev/null || echo 0)"
   local root target_dir display_target direct_cloud remote_target_dir remote_video_target_dir copied_count failed_count src_path base_name dest_path
   while IFS= read -r root || [[ -n "$root" ]]; do
     [[ -n "$root" ]] || continue
@@ -1567,7 +1664,11 @@ move_queued_paths_to_post_target() {
 	    else
 	      target_list="${target_list}, ${display_target}"
 	    fi
-	    set_status_phase "uploading" "Uploading to ${display_target}."
+	    current_upload_total="$queue_total"
+	    current_upload_done="$overall_copied"
+	    current_upload_failed="$overall_failed"
+	    current_upload_target="$display_target"
+	    set_upload_status "Uploading to ${display_target}." "$display_target" "" "$overall_copied" "$overall_failed" "$queue_total" "" "" ""
 
 	    if [[ "$direct_cloud" == "1" ]]; then
       if ! rclone_binary >/dev/null 2>&1; then
@@ -1617,6 +1718,7 @@ move_queued_paths_to_post_target() {
       base_name="$(basename "$src_path")"
       if [[ "$direct_cloud" == "1" ]]; then
         dest_path="$(rclone_remote_join "$remote_target_dir" "$base_name")"
+        set_upload_status "Uploading ${base_name} to ${remote_target_dir}." "$remote_target_dir" "$base_name" "$overall_copied" "$overall_failed" "$queue_total" "" "" ""
         db_upsert_upload_job "$src_path" "$remote_target_dir" "uploading" "0" "0" ""
         db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
         if [[ "$split_video_enabled" == "1" && -d "$src_path" && -n "$remote_video_target_dir" ]]; then
@@ -1624,21 +1726,29 @@ move_queued_paths_to_post_target() {
             db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
             db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
             copied_count=$((copied_count + 1))
+            overall_copied=$((overall_copied + 1))
+            set_upload_status "Uploaded ${base_name}; continuing cloud upload." "$remote_target_dir" "$base_name" "$overall_copied" "$overall_failed" "$queue_total" "$current_upload_percent" "$current_upload_speed" "$current_upload_eta"
           else
             failed_count=$((failed_count + 1))
+            overall_failed=$((overall_failed + 1))
             db_update_upload_job_status "$src_path" "failed" "0" "0" "direct rclone split upload failed"
             db_mark_media_status_by_local_prefix "$src_path" "organized" "direct rclone split upload failed"
             log "Post-move direct rclone split upload failed: ${src_path} -> ${remote_target_dir}"
+            set_upload_status "Upload failed for ${base_name}; continuing." "$remote_target_dir" "$base_name" "$overall_copied" "$overall_failed" "$queue_total" "$current_upload_percent" "$current_upload_speed" "$current_upload_eta"
           fi
         elif rclone_copy_path_to_remote_target "$src_path" "$remote_target_dir"; then
           db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
           db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
           copied_count=$((copied_count + 1))
+          overall_copied=$((overall_copied + 1))
+          set_upload_status "Uploaded ${base_name}; continuing cloud upload." "$remote_target_dir" "$base_name" "$overall_copied" "$overall_failed" "$queue_total" "$current_upload_percent" "$current_upload_speed" "$current_upload_eta"
         else
           failed_count=$((failed_count + 1))
+          overall_failed=$((overall_failed + 1))
           db_update_upload_job_status "$src_path" "failed" "0" "0" "direct rclone upload failed"
           db_mark_media_status_by_local_prefix "$src_path" "organized" "direct rclone upload failed"
           log "Post-move direct rclone upload failed: ${src_path} -> ${dest_path}"
+          set_upload_status "Upload failed for ${base_name}; continuing." "$remote_target_dir" "$base_name" "$overall_copied" "$overall_failed" "$queue_total" "$current_upload_percent" "$current_upload_speed" "$current_upload_eta"
         fi
         continue
       fi
@@ -1709,8 +1819,11 @@ move_queued_paths_to_post_target() {
       fi
     done <"$queue_file"
 
-    overall_copied=$((overall_copied + copied_count))
-    overall_failed=$((overall_failed + failed_count))
+    if [[ "$direct_cloud" != "1" ]]; then
+      overall_copied=$((overall_copied + copied_count))
+      overall_failed=$((overall_failed + failed_count))
+      set_upload_status "Copied ${copied_count} item(s) to ${display_target}." "$display_target" "" "$overall_copied" "$overall_failed" "$queue_total" "" "" ""
+    fi
     log "Post-transfer destination result for ${vol_name}: target=${display_target}, copied=${copied_count}, failed=${failed_count}"
   done <"$roots_file"
   /bin/rm -f "$roots_file"
@@ -4392,6 +4505,7 @@ for vol_path in /Volumes/*; do
     if keep_mounted_requested "$no_eject_hold_file"; then
       log "User requested no eject for ${vol_name}; leaving mounted."
       did_eject_msg="kept mounted."
+      set_eject_status "kept"
       summary_kept_mounted_total=$((summary_kept_mounted_total + 1))
       if [[ -z "$summary_kept_mounted_volumes" ]]; then
         summary_kept_mounted_volumes="$vol_name"
@@ -4401,12 +4515,16 @@ for vol_path in /Volumes/*; do
     elif diskutil_eject_with_timeout "$vol_path" "$vol_name"; then
       log "Ejected volume: ${vol_name}"
       did_eject_msg="card ejected."
+      set_eject_status "ejected"
       ntfy_notify "card_ejected" "DDump: card ejected" "${vol_name}: card ejected after import."
     else
       log "Failed to eject volume: ${vol_name}; continuing with upload."
       did_eject_msg="could not eject card."
+      set_eject_status "failed"
       summary_errors_total=$((summary_errors_total + 1))
     fi
+  else
+    set_eject_status "skipped"
   fi
 
   if [[ "$failed_copy" == "0" ]]; then

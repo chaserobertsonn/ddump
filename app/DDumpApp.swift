@@ -140,6 +140,17 @@ final class AppState: ObservableObject {
   @Published var imported: Int = 0
   @Published var skipped: Int = 0
   @Published var failed: Int = 0
+  @Published var uploadTotal: Int = 0
+  @Published var uploadDone: Int = 0
+  @Published var uploadFailed: Int = 0
+  @Published var uploadPercent: Double = 0
+  @Published var uploadSpeed: String = ""
+  @Published var uploadETA: String = ""
+  @Published var uploadTarget: String = ""
+  @Published var uploadItem: String = ""
+  @Published var uploadLastError: String = ""
+  @Published var cardEjected: Bool = false
+  @Published var ejectStatus: String = "pending"
   @Published var startedEpoch: TimeInterval = 0
   @Published var updatedAt: String = ""
   @Published var config: [String: String] = [:]
@@ -210,10 +221,83 @@ final class AppState: ObservableObject {
     }
   }
 
+  private struct UploadLogSnapshot {
+    var done: Int?
+    var total: Int?
+    var percent: Double?
+    var speed: String?
+    var eta: String?
+    var item: String?
+    var lastError: String?
+  }
+
+  private func readLogTail(maxBytes: UInt64 = 220_000) -> String {
+    guard let handle = try? FileHandle(forReadingFrom: DDumpPaths.logFile) else { return "" }
+    defer { try? handle.close() }
+    let size = (try? handle.seekToEnd()) ?? 0
+    if size > maxBytes {
+      try? handle.seek(toOffset: size - maxBytes)
+    } else {
+      try? handle.seek(toOffset: 0)
+    }
+    let data = handle.readDataToEndOfFile()
+    return String(data: data, encoding: .utf8) ?? ""
+  }
+
+  private func firstMatch(_ pattern: String, in text: String) -> [String]? {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    guard let match = regex.firstMatch(in: text, range: nsRange) else { return nil }
+    var groups: [String] = []
+    for idx in 1..<match.numberOfRanges {
+      guard let range = Range(match.range(at: idx), in: text) else {
+        groups.append("")
+        continue
+      }
+      groups.append(String(text[range]))
+    }
+    return groups
+  }
+
+  private func latestUploadSnapshotFromLog() -> UploadLogSnapshot? {
+    let lines = readLogTail().split(separator: "\n").map(String.init)
+    guard !lines.isEmpty else { return nil }
+    var snapshot = UploadLogSnapshot()
+
+    for line in lines.reversed() {
+      if snapshot.lastError == nil, let range = line.range(of: "ERROR : ") {
+        let errorText = String(line[range.upperBound...])
+          .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        snapshot.lastError = String(errorText.prefix(220))
+      }
+      if snapshot.item == nil,
+         let groups = firstMatch(#"INFO  : ([^:]+): Copied"#, in: line),
+         let item = groups.first {
+        snapshot.item = item
+      }
+      if snapshot.percent == nil,
+         let groups = firstMatch(#"INFO  :\s+.*?, ([0-9]+)%, ([^,]+), ETA ([^ ]+) \(xfr#([0-9]+)/([0-9]+)\)"#, in: line),
+         groups.count >= 5 {
+        snapshot.percent = Double(groups[0])
+        snapshot.speed = groups[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        snapshot.eta = groups[2].trimmingCharacters(in: .whitespacesAndNewlines)
+        snapshot.done = Int(groups[3])
+        snapshot.total = Int(groups[4])
+      }
+      if snapshot.percent != nil && snapshot.lastError != nil && snapshot.item != nil {
+        break
+      }
+    }
+
+    return (snapshot.percent != nil || snapshot.lastError != nil || snapshot.item != nil) ? snapshot : nil
+  }
+
   func refreshStatus() {
     let parsed = readShellEnv(at: DDumpPaths.statusFile)
+    let parsedPhase = parsed["phase"] ?? "idle"
+    let uploadSnapshot = parsedPhase == "uploading" ? latestUploadSnapshotFromLog() : nil
     DispatchQueue.main.async {
-      self.phase = parsed["phase"] ?? "idle"
+      self.phase = parsedPhase
       self.message = parsed["message"] ?? "Waiting for a card…"
       self.volume = parsed["volume"] ?? ""
       self.total = Int(parsed["total"] ?? "0") ?? 0
@@ -221,6 +305,17 @@ final class AppState: ObservableObject {
       self.imported = Int(parsed["imported"] ?? "0") ?? 0
       self.skipped = Int(parsed["skipped"] ?? "0") ?? 0
       self.failed = Int(parsed["failed"] ?? "0") ?? 0
+      self.uploadTotal = Int(parsed["upload_total"] ?? "") ?? uploadSnapshot?.total ?? 0
+      self.uploadDone = Int(parsed["upload_done"] ?? "") ?? uploadSnapshot?.done ?? 0
+      self.uploadFailed = Int(parsed["upload_failed"] ?? "") ?? 0
+      self.uploadPercent = Double(parsed["upload_percent"] ?? "") ?? uploadSnapshot?.percent ?? 0
+      self.uploadSpeed = parsed["upload_speed"].flatMap { $0.isEmpty ? nil : $0 } ?? uploadSnapshot?.speed ?? ""
+      self.uploadETA = parsed["upload_eta"].flatMap { $0.isEmpty ? nil : $0 } ?? uploadSnapshot?.eta ?? ""
+      self.uploadTarget = parsed["upload_target"] ?? ""
+      self.uploadItem = parsed["upload_item"].flatMap { $0.isEmpty ? nil : $0 } ?? uploadSnapshot?.item ?? ""
+      self.uploadLastError = parsed["upload_last_error"].flatMap { $0.isEmpty ? nil : $0 } ?? uploadSnapshot?.lastError ?? ""
+      self.cardEjected = parsed["card_ejected"] == "1"
+      self.ejectStatus = parsed["eject_status"] ?? "pending"
       self.startedEpoch = TimeInterval(parsed["started_epoch"] ?? "0") ?? 0
       self.updatedAt = parsed["updated_at"] ?? ""
     }
@@ -538,6 +633,39 @@ printf 'url=%s\\n' "$link"
 
   var progressFraction: Double {
     total > 0 ? Double(processed) / Double(total) : 0
+  }
+
+  var isUploading: Bool {
+    phase == "uploading"
+  }
+
+  var displayProgressFraction: Double {
+    if isUploading {
+      if uploadPercent > 0 { return min(max(uploadPercent / 100.0, 0), 1) }
+      if uploadTotal > 0 { return min(max(Double(uploadDone) / Double(uploadTotal), 0), 1) }
+    }
+    return progressFraction
+  }
+
+  var displayPercent: Int {
+    Int(displayProgressFraction * 100)
+  }
+
+  var displayProgressCount: String {
+    if isUploading {
+      if uploadTotal > 0 {
+        return "\(uploadDone) / \(uploadTotal) uploaded"
+      }
+      return "\(imported) staged · uploading"
+    }
+    return "\(processed) / \(total) files"
+  }
+
+  var displayETA: String {
+    if isUploading && !uploadETA.isEmpty {
+      return uploadETA
+    }
+    return formatETA(etaSeconds)
   }
 
   var etaSeconds: Int? {
@@ -2571,7 +2699,7 @@ struct ContentView: View {
 
   var phaseColor: Color {
     switch state.phase {
-    case "importing", "scanning", "starting": return .ddumpPeach
+    case "importing", "scanning", "starting", "uploading", "recovering": return .ddumpPeach
     case "complete": return .ddumpSuccess
     case "stopped", "paused": return .ddumpWarning
     default: return .ddumpFG3
@@ -2583,6 +2711,8 @@ struct ContentView: View {
     case "starting": return "Preparing…"
     case "scanning": return "Scanning card"
     case "importing": return state.paused ? "Paused (will resume)" : "Importing"
+    case "uploading": return "Uploading"
+    case "recovering": return "Recovering"
     case "paused": return "Paused"
     case "stopped": return "Stopped"
     case "complete": return "Done"
@@ -3003,16 +3133,16 @@ struct ProgressDetail: View {
         .foregroundColor(.ddumpFG2)
         .lineLimit(2)
 
-      ProgressView(value: state.progressFraction)
+      ProgressView(value: state.displayProgressFraction)
         .progressViewStyle(.linear)
         .tint(.ddumpPeach)
 
       HStack {
-        Text("\(state.processed) / \(state.total) files")
+        Text(state.displayProgressCount)
         Spacer()
-        Text("ETA \(formatETA(state.etaSeconds))")
+        Text("ETA \(state.displayETA)")
         Spacer()
-        Text("\(Int(state.progressFraction * 100))%").bold()
+        Text("\(state.displayPercent)%").bold()
       }
       .font(.system(size: 13, weight: .medium, design: .monospaced))
       .monospacedDigit()
@@ -3023,12 +3153,52 @@ struct ProgressDetail: View {
           .foregroundColor(.ddumpSuccess)
         Label("\(state.skipped) skipped", systemImage: "arrow.right.circle")
           .foregroundColor(.ddumpFG3)
+        if state.isUploading {
+          Label(state.cardEjected ? "card ejected" : "eject \(state.ejectStatus)", systemImage: state.cardEjected ? "eject.circle.fill" : "eject.circle")
+            .foregroundColor(state.cardEjected ? .ddumpSuccess : .ddumpWarning)
+          if !state.uploadSpeed.isEmpty {
+            Label(state.uploadSpeed, systemImage: "speedometer")
+              .foregroundColor(.ddumpFG2)
+          }
+        }
         if state.failed > 0 {
           Label("\(state.failed) failed", systemImage: "exclamationmark.triangle")
             .foregroundColor(.ddumpDanger)
         }
       }
       .font(DDumpFont.ui(12))
+
+      if state.isUploading {
+        VStack(alignment: .leading, spacing: 6) {
+          if !state.uploadItem.isEmpty {
+            Label("Now uploading \(state.uploadItem)", systemImage: "icloud.and.arrow.up")
+              .foregroundColor(.ddumpFG2)
+          }
+          if !state.uploadTarget.isEmpty {
+            Label(state.uploadTarget, systemImage: "folder")
+              .foregroundColor(.ddumpFG3)
+              .lineLimit(2)
+              .textSelection(.enabled)
+          }
+          if !state.uploadLastError.isEmpty {
+            Label(state.uploadLastError, systemImage: "wifi.exclamationmark")
+              .foregroundColor(.ddumpWarning)
+              .lineLimit(3)
+              .textSelection(.enabled)
+          }
+        }
+        .font(DDumpFont.ui(12))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.ddumpSurface2)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
+      }
 
       if state.runActive {
         ManualShootNameControl()
@@ -3121,6 +3291,9 @@ struct RunChecklistPanel: View {
   }
 
   private var step1State: StepState {
+    if state.isUploading {
+      return .done
+    }
     if state.runActive && ["starting", "scanning", "importing", "paused"].contains(state.phase) {
       return .active
     }
@@ -3136,6 +3309,12 @@ struct RunChecklistPanel: View {
   private var step2State: StepState {
     if !ejectEnabled {
       return .done
+    }
+    if state.cardEjected || state.isUploading {
+      return .done
+    }
+    if state.ejectStatus == "failed" || state.ejectStatus == "kept" {
+      return .blocked
     }
     if step1State != .done {
       return .pending
@@ -3156,9 +3335,7 @@ struct RunChecklistPanel: View {
     if !postMoveEnabled {
       return .done
     }
-    if step2State != .done {
-      return .pending
-    }
+    if state.isUploading { return .active }
     if runFinished {
       let moveFail = summaryMetric("post_move_fail") ?? 0
       let moveBlocked = summaryMetric("post_move_blocked") ?? 0
@@ -3167,9 +3344,7 @@ struct RunChecklistPanel: View {
       }
       return .blocked
     }
-    if state.runActive && state.imported > 0 {
-      return .active
-    }
+    if step2State != .done { return .pending }
     return .pending
   }
 
@@ -3235,14 +3410,14 @@ struct RunChecklistPanel: View {
         Text("Checklist").font(DDumpFont.ui(18, weight: .semibold)).foregroundColor(.ddumpFG1)
         Spacer()
         if state.runActive {
-          Text("\(state.processed) / \(state.total) · \(formatETA(state.etaSeconds)) remaining")
+          Text("\(state.displayProgressCount) · \(state.displayETA) remaining")
             .font(.system(size: 12, weight: .regular, design: .monospaced))
             .foregroundColor(.ddumpFG3)
         }
       }
       row("1. Transfer to staging folder", step: step1State, linkTitle: "Open staging", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
       row("2. Eject card", step: step2State)
-      row("3. Transfer to destination folder", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI, cloudDestination: true)
+      row("3. Upload to destination", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI, cloudDestination: true)
       row("4. All complete!", step: step4State)
     }
     .padding(14)
