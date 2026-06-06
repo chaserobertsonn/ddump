@@ -97,13 +97,20 @@ Grouping controls:
 Calendar setup is handled from Settings -> Calendar. Public users do not need
 Terminal commands. DDump offers three calendar sources:
 
-- Google Calendar: opens browser sign-in from the app. Public release needs the
-  bundled native OAuth client/helper; legacy developer installs can still use an
-  existing authenticated `gcalcli`.
+- Google Calendar: opens browser sign-in from the app, requests read-only
+  Calendar access, and stores a local DDump token. No Terminal or `gcalcli`
+  setup is required.
 - Apple Calendar: uses the standard macOS Calendar permission prompt and reads
   calendars already synced to the Mac.
 - Calendar Link: accepts a private `.ics` or `webcal` URL and validates that it
   returns a calendar file.
+
+Google OAuth note for developers: if the Google Cloud consent screen is still
+in Testing, add the signed-in Google account under OAuth consent screen -> Test
+users. Otherwise Google will show `Access blocked` before DDump can receive a
+token. The Desktop OAuth credential also has a client secret in its downloaded
+JSON; add it to `GOOGLE_CALENDAR_CLIENT_SECRET` if Google returns
+`client_secret is missing`.
 
 When calendar naming is enabled, DDump can hold pending main-screen questions
 for clusters that fall outside scheduled events. The user can assign the cluster

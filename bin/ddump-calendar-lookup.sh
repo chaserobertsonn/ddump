@@ -5,10 +5,9 @@
 #
 #   <start_epoch>\t<end_epoch>\t<event_title>
 #
-# Current lookup backend is the legacy Google Calendar helper when available.
 # Public app setup happens from DDump's Calendar settings wizard; users should
-# not need to run Terminal commands. Apple Calendar and ICS providers are stored
-# in config for the app-side wizard and future lookup backends.
+# not need to run Terminal commands. Google Calendar uses DDump's bundled
+# read-only OAuth helper.
 #
 # Usage:
 #   ddump-calendar-lookup.sh --date YYYY-MM-DD [--calendar "Name"]
@@ -16,14 +15,27 @@
 # Configurable via env:
 #   DDUMP_CALENDAR_NAME           default calendar name (blank = primary)
 #   DDUMP_CALENDAR_DAY_WINDOW     extend window by N hours each side (default 1)
+#   GOOGLE_CALENDAR_CLIENT_ID     Google desktop OAuth client ID
 
 set -euo pipefail
 
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+APP_SUPPORT_DIR="${HOME}/Library/Application Support/DDump"
+CONFIG_FILE="${APP_SUPPORT_DIR}/config.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+
 DATE=""
 CAL_NAME="${DDUMP_CALENDAR_NAME:-}"
 DAY_WINDOW_HRS="${DDUMP_CALENDAR_DAY_WINDOW:-1}"
+PROVIDER="${DDUMP_CALENDAR_PROVIDER:-${CALENDAR_PROVIDER:-google}}"
+CLIENT_ID="${GOOGLE_CALENDAR_CLIENT_ID:-570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com}"
+CLIENT_SECRET="${GOOGLE_CALENDAR_CLIENT_SECRET:-}"
 
 while [[ "${1:-}" ]]; do
   case "$1" in
@@ -42,44 +54,29 @@ if [[ -z "$DATE" ]]; then
   exit 2
 fi
 
-if ! command -v gcalcli >/dev/null 2>&1; then
-  echo "ERROR: gcalcli not installed. Run: brew install gcalcli" >&2
-  exit 3
-fi
-
-# Build the window. gcalcli's --tsv lists events in [start, end).
-start_date="$(date -j -v-${DAY_WINDOW_HRS}H -f '%Y-%m-%d %H:%M:%S' "${DATE} 00:00:00" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
-              || date -d "${DATE} 00:00:00 -${DAY_WINDOW_HRS} hour" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
-              || echo "${DATE} 00:00:00")"
-end_date="$(date -j -v+${DAY_WINDOW_HRS}H -f '%Y-%m-%d %H:%M:%S' "${DATE} 23:59:59" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
-            || date -d "${DATE} 23:59:59 +${DAY_WINDOW_HRS} hour" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
-            || echo "${DATE} 23:59:59")"
-
-cal_args=()
-if [[ -n "$CAL_NAME" ]]; then
-  cal_args+=(--calendar "$CAL_NAME")
-fi
-
-# gcalcli --tsv output columns: start_date, start_time, end_date, end_time, title, [link]
-gcalcli "${cal_args[@]}" agenda "$start_date" "$end_date" --tsv 2>/dev/null \
-| while IFS=$'\t' read -r s_date s_time e_date e_time title rest; do
-    [[ -z "$s_date" ]] && continue
-    if [[ -z "$s_time" ]]; then
-      s_time="00:00"
+case "$PROVIDER" in
+  google)
+    helper="${SCRIPT_DIR}/ddump-google-calendar.py"
+    if [[ ! -x "$helper" ]]; then
+      echo "ERROR: bundled Google Calendar helper is missing: $helper" >&2
+      exit 3
     fi
-    if [[ -z "$e_time" ]]; then
-      e_time="23:59"
+    args=(--client-id "$CLIENT_ID" --client-secret "$CLIENT_SECRET" events --date "$DATE" --day-window "$DAY_WINDOW_HRS")
+    if [[ -n "$CAL_NAME" ]]; then
+      args+=(--calendar "$CAL_NAME")
     fi
-    if [[ -z "$e_date" ]]; then
-      e_date="$s_date"
-    fi
-    s_epoch="$(date -j -f '%Y-%m-%d %H:%M' "${s_date} ${s_time}" '+%s' 2>/dev/null \
-               || date -d "${s_date} ${s_time}" '+%s' 2>/dev/null \
-               || true)"
-    e_epoch="$(date -j -f '%Y-%m-%d %H:%M' "${e_date} ${e_time}" '+%s' 2>/dev/null \
-               || date -d "${e_date} ${e_time}" '+%s' 2>/dev/null \
-               || true)"
-    if [[ -n "$s_epoch" && -n "$e_epoch" ]]; then
-      printf '%s\t%s\t%s\n' "$s_epoch" "$e_epoch" "$title"
-    fi
-  done
+    "$helper" "${args[@]}"
+    ;;
+  none|"")
+    echo "ERROR: calendar provider is not connected." >&2
+    exit 4
+    ;;
+  apple|ics)
+    echo "ERROR: ${PROVIDER} calendar lookup backend is not implemented yet. Use Google Calendar for calendar naming." >&2
+    exit 4
+    ;;
+  *)
+    echo "ERROR: unknown calendar provider: $PROVIDER" >&2
+    exit 4
+    ;;
+esac

@@ -31,9 +31,9 @@ causes cmux/Codex hook errors before tool calls can run.
 The Calendar settings tab now has public-app setup options instead of terminal
 instructions:
 
-- Google Calendar: app-side browser sign-in entry point. Legacy developer flow
-  can use an existing `gcalcli`; true public release still needs a bundled
-  native OAuth client/helper.
+- Google Calendar: app-side browser sign-in with DDump's bundled native OAuth
+  helper. It uses the desktop PKCE flow, read-only Calendar scope, and stores a
+  local app-support token file.
 - Apple Calendar: uses EventKit and the normal macOS Calendar permission prompt.
 - Calendar Link: accepts and validates a private `.ics` or `webcal` URL.
 - Calendar ambiguity prompts setting: keeps future main-screen questions enabled
@@ -44,6 +44,8 @@ Config keys added:
 ```text
 CALENDAR_PROVIDER="none"        # none | google | apple | ics
 CALENDAR_AUTH_STATUS="not_authorized"
+GOOGLE_CALENDAR_CLIENT_ID="570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com"
+GOOGLE_CALENDAR_CLIENT_SECRET=""
 CALENDAR_ICS_URL=""
 CALENDAR_NAME=""
 CALENDAR_EVENT_PADDING_MIN="15"
@@ -55,13 +57,15 @@ The app bundle Info.plist now includes Calendar privacy usage strings in both
 
 ## Still Needed
 
-1. Implement real Google Calendar native OAuth for public release.
-   - Use a desktop/native OAuth client with PKCE.
-   - Do not require Terminal, Homebrew, or user copy/paste.
-   - Store tokens in the user keychain or a secure app-support token file.
+1. Finish Google Cloud consent-screen setup.
+   - Add the active Google account as an OAuth test user while consent is in
+     Testing, or publish/verify the consent screen for broader release.
+   - The Desktop OAuth credential's `client_secret` must be copied from the
+     downloaded JSON into `GOOGLE_CALENDAR_CLIENT_SECRET` before token exchange
+     can complete.
 2. Add actual Apple Calendar and ICS lookup backends to
    `bin/ddump-calendar-lookup.sh` or a new helper.
-   - Current lookup still primarily uses the legacy Google helper.
+   - Current lookup uses the native Google helper for calendar naming.
 3. Implement pending calendar ambiguity questions on the main screen.
    - For clusters outside an event window, offer previous event, next event, or
      Other/manual name.

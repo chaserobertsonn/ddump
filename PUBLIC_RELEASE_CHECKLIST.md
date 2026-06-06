@@ -11,6 +11,8 @@
 - Swift parse check passes with a writable module cache.
 - Calendar settings wizard added with Apple Calendar permission, Calendar Link
   validation, and Google Calendar browser-sign-in entry point.
+- Bundled Google Calendar OAuth helper added. It uses the desktop PKCE flow,
+  read-only Calendar scope, and a secure local app-support token file.
 
 ## Known Limitations
 
@@ -19,8 +21,12 @@
 - Auto-update is not Sparkle yet. DDump checks GitHub Releases and opens the
   download page for the user.
 - Cloud syncing requires rclone setup through the app's Cloud settings.
-- Google Calendar still needs a bundled native OAuth client/helper for a true
-  no-terminal public release. Apple Calendar and Calendar Link are no-terminal.
+- Google Calendar OAuth cannot complete while the Google Cloud consent screen is
+  in Testing unless the signed-in account is added as a test user. Publish or
+  verify the consent screen before broad release.
+- The Desktop OAuth credential's client secret must be present in
+  `GOOGLE_CALENDAR_CLIENT_SECRET`; it comes from the Google Cloud downloaded
+  OAuth JSON and is not a user password.
 - Calendar ambiguity questions are configured in settings; the full post-upload
   rename/move workflow for answered questions still needs end-to-end testing.
 
@@ -33,4 +39,5 @@
 - Confirm Settings opens, Cloud setup stays opt-in, and update checks are off by default.
 - Confirm Calendar setup can connect Apple Calendar without terminal access.
 - Confirm Calendar Link accepts a private ICS URL and rejects non-calendar URLs.
-- Confirm Google Calendar browser sign-in works once the public OAuth helper is bundled.
+- Confirm Google Calendar browser sign-in works with a Google account that is
+  allowed by the OAuth consent screen.

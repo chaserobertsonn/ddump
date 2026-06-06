@@ -39,6 +39,7 @@ enum DDumpPaths {
   static var keepMountedFlag: URL { controlDir.appendingPathComponent("keep_mounted.flag") }
   static var appCloudKeepaliveFile: URL { controlDir.appendingPathComponent("app_cloud_keepalive.touch") }
   static var ejectNowFlag: URL { controlDir.appendingPathComponent("eject_now.flag") }
+  static var googleCalendarHelper: URL { appSupport.appendingPathComponent("bin/ddump-google-calendar.py") }
 }
 
 func registerBundledFonts() {
@@ -660,40 +661,34 @@ printf 'url=%s\\n' "$link"
   }
 
   func connectGoogleCalendar() {
+    let clientID = get(
+      "GOOGLE_CALENDAR_CLIENT_ID",
+      default: "570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com"
+    )
+    let clientSecret = get("GOOGLE_CALENDAR_CLIENT_SECRET", default: "")
     set("CALENDAR_PROVIDER", "google")
+    set("GOOGLE_CALENDAR_CLIENT_ID", clientID)
     set("CALENDAR_AUTH_STATUS", "pending")
     lastUtilityMessage = "Opening Google Calendar sign-in..."
 
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
+      let helper = shellDoubleQuoted(DDumpPaths.googleCalendarHelper.path)
+      let quotedClientID = shellDoubleQuoted(clientID)
+      let quotedClientSecret = shellDoubleQuoted(clientSecret)
       task.arguments = ["-lc", """
 set +e
 export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-if ! command -v gcalcli >/dev/null 2>&1; then
+helper=\(helper)
+client_id=\(quotedClientID)
+client_secret=\(quotedClientSecret)
+if [ ! -x "$helper" ]; then
   echo "status=missing_helper"
   exit 3
 fi
-timeout=90
-gcalcli list >/tmp/ddump-gcalcli-auth.out 2>/tmp/ddump-gcalcli-auth.err &
-pid="$!"
-elapsed=0
-while /bin/kill -0 "$pid" >/dev/null 2>&1; do
-  if [ "$elapsed" -ge "$timeout" ]; then
-    echo "status=browser_opened"
-    exit 0
-  fi
-  /bin/sleep 1
-  elapsed=$((elapsed+1))
-done
-/bin/wait "$pid"
-rc="$?"
-if [ "$rc" = "0" ]; then
-  echo "status=authorized"
-else
-  echo "status=not_authorized"
-fi
-exit "$rc"
+"$helper" --client-id "$client_id" --client-secret "$client_secret" auth --timeout 300
+exit "$?"
 """]
       let pipe = Pipe()
       task.standardOutput = pipe
@@ -715,27 +710,52 @@ exit "$rc"
         switch status {
         case "authorized":
           self.set("CALENDAR_AUTH_STATUS", "authorized")
-          self.lastUtilityMessage = "Google Calendar connected."
-        case "browser_opened":
+          self.lastUtilityMessage = "Google Calendar connected. DDump can read events for shoot naming."
+        case "browser_opening":
           self.set("CALENDAR_AUTH_STATUS", "pending")
           self.lastUtilityMessage = "Google sign-in opened in the browser. Finish sign-in, then click Check connection."
+        case "timeout":
+          self.set("CALENDAR_AUTH_STATUS", "pending")
+          self.lastUtilityMessage = "Google sign-in did not finish. If Google says Access blocked, add this Google account as an OAuth test user or publish the consent screen, then reconnect."
         case "missing_helper":
           self.set("CALENDAR_AUTH_STATUS", "missing_helper")
-          self.lastUtilityMessage = "Google Calendar needs the bundled OAuth helper before public release. Use Apple Calendar or Calendar Link today."
+          self.lastUtilityMessage = "Google Calendar helper is missing. Reinstall DDump, then try again."
         default:
           self.set("CALENDAR_AUTH_STATUS", "not_authorized")
-          self.lastUtilityMessage = "Google Calendar authorization was not confirmed. Click Connect Google Calendar to try again."
+          let error = parsed["error"] ?? ""
+          if error.contains("client_secret") {
+            self.lastUtilityMessage = "Google Calendar needs the OAuth client secret from the Google Cloud Desktop client. Add GOOGLE_CALENDAR_CLIENT_SECRET in config, then reconnect."
+          } else {
+            self.lastUtilityMessage = "Google Calendar authorization was not confirmed. Click Connect Google Calendar to try again."
+          }
         }
       }
     }
   }
 
   func checkGoogleCalendarConnection() {
+    let clientID = get(
+      "GOOGLE_CALENDAR_CLIENT_ID",
+      default: "570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com"
+    )
+    let clientSecret = get("GOOGLE_CALENDAR_CLIENT_SECRET", default: "")
     lastUtilityMessage = "Checking Google Calendar connection..."
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
       task.launchPath = "/bin/bash"
-      task.arguments = ["-lc", "export PATH=\"${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"; command -v gcalcli >/dev/null 2>&1 && gcalcli list >/dev/null 2>&1"]
+      let helper = shellDoubleQuoted(DDumpPaths.googleCalendarHelper.path)
+      let quotedClientID = shellDoubleQuoted(clientID)
+      let quotedClientSecret = shellDoubleQuoted(clientSecret)
+      task.arguments = ["-lc", """
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+helper=\(helper)
+client_id=\(quotedClientID)
+client_secret=\(quotedClientSecret)
+[ -x "$helper" ] || { echo "status=missing_helper"; exit 3; }
+"$helper" --client-id "$client_id" --client-secret "$client_secret" status
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
       do {
         try task.run()
       } catch {
@@ -746,14 +766,26 @@ exit "$rc"
         return
       }
       task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      let status = parsed["status"] ?? ""
       DispatchQueue.main.async {
-        if task.terminationStatus == 0 {
+        if task.terminationStatus == 0 || status == "authorized" {
           self.set("CALENDAR_PROVIDER", "google")
+          self.set("GOOGLE_CALENDAR_CLIENT_ID", clientID)
           self.set("CALENDAR_AUTH_STATUS", "authorized")
-          self.lastUtilityMessage = "Google Calendar connected."
+          self.lastUtilityMessage = "Google Calendar connected. DDump can read events for shoot naming."
+        } else if status == "missing_helper" {
+          self.set("CALENDAR_AUTH_STATUS", "missing_helper")
+          self.lastUtilityMessage = "Google Calendar helper is missing. Reinstall DDump, then try again."
         } else {
           self.set("CALENDAR_AUTH_STATUS", "not_authorized")
-          self.lastUtilityMessage = "Google Calendar is not connected yet."
+          let error = parsed["error"] ?? ""
+          if error.contains("client_secret") {
+            self.lastUtilityMessage = "Google Calendar needs the OAuth client secret from the Google Cloud Desktop client."
+          } else {
+            self.lastUtilityMessage = "Google Calendar is not connected yet."
+          }
         }
       }
     }
@@ -4882,7 +4914,7 @@ struct CalendarSettings: View {
         CalendarProviderRow(
           icon: "g.circle",
           title: "Google Calendar",
-          detail: "Opens Google sign-in in your browser. Public release needs DDump's bundled OAuth client; no user terminal setup.",
+          detail: "Opens Google sign-in in your browser and requests read-only calendar access. No Terminal setup.",
           selected: provider == "google",
           status: provider == "google" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : ""
         ) {

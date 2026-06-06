@@ -35,6 +35,7 @@ mkdir -p "$BIN_DIR" "$STATE_DIR" "$LOG_DIR" "$LAUNCH_AGENT_DIR"
 for s in ddump.sh ddump-trust.sh ddump-monitor.sh ddump-control.sh \
          ddump-settings.sh ddump-debug-snapshot.sh \
          ddump-notify.sh ddump-cluster.sh ddump-calendar-lookup.sh \
+         ddump-google-calendar.py \
          rclone-gdrive-mount.sh ddump-network-watch.sh ddump-cloud-idle-watch.sh; do
   if [[ -f "${PROJECT_DIR}/bin/${s}" ]]; then
     cp "${PROJECT_DIR}/bin/${s}" "${BIN_DIR}/${s}"
@@ -278,6 +279,8 @@ add_missing_key 'CLUSTER_GROUPING_ENABLED' '"1"' "When enabled, nearby capture t
 add_missing_key 'CLUSTER_ATTACH_MINUTES' '"120"' "Across cards, reuse same-day shoot bucket when cluster is within this window."
 add_missing_key 'CALENDAR_PROVIDER' '"none"' "Calendar source for naming: none | google | apple | ics."
 add_missing_key 'CALENDAR_AUTH_STATUS' '"not_authorized"' "Calendar wizard connection state."
+add_missing_key 'GOOGLE_CALENDAR_CLIENT_ID' '"570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com"' "Google Calendar desktop OAuth client ID for read-only calendar setup."
+add_missing_key 'GOOGLE_CALENDAR_CLIENT_SECRET' '""' "Google Calendar desktop OAuth client secret. Desktop secrets are bundled/public identifiers, not user passwords."
 add_missing_key 'CALENDAR_ICS_URL' '""' "Private ICS/webcal URL when CALENDAR_PROVIDER=ics."
 add_missing_key 'CALENDAR_NAME' '""'
 add_missing_key 'CALENDAR_EVENT_PADDING_MIN' '"15"'
@@ -388,10 +391,10 @@ else
   echo "  ⚠ exiftool not found; cluster strategy falls back to file mtime"
   echo "    brew install exiftool"
 fi
-if command -v gcalcli >/dev/null 2>&1; then
-  echo "  ✓ legacy gcalcli detected — Google Calendar helper can use browser OAuth"
+if command -v python3 >/dev/null 2>&1; then
+  echo "  ✓ python3 detected — bundled Google Calendar OAuth helper can run"
 else
-  echo "  ⓘ Google Calendar CLI helper not present; Apple Calendar and calendar-link setup do not need Terminal"
+  echo "  ⚠ python3 not found; Google Calendar OAuth helper cannot run on this Mac"
 fi
 
 # ---------------------------------------------------------------------------
