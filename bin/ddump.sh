@@ -1088,8 +1088,9 @@ rclone_copyto_with_watchdog() {
   if /bin/wait "$pid"; then
     update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     return 0
+  else
+    rc="$?"
   fi
-  rc="$?"
   log "Direct rclone upload failed with exit ${rc}: ${src_file} -> ${remote_dest}"
   current_upload_last_error="rclone copy failed with exit ${rc}"
   update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
@@ -1137,8 +1138,9 @@ rclone_copy_directory_to_remote_target() {
   if /bin/wait "$pid"; then
     update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     return 0
+  else
+    rc="$?"
   fi
-  rc="$?"
   log "Direct rclone bucket upload failed with exit ${rc}: ${src_dir} -> ${remote_dest_dir}"
   current_upload_last_error="rclone copy failed with exit ${rc}"
   update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"

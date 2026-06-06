@@ -3271,7 +3271,8 @@ struct RunChecklistPanel: View {
   }
 
   private var postMoveEnabled: Bool {
-    state.get("ENABLE_POST_EJECT_MOVE", default: "1") == "1"
+    state.get("CLOUD_UPLOADS_ENABLED", default: "0") == "1"
+      || state.get("ENABLE_POST_EJECT_MOVE", default: "1") == "1"
   }
 
   private var ejectEnabled: Bool {
