@@ -40,6 +40,10 @@ cat >"${APP_BUNDLE}/Contents/Info.plist" <<PLIST
   <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>DDump uses calendar events to name shoot folders and resolve photo clusters between scheduled shoots.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>DDump uses calendar events to name shoot folders and resolve photo clusters between scheduled shoots.</string>
 </dict>
 </plist>
 PLIST

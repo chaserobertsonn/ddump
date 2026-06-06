@@ -1,13 +1,14 @@
 #!/bin/bash
 # DDump calendar lookup helper.
 #
-# Queries Google Calendar via `gcalcli` and emits events for a given date as TSV:
+# Emits calendar events for a given date as TSV:
 #
 #   <start_epoch>\t<end_epoch>\t<event_title>
 #
-# Requires gcalcli to be installed and authenticated:
-#   brew install gcalcli
-#   gcalcli list                  # first run prompts OAuth in browser
+# Current lookup backend is the legacy Google Calendar helper when available.
+# Public app setup happens from DDump's Calendar settings wizard; users should
+# not need to run Terminal commands. Apple Calendar and ICS providers are stored
+# in config for the app-side wizard and future lookup backends.
 #
 # Usage:
 #   ddump-calendar-lookup.sh --date YYYY-MM-DD [--calendar "Name"]

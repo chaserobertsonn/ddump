@@ -71,6 +71,10 @@ if [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
   <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>DDump uses calendar events to name shoot folders and resolve photo clusters between scheduled shoots.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>DDump uses calendar events to name shoot folders and resolve photo clusters between scheduled shoots.</string>
 </dict>
 </plist>
 PLIST
@@ -272,8 +276,12 @@ add_missing_key 'CLUSTER_GAP_MINUTES' '"45"'
 add_missing_key 'CLUSTER_FOLDER_TEMPLATE' '"Cluster {n} {start}-{end}"'
 add_missing_key 'CLUSTER_GROUPING_ENABLED' '"1"' "When enabled, nearby capture times group together before naming."
 add_missing_key 'CLUSTER_ATTACH_MINUTES' '"120"' "Across cards, reuse same-day shoot bucket when cluster is within this window."
+add_missing_key 'CALENDAR_PROVIDER' '"none"' "Calendar source for naming: none | google | apple | ics."
+add_missing_key 'CALENDAR_AUTH_STATUS' '"not_authorized"' "Calendar wizard connection state."
+add_missing_key 'CALENDAR_ICS_URL' '""' "Private ICS/webcal URL when CALENDAR_PROVIDER=ics."
 add_missing_key 'CALENDAR_NAME' '""'
 add_missing_key 'CALENDAR_EVENT_PADDING_MIN' '"15"'
+add_missing_key 'CALENDAR_AMBIGUITY_PROMPTS_ENABLED' '"1"' "Ask about capture-time clusters outside scheduled calendar events."
 add_missing_key 'POST_MOVE_ROOTS' '""' "Optional comma-separated list of additional final destinations."
 add_missing_key 'POST_MOVE_FALLBACK_ROOT' '""' "Fallback destination when primary root is unavailable."
 add_missing_key 'VERIFY_COPY_HASH' '"0"' "Optional post-copy SHA-256 verification. Off by default for speed; size verification remains on."
@@ -381,10 +389,9 @@ else
   echo "    brew install exiftool"
 fi
 if command -v gcalcli >/dev/null 2>&1; then
-  echo "  ✓ gcalcli installed — calendar strategy ready"
+  echo "  ✓ legacy gcalcli detected — Google Calendar helper can use browser OAuth"
 else
-  echo "  ⓘ gcalcli not installed; needed only for FOLDER_NAMING_STRATEGY=calendar"
-  echo "    brew install gcalcli && gcalcli list"
+  echo "  ⓘ Google Calendar CLI helper not present; Apple Calendar and calendar-link setup do not need Terminal"
 fi
 
 # ---------------------------------------------------------------------------

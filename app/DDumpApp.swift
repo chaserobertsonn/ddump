@@ -13,6 +13,7 @@ import SwiftUI
 import AppKit
 import Foundation
 import CoreText
+import EventKit
 
 // MARK: - Paths
 
@@ -629,6 +630,178 @@ printf 'url=%s\\n' "$link"
   func set(_ key: String, _ value: String) {
     config[key] = value
     writeShellConfig(key: key, value: value, at: DDumpPaths.configFile)
+  }
+
+  func connectAppleCalendar() {
+    let store = EKEventStore()
+    lastUtilityMessage = "Asking macOS for Calendar access..."
+    set("CALENDAR_PROVIDER", "apple")
+    set("CALENDAR_AUTH_STATUS", "pending")
+
+    let finish: (Bool, Error?) -> Void = { granted, error in
+      DispatchQueue.main.async {
+        if granted {
+          self.set("CALENDAR_PROVIDER", "apple")
+          self.set("CALENDAR_AUTH_STATUS", "authorized")
+          self.lastUtilityMessage = "Apple Calendar connected. DDump can read local calendars for shoot naming."
+        } else {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          let reason = error?.localizedDescription ?? "Allow Calendar access in System Settings, then try again."
+          self.lastUtilityMessage = "Apple Calendar access was not approved. \(reason)"
+        }
+      }
+    }
+
+    if #available(macOS 14.0, *) {
+      store.requestFullAccessToEvents(completion: finish)
+    } else {
+      store.requestAccess(to: .event, completion: finish)
+    }
+  }
+
+  func connectGoogleCalendar() {
+    set("CALENDAR_PROVIDER", "google")
+    set("CALENDAR_AUTH_STATUS", "pending")
+    lastUtilityMessage = "Opening Google Calendar sign-in..."
+
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", """
+set +e
+export PATH="${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+if ! command -v gcalcli >/dev/null 2>&1; then
+  echo "status=missing_helper"
+  exit 3
+fi
+timeout=90
+gcalcli list >/tmp/ddump-gcalcli-auth.out 2>/tmp/ddump-gcalcli-auth.err &
+pid="$!"
+elapsed=0
+while /bin/kill -0 "$pid" >/dev/null 2>&1; do
+  if [ "$elapsed" -ge "$timeout" ]; then
+    echo "status=browser_opened"
+    exit 0
+  fi
+  /bin/sleep 1
+  elapsed=$((elapsed+1))
+done
+/bin/wait "$pid"
+rc="$?"
+if [ "$rc" = "0" ]; then
+  echo "status=authorized"
+else
+  echo "status=not_authorized"
+fi
+exit "$rc"
+"""]
+      let pipe = Pipe()
+      task.standardOutput = pipe
+      task.standardError = Pipe()
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          self.lastUtilityMessage = "Could not start Google Calendar sign-in: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let parsed = parseShellEnv(out)
+      let status = parsed["status"] ?? ""
+      DispatchQueue.main.async {
+        switch status {
+        case "authorized":
+          self.set("CALENDAR_AUTH_STATUS", "authorized")
+          self.lastUtilityMessage = "Google Calendar connected."
+        case "browser_opened":
+          self.set("CALENDAR_AUTH_STATUS", "pending")
+          self.lastUtilityMessage = "Google sign-in opened in the browser. Finish sign-in, then click Check connection."
+        case "missing_helper":
+          self.set("CALENDAR_AUTH_STATUS", "missing_helper")
+          self.lastUtilityMessage = "Google Calendar needs the bundled OAuth helper before public release. Use Apple Calendar or Calendar Link today."
+        default:
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          self.lastUtilityMessage = "Google Calendar authorization was not confirmed. Click Connect Google Calendar to try again."
+        }
+      }
+    }
+  }
+
+  func checkGoogleCalendarConnection() {
+    lastUtilityMessage = "Checking Google Calendar connection..."
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/bin/bash"
+      task.arguments = ["-lc", "export PATH=\"${HOME}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"; command -v gcalcli >/dev/null 2>&1 && gcalcli list >/dev/null 2>&1"]
+      do {
+        try task.run()
+      } catch {
+        DispatchQueue.main.async {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          self.lastUtilityMessage = "Could not check Google Calendar: \(error.localizedDescription)"
+        }
+        return
+      }
+      task.waitUntilExit()
+      DispatchQueue.main.async {
+        if task.terminationStatus == 0 {
+          self.set("CALENDAR_PROVIDER", "google")
+          self.set("CALENDAR_AUTH_STATUS", "authorized")
+          self.lastUtilityMessage = "Google Calendar connected."
+        } else {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          self.lastUtilityMessage = "Google Calendar is not connected yet."
+        }
+      }
+    }
+  }
+
+  func validateCalendarLink(_ rawURL: String) {
+    let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: trimmed), ["http", "https", "webcal"].contains(url.scheme?.lowercased() ?? "") else {
+      set("CALENDAR_AUTH_STATUS", "not_authorized")
+      lastUtilityMessage = "Enter a valid private calendar link."
+      return
+    }
+
+    var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    if components?.scheme?.lowercased() == "webcal" {
+      components?.scheme = "https"
+    }
+    guard let fetchURL = components?.url else {
+      set("CALENDAR_AUTH_STATUS", "not_authorized")
+      lastUtilityMessage = "Could not read that calendar link."
+      return
+    }
+
+    set("CALENDAR_PROVIDER", "ics")
+    set("CALENDAR_ICS_URL", trimmed)
+    set("CALENDAR_AUTH_STATUS", "pending")
+    lastUtilityMessage = "Checking calendar link..."
+
+    var request = URLRequest(url: fetchURL)
+    request.timeoutInterval = 15
+    URLSession.shared.dataTask(with: request) { data, _, error in
+      DispatchQueue.main.async {
+        if let error {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          self.lastUtilityMessage = "Calendar link check failed: \(error.localizedDescription)"
+          return
+        }
+        guard let data, let text = String(data: data, encoding: .utf8), text.contains("BEGIN:VCALENDAR") else {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          self.lastUtilityMessage = "That link did not return a calendar file."
+          return
+        }
+        self.set("CALENDAR_PROVIDER", "ics")
+        self.set("CALENDAR_ICS_URL", trimmed)
+        self.set("CALENDAR_AUTH_STATUS", "authorized")
+        self.lastUtilityMessage = "Calendar link connected."
+      }
+    }.resume()
   }
 
   var progressFraction: Double {
@@ -4693,52 +4866,80 @@ struct CloudSetupGuideSheet: View {
 
 struct CalendarSettings: View {
   @EnvironmentObject var state: AppState
+  @State private var provider: String = "none"
   @State private var calendarName: String = ""
+  @State private var icsURL: String = ""
   @State private var padding: String = "15"
-  @State private var gcalcliInstalled: Bool = false
-  @State private var authChecked: Bool = false
-  @State private var notice: String = ""
+  @State private var ambiguityPromptsEnabled: Bool = true
 
   var body: some View {
     Form {
-      Section {
-        Text("When the naming strategy is calendar, DDump looks up Google Calendar events for the import date and names each shoot folder by the matching event title.")
+      Section("Calendar wizard") {
+        Text("Calendar naming can use Google Calendar, Apple Calendar, or a private calendar link. Setup happens from buttons in this app.")
           .font(.callout)
           .foregroundColor(.secondary)
+
+        CalendarProviderRow(
+          icon: "g.circle",
+          title: "Google Calendar",
+          detail: "Opens Google sign-in in your browser. Public release needs DDump's bundled OAuth client; no user terminal setup.",
+          selected: provider == "google",
+          status: provider == "google" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : ""
+        ) {
+          provider = "google"
+          state.set("CALENDAR_PROVIDER", "google")
+          state.connectGoogleCalendar()
+        } secondaryAction: {
+          state.checkGoogleCalendarConnection()
+        }
+
+        CalendarProviderRow(
+          icon: "calendar",
+          title: "Apple Calendar",
+          detail: "Uses macOS Calendar permission. Reads calendars already synced to the Mac, including iCloud, Google, and Exchange.",
+          selected: provider == "apple",
+          status: provider == "apple" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : "",
+          primaryAction: {
+          provider = "apple"
+          state.connectAppleCalendar()
+          },
+          secondaryAction: nil
+        )
+
+        CalendarProviderRow(
+          icon: "link",
+          title: "Calendar Link",
+          detail: "Paste a private ICS or webcal link. Read-only and simple, but provider sync may be delayed.",
+          selected: provider == "ics",
+          status: provider == "ics" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : "",
+          primaryAction: {
+          provider = "ics"
+          state.set("CALENDAR_PROVIDER", "ics")
+          state.set("CALENDAR_AUTH_STATUS", icsURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "not_authorized" : "pending")
+          },
+          secondaryAction: nil
+        )
       }
 
-      Section("Setup") {
-        HStack {
-          Image(systemName: gcalcliInstalled ? "checkmark.circle.fill" : "circle")
-            .foregroundColor(gcalcliInstalled ? .green : .secondary)
-          Text("gcalcli installed")
-          Spacer()
-          if !gcalcliInstalled {
-            Button("Install instructions…") {
-              notice = "In Terminal:\n  brew install gcalcli\n\nThen authorize:\n  gcalcli list"
+      if provider == "ics" {
+        Section("Calendar link") {
+          TextField("Private ICS or webcal link", text: $icsURL, onCommit: {
+            state.set("CALENDAR_ICS_URL", icsURL)
+          })
+          HStack {
+            Button {
+              state.validateCalendarLink(icsURL)
+            } label: {
+              Label("Connect calendar link", systemImage: "checkmark.circle")
             }
+            .buttonStyle(DDumpPrimaryButtonStyle())
+            Spacer()
           }
-        }
-        HStack {
-          Image(systemName: authChecked ? "checkmark.circle.fill" : "circle")
-            .foregroundColor(authChecked ? .green : .secondary)
-          Text("Google Calendar authorized")
-          Spacer()
-          if gcalcliInstalled && !authChecked {
-            Button("Authorize…") {
-              runGcalcliAuth()
-            }
-          }
-        }
-        Button("Re-check") { checkGcalcli() }
-        if !notice.isEmpty {
-          Text(notice).font(.caption).foregroundColor(.secondary)
         }
       }
 
-      Section("Calendar selection") {
-        TextField("Calendar name (blank = primary)",
-                  text: $calendarName, onCommit: {
+      Section("Calendar matching") {
+        TextField("Calendar name filter (optional)", text: $calendarName, onCommit: {
           state.set("CALENDAR_NAME", calendarName)
         })
         HStack {
@@ -4749,62 +4950,147 @@ struct CalendarSettings: View {
             .multilineTextAlignment(.trailing)
             .onSubmit { state.set("CALENDAR_EVENT_PADDING_MIN", padding) }
         }
+        Toggle("Ask about clusters outside calendar events", isOn: $ambiguityPromptsEnabled)
+          .onChange(of: ambiguityPromptsEnabled) { _, v in
+            state.set("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", v ? "1" : "0")
+          }
       }
 
-      Section {
-        Text("Files outside a matching event window use the configured fallback naming strategy.")
-          .font(.caption).foregroundColor(.secondary)
+      Section("Pending questions") {
+        Text("When a capture-time cluster falls between scheduled shoots, DDump will hold a simple question on the main screen: previous shoot, next shoot, or Other. Choosing an answer will rename/move the destination folder automatically.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+      }
+
+      Section("Status") {
+        HStack {
+          Text("Selected provider")
+          Spacer()
+          Text(providerLabel(provider))
+            .foregroundColor(.secondary)
+        }
+        HStack {
+          Text("Connection")
+          Spacer()
+          Text(statusLabel(state.get("CALENDAR_AUTH_STATUS", default: "not_authorized")))
+            .foregroundColor(statusColor(state.get("CALENDAR_AUTH_STATUS", default: "not_authorized")))
+        }
+        if !state.lastUtilityMessage.isEmpty {
+          Text(state.lastUtilityMessage)
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
       }
     }
     .formStyle(.grouped)
     .ddumpFormSkin()
     .onAppear {
+      provider = state.get("CALENDAR_PROVIDER", default: "none")
       calendarName = state.get("CALENDAR_NAME")
+      icsURL = state.get("CALENDAR_ICS_URL")
       padding = state.get("CALENDAR_EVENT_PADDING_MIN", default: "15")
-      checkGcalcli()
+      ambiguityPromptsEnabled = state.get("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", default: "1") == "1"
     }
   }
 
-  func checkGcalcli() {
-    notice = "Checking calendar setup..."
-    DispatchQueue.global(qos: .utility).async {
-      let task = Process()
-      task.launchPath = "/bin/bash"
-      task.arguments = ["-lc", "command -v gcalcli >/dev/null 2>&1 && echo installed; gcalcli list >/dev/null 2>&1 && echo authed"]
-      let pipe = Pipe()
-      task.standardOutput = pipe
-      task.standardError = Pipe()
-
-      do {
-        try task.run()
-      } catch {
-        DispatchQueue.main.async {
-          gcalcliInstalled = false
-          authChecked = false
-          notice = "Could not check gcalcli."
-        }
-        return
-      }
-
-      DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 4) {
-        if task.isRunning {
-          task.terminate()
-        }
-      }
-
-      task.waitUntilExit()
-      let data = pipe.fileHandleForReading.readDataToEndOfFile()
-      let s = String(data: data, encoding: .utf8) ?? ""
-      DispatchQueue.main.async {
-        gcalcliInstalled = s.contains("installed")
-        authChecked = s.contains("authed")
-        notice = task.terminationStatus == 0 ? "" : "Calendar authorization not confirmed."
-      }
+  private func providerLabel(_ raw: String) -> String {
+    switch raw {
+    case "google": return "Google Calendar"
+    case "apple": return "Apple Calendar"
+    case "ics": return "Calendar Link"
+    default: return "Not connected"
     }
   }
 
-  func runGcalcliAuth() {
-    notice = "Open Terminal and run:  gcalcli list  — it will open a browser. After authorizing, click Re-check above."
+  private func statusLabel(_ raw: String) -> String {
+    switch raw {
+    case "authorized": return "Connected"
+    case "pending": return "Waiting"
+    case "missing_helper": return "Helper needed"
+    case "not_authorized": return "Not connected"
+    default: return raw.isEmpty ? "Not connected" : raw
+    }
+  }
+
+  private func statusColor(_ raw: String) -> Color {
+    switch raw {
+    case "authorized": return .green
+    case "pending": return .ddumpPeach
+    default: return .secondary
+    }
+  }
+}
+
+struct CalendarProviderRow: View {
+  let icon: String
+  let title: String
+  let detail: String
+  let selected: Bool
+  let status: String
+  let primaryAction: () -> Void
+  let secondaryAction: (() -> Void)?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: selected ? "checkmark.circle.fill" : icon)
+          .font(.system(size: 20, weight: .semibold))
+          .foregroundColor(selected ? .green : .ddumpPeach)
+          .frame(width: 24)
+        VStack(alignment: .leading, spacing: 4) {
+          HStack {
+            Text(title)
+              .font(DDumpFont.ui(13, weight: .semibold))
+            Spacer()
+            if selected && !status.isEmpty {
+              Text(shortStatus(status))
+                .font(DDumpFont.ui(11, weight: .semibold))
+                .foregroundColor(status == "authorized" ? .green : .ddumpPeach)
+            }
+          }
+          Text(detail)
+            .font(DDumpFont.ui(12))
+            .foregroundColor(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      HStack {
+        if selected {
+          Button {
+            primaryAction()
+          } label: {
+            Label("Reconnect", systemImage: "arrow.right.circle")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+        } else {
+          Button {
+            primaryAction()
+          } label: {
+            Label("Connect", systemImage: "arrow.right.circle")
+          }
+          .buttonStyle(DDumpPrimaryButtonStyle())
+        }
+        if let secondaryAction {
+          Button {
+            secondaryAction()
+          } label: {
+            Label("Check connection", systemImage: "arrow.clockwise")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+        }
+        Spacer()
+      }
+    }
+    .padding(.vertical, 4)
+  }
+
+  private func shortStatus(_ raw: String) -> String {
+    switch raw {
+    case "authorized": return "Connected"
+    case "pending": return "Waiting"
+    case "missing_helper": return "Helper needed"
+    default: return "Not connected"
+    }
   }
 }
 

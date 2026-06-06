@@ -74,7 +74,7 @@ Strategies:
 
 - `sequential` (default): `Shoot-1`, `Shoot-2`, ...
 - `custom`: cycle through configured list.
-- `calendar`: match file capture times to Google Calendar events.
+- `calendar`: match file capture times to connected calendar events.
 - `smart`: infer date-ladder destination shape from a sample path.
 - `camera`: keep camera folder structure names.
 
@@ -93,6 +93,22 @@ Grouping controls:
 - Cluster grouping toggle independent of naming strategy.
 - Cluster gap minutes.
 - Cross-card cluster attach window (keeps related camera/drone cards grouped).
+
+Calendar setup is handled from Settings -> Calendar. Public users do not need
+Terminal commands. DDump offers three calendar sources:
+
+- Google Calendar: opens browser sign-in from the app. Public release needs the
+  bundled native OAuth client/helper; legacy developer installs can still use an
+  existing authenticated `gcalcli`.
+- Apple Calendar: uses the standard macOS Calendar permission prompt and reads
+  calendars already synced to the Mac.
+- Calendar Link: accepts a private `.ics` or `webcal` URL and validates that it
+  returns a calendar file.
+
+When calendar naming is enabled, DDump can hold pending main-screen questions
+for clusters that fall outside scheduled events. The user can assign the cluster
+to the previous event, next event, or a manual name; the future rename/move pass
+uses that answer to correct the destination folder.
 
 ### 6) Verification and integrity
 
@@ -132,6 +148,7 @@ Includes:
 - Theme mode: light/dark/system.
 - Icon preset library with multiple stored icons.
 - Default icon selection for light mode and dark mode.
+- Calendar wizard with Google, Apple Calendar, and Calendar Link setup options.
 
 ## Install
 
@@ -268,6 +285,8 @@ the Finder mount helper should be installed or started.
 - Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.
 - Default ntfy toggles prioritize card ejected, upload complete, and pending recovery. Mount-failure ntfy alerts are off by default because cloud mounts are short lived and retried from the app.
 - The Google Drive mount uses a DDump-owned rclone cache and prevents Finder network `.DS_Store` writes by default. This avoids stale metadata uploads at the root of the combined Drive mount.
+- Calendar provider defaults to `none`; setup is opt-in from the Calendar tab.
+- Calendar ambiguity prompts default on so clusters between scheduled shoots can be assigned before final naming is trusted.
 
 ## Development Checks
 
