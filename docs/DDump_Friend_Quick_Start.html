@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DDump Quick Start</title>
+  <style>
+    @font-face {
+      font-family: "Montserrat";
+      src: url("../app/Assets/Fonts/Montserrat-Regular.otf") format("opentype");
+      font-weight: 400;
+    }
+    @font-face {
+      font-family: "Montserrat";
+      src: url("../app/Assets/Fonts/Montserrat-SemiBold.otf") format("opentype");
+      font-weight: 600;
+    }
+    @font-face {
+      font-family: "Montserrat";
+      src: url("../app/Assets/Fonts/Montserrat-Bold.otf") format("opentype");
+      font-weight: 700;
+    }
+
+    @page {
+      size: letter landscape;
+      margin: 0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #080706;
+      color: #f4efe8;
+      font-family: "Montserrat", -apple-system, BlinkMacSystemFont, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .page {
+      width: 11in;
+      height: 8.5in;
+      padding: 0.38in;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(244, 202, 174, 0.12), transparent 34%),
+        linear-gradient(135deg, #090806 0%, #11100d 58%, #080706 100%);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1.25fr 1fr;
+      gap: 0.28in;
+      align-items: stretch;
+      margin-bottom: 0.22in;
+    }
+
+    .hero {
+      border: 1px solid rgba(244, 202, 174, 0.18);
+      border-radius: 18px;
+      padding: 0.26in;
+      background: rgba(24, 21, 17, 0.86);
+      min-height: 1.88in;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.16in;
+      margin-bottom: 0.18in;
+    }
+
+    .brand img {
+      width: 0.62in;
+      height: 0.62in;
+      border-radius: 15px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .tag {
+      margin: 0.08in 0 0;
+      color: #a9a19a;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 6.2in;
+      color: #d7d0c8;
+      font-size: 15px;
+      line-height: 1.48;
+    }
+
+    .download {
+      border: 1px solid rgba(244, 202, 174, 0.22);
+      border-radius: 18px;
+      padding: 0.24in;
+      background: #15120f;
+    }
+
+    .download h2,
+    .panel h2 {
+      margin: 0 0 0.12in;
+      font-size: 15px;
+      line-height: 1.1;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #f4caae;
+      font-weight: 700;
+    }
+
+    .download ol {
+      margin: 0;
+      padding-left: 0.18in;
+      color: #f4efe8;
+      font-size: 13px;
+      line-height: 1.48;
+    }
+
+    .download li {
+      margin-bottom: 0.06in;
+    }
+
+    .download code,
+    .callout code {
+      color: #f4caae;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 0.18in;
+    }
+
+    .panel {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      background: rgba(22, 19, 16, 0.9);
+      padding: 0.18in;
+      min-height: 2.72in;
+    }
+
+    .panel ul,
+    .panel ol {
+      margin: 0;
+      padding-left: 0.18in;
+      color: #d7d0c8;
+      font-size: 12.5px;
+      line-height: 1.48;
+    }
+
+    .panel li {
+      margin-bottom: 0.06in;
+    }
+
+    .step {
+      color: #f4efe8;
+      font-weight: 700;
+    }
+
+    .callout {
+      position: absolute;
+      left: 0.38in;
+      right: 0.38in;
+      bottom: 0.34in;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.18in;
+      align-items: stretch;
+    }
+
+    .strip {
+      border: 1px solid rgba(244, 202, 174, 0.18);
+      border-radius: 14px;
+      background: rgba(244, 202, 174, 0.08);
+      padding: 0.14in 0.18in;
+      color: #e8ded5;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .strip strong {
+      color: #f4caae;
+    }
+
+    a {
+      color: #f4caae;
+      text-decoration: none;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="top">
+      <div class="hero">
+        <div class="brand">
+          <img src="../app/Assets/logo-icon-512.png" alt="DDump logo">
+          <div>
+            <h1>DDump</h1>
+            <p class="tag">Photo card ingest for Mac</p>
+          </div>
+        </div>
+        <p>
+          DDump copies camera cards into safe local staging, groups files by shoot,
+          moves them to your destination, verifies the copy, and handles retries so
+          you can eject cards with less babysitting.
+        </p>
+      </div>
+
+      <div class="download">
+        <h2>Download + install</h2>
+        <ol>
+          <li>Download <code>DDump-0.3.0.dmg</code> from the shared link or GitHub Releases.</li>
+          <li>Open the DMG, then double-click <code>Install DDump.command</code>.</li>
+          <li>Open <code>~/Applications/DDump.app</code>. If macOS asks, approve it in Privacy &amp; Security.</li>
+          <li>Open Settings before the first real card and choose your destination.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>First setup</h2>
+        <ol>
+          <li><span class="step">General:</span> confirm staging is on a drive with plenty of free space.</li>
+          <li><span class="step">Destinations:</span> choose where finished imports should go.</li>
+          <li><span class="step">Naming:</span> use Smart, Calendar, Cluster, Sequential, or Custom names.</li>
+          <li><span class="step">Cloud:</span> leave off unless you want cloud uploads. Cloud setup is opt-in.</li>
+          <li><span class="step">Notifications:</span> choose macOS and/or ntfy alerts only for things you care about.</li>
+        </ol>
+      </div>
+
+      <div class="panel">
+        <h2>Using it</h2>
+        <ol>
+          <li>Insert an SD card. DDump scans for recent photo/video files.</li>
+          <li>Approve/trust the card if DDump asks.</li>
+          <li>Watch the checklist: staging copy, eject, destination upload, verified done.</li>
+          <li>Optional: type a shoot name while transfer is running and click Use name.</li>
+          <li>Use Retry Pending Uploads if internet or destination storage was unavailable.</li>
+        </ol>
+      </div>
+
+      <div class="panel">
+        <h2>What it handles</h2>
+        <ul>
+          <li>Whole-card media detection, no DCIM-only requirement.</li>
+          <li>Capture-time clustering for multiple shoots in one day.</li>
+          <li>Calendar naming with native Google Calendar OAuth.</li>
+          <li>Smart date folders like <code>2026/2026.06/2026.06.07</code>.</li>
+          <li>Local staging receipts, pending upload recovery, and destination verification.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="callout">
+      <div class="strip">
+        <strong>Best first test:</strong> use a small card or a test folder, confirm the destination folder appears,
+        and check that DDump marks “All complete” before trusting it for paid work.
+      </div>
+      <div class="strip">
+        <strong>Need help?</strong> Open DDump, click <code>Log</code>, and send the newest lines plus a screenshot of the main window.
+        Most issues are destination permissions, Google Drive availability, or a card that has not been trusted yet.
+      </div>
+    </section>
+  </main>
+</body>
+</html>
