@@ -15,6 +15,19 @@ import Foundation
 import CoreText
 import EventKit
 
+extension View {
+  @ViewBuilder
+  func ddumpOnChange<Value: Equatable>(of value: Value, perform action: @escaping (Value) -> Void) -> some View {
+    if #available(macOS 14.0, *) {
+      self.onChange(of: value) { _, newValue in
+        action(newValue)
+      }
+    } else {
+      self.onChange(of: value, perform: action)
+    }
+  }
+}
+
 // MARK: - Paths
 
 enum DDumpPaths {
@@ -3680,7 +3693,7 @@ struct GeneralSettings: View {
     Form {
       Section {
         Toggle("Enable transfer to destination folders", isOn: $enablePostMove)
-          .onChange(of: enablePostMove) { _, v in
+          .ddumpOnChange(of: enablePostMove) { v in
             state.set("ENABLE_POST_EJECT_MOVE", v ? "1" : "0")
           }
         Picker("Destination mode", selection: $destinationMode) {
@@ -3688,7 +3701,7 @@ struct GeneralSettings: View {
           Text("Smart year/month/day").tag("smart")
         }
         .pickerStyle(.segmented)
-        .onChange(of: destinationMode) { _, v in
+        .ddumpOnChange(of: destinationMode) { v in
           state.set("FOLDER_NAMING_STRATEGY", v == "smart" ? "smart" : "sequential")
         }
         if destinationMode == "smart" {
@@ -3737,12 +3750,12 @@ struct GeneralSettings: View {
 
       Section("Check updates") {
         Toggle("Check for updates", isOn: $updateChecksEnabled)
-          .onChange(of: updateChecksEnabled) { _, v in
+          .ddumpOnChange(of: updateChecksEnabled) { v in
             state.set("UPDATE_CHECKS_ENABLED", v ? "1" : "0")
           }
 
         Toggle("Open download page automatically", isOn: $autoUpdatesEnabled)
-          .onChange(of: autoUpdatesEnabled) { _, v in
+          .ddumpOnChange(of: autoUpdatesEnabled) { v in
             state.set("AUTO_UPDATES_ENABLED", v ? "1" : "0")
           }
           .disabled(!updateChecksEnabled)
@@ -3757,7 +3770,7 @@ struct GeneralSettings: View {
           }
           .labelsHidden()
           .frame(width: 180)
-          .onChange(of: updateCheckFrequency) { _, v in
+          .ddumpOnChange(of: updateCheckFrequency) { v in
             state.set("UPDATE_CHECK_FREQUENCY", v)
           }
         }
@@ -3814,7 +3827,7 @@ struct NamingSettings: View {
           .labelsHidden()
           .frame(width: 220)
         }
-        .onChange(of: strategy) { _, v in state.set("FOLDER_NAMING_STRATEGY", v) }
+        .ddumpOnChange(of: strategy) { v in state.set("FOLDER_NAMING_STRATEGY", v) }
 
         HStack(spacing: 6) {
           Text("Fallback")
@@ -3826,12 +3839,12 @@ struct NamingSettings: View {
           .labelsHidden()
           .frame(width: 220)
         }
-        .onChange(of: fallback) { _, v in state.set("FOLDER_NAMING_FALLBACK", v) }
+        .ddumpOnChange(of: fallback) { v in state.set("FOLDER_NAMING_FALLBACK", v) }
       }
 
       Section("Time grouping") {
         Toggle("Enable clustering before naming", isOn: $clusterGroupingEnabled)
-          .onChange(of: clusterGroupingEnabled) { _, v in
+          .ddumpOnChange(of: clusterGroupingEnabled) { v in
             state.set("CLUSTER_GROUPING_ENABLED", v ? "1" : "0")
           }
         HStack {
@@ -3881,14 +3894,14 @@ struct NamingSettings: View {
           InfoHint(text: "Paste one real destination path. DDump reuses its year/month/day folder pattern automatically.")
         }
         Toggle("Use existing folders under today's Drive date folder", isOn: $smartAssignExisting)
-          .onChange(of: smartAssignExisting) { _, v in
+          .ddumpOnChange(of: smartAssignExisting) { v in
             state.set("SMART_ASSIGN_EXISTING_FOLDERS", v ? "1" : "0")
           }
         Text("Advanced. Leave off unless those destination folders were made for your shoots today.")
           .font(.caption)
           .foregroundColor(.secondary)
         Toggle("Split videos to sibling 2 — Video folder", isOn: $splitPhotoVideo)
-          .onChange(of: splitPhotoVideo) { _, v in
+          .ddumpOnChange(of: splitPhotoVideo) { v in
             state.set("SPLIT_PHOTO_VIDEO", v ? "1" : "0")
           }
       }
@@ -3937,7 +3950,7 @@ struct DetectionSettings: View {
     Form {
       Section("Memory") {
         Toggle("Use SQLite memory (beta)", isOn: $sqliteMemoryEnabled)
-          .onChange(of: sqliteMemoryEnabled) { _, v in state.set("DB_ENABLED", v ? "1" : "0") }
+          .ddumpOnChange(of: sqliteMemoryEnabled) { v in state.set("DB_ENABLED", v ? "1" : "0") }
         Text("Default OFF. When off, staging folders are the memory: DDump imports from the lookback window only if files are not already in staging.")
           .font(.caption)
           .foregroundColor(.secondary)
@@ -3950,9 +3963,9 @@ struct DetectionSettings: View {
           InfoHint(text: "Cards with these names auto-import without confirmation.")
         }
         Toggle("Require photos or trusted card", isOn: $requirePhotos)
-          .onChange(of: requirePhotos) { _, v in state.set("REQUIRE_PHOTOS_OR_TRUSTED", v ? "1" : "0") }
+          .ddumpOnChange(of: requirePhotos) { v in state.set("REQUIRE_PHOTOS_OR_TRUSTED", v ? "1" : "0") }
         Toggle("Eject card on successful import", isOn: $ejectOnSuccess)
-          .onChange(of: ejectOnSuccess) { _, v in state.set("EJECT_ON_SUCCESS", v ? "1" : "0") }
+          .ddumpOnChange(of: ejectOnSuccess) { v in state.set("EJECT_ON_SUCCESS", v ? "1" : "0") }
         HStack {
           Text("Eject safety delay (seconds)")
           InfoHint(text: "DDump waits at least this long before ejecting, so you can tap Do Not Eject.")
@@ -3963,14 +3976,14 @@ struct DetectionSettings: View {
             .onSubmit { state.set("EJECT_GRACE_SECONDS", ejectGraceSeconds) }
         }
         Toggle("Alert when card is almost full for another similar shoot", isOn: $cardAlmostFullAlertEnabled)
-          .onChange(of: cardAlmostFullAlertEnabled) { _, v in
+          .ddumpOnChange(of: cardAlmostFullAlertEnabled) { v in
             state.set("CARD_ALMOST_FULL_ALERT_ENABLED", v ? "1" : "0")
           }
       }
 
       Section("Scan window") {
         Toggle("Ask me to choose card folders manually", isOn: $promptSourceFoldersOnNewCard)
-          .onChange(of: promptSourceFoldersOnNewCard) { _, v in state.set("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", v ? "1" : "0") }
+          .ddumpOnChange(of: promptSourceFoldersOnNewCard) { v in state.set("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", v ? "1" : "0") }
         Text("Advanced. Leave off to scan the whole card for media inside the time window.")
           .font(.caption)
           .foregroundColor(.secondary)
@@ -3996,7 +4009,7 @@ struct DetectionSettings: View {
 
       Section("Verification") {
         Toggle("Verify each copied file with SHA-256 hash", isOn: $verifyHash)
-          .onChange(of: verifyHash) { _, v in state.set("VERIFY_COPY_HASH", v ? "1" : "0") }
+          .ddumpOnChange(of: verifyHash) { v in state.set("VERIFY_COPY_HASH", v ? "1" : "0") }
       }
 
       Section("File types") {
@@ -4502,10 +4515,10 @@ struct CloudSettings: View {
               .labelsHidden()
               .toggleStyle(.switch)
               .tint(.ddumpPeach)
-              .onChange(of: enabled) { _, v in
+              .ddumpOnChange(of: enabled) { v in
                 managedMountEnabled = state.gdriveMountEnabledForUI
               }
-              .onChange(of: managedMountEnabled) { _, v in
+              .ddumpOnChange(of: managedMountEnabled) { v in
                 state.set("CLOUD_UPLOADS_ENABLED", "1")
                 state.set("ENABLE_POST_EJECT_MOVE", "1")
                 state.set("GDRIVE_MOUNT_ENABLED", v ? "1" : "0")
@@ -4704,7 +4717,7 @@ struct CloudSettings: View {
           Toggle("Auto-retry pending uploads when internet reconnects", isOn: $networkResumeEnabled)
             .toggleStyle(.switch)
             .tint(.ddumpPeach)
-            .onChange(of: networkResumeEnabled) { _, v in
+            .ddumpOnChange(of: networkResumeEnabled) { v in
               state.set("NETWORK_RESUME_ENABLED", v ? "1" : "0")
             }
           HStack {
@@ -4983,7 +4996,7 @@ struct CalendarSettings: View {
             .onSubmit { state.set("CALENDAR_EVENT_PADDING_MIN", padding) }
         }
         Toggle("Ask about clusters outside calendar events", isOn: $ambiguityPromptsEnabled)
-          .onChange(of: ambiguityPromptsEnabled) { _, v in
+          .ddumpOnChange(of: ambiguityPromptsEnabled) { v in
             state.set("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", v ? "1" : "0")
           }
       }
@@ -5153,7 +5166,7 @@ struct AppearanceOptions: View {
           Label("Light", systemImage: "sun.max.fill").tag("light")
           Label("Dark", systemImage: "moon.fill").tag("dark")
         }
-        .onChange(of: colorSchemeChoice) { _, v in
+        .ddumpOnChange(of: colorSchemeChoice) { v in
           state.set("APP_COLOR_SCHEME", v)
           applyConfiguredDefaultIconForCurrentAppearance(force: true)
         }
@@ -5187,7 +5200,7 @@ struct AppearanceOptions: View {
                 Text(preset.name).tag(preset.id)
               }
             }
-            .onChange(of: defaultLightPresetID) { _, v in
+            .ddumpOnChange(of: defaultLightPresetID) { v in
               state.set("APP_ICON_DEFAULT_LIGHT", v)
               applyConfiguredDefaultIconForCurrentAppearance(force: true)
             }
@@ -5198,7 +5211,7 @@ struct AppearanceOptions: View {
                 Text(preset.name).tag(preset.id)
               }
             }
-            .onChange(of: defaultDarkPresetID) { _, v in
+            .ddumpOnChange(of: defaultDarkPresetID) { v in
               state.set("APP_ICON_DEFAULT_DARK", v)
               applyConfiguredDefaultIconForCurrentAppearance(force: true)
             }
@@ -5221,7 +5234,7 @@ struct AppearanceOptions: View {
       loadPresets()
       applyConfiguredDefaultIconForCurrentAppearance(force: false)
     }
-    .onChange(of: colorScheme) { _, _ in
+    .ddumpOnChange(of: colorScheme) { _ in
       if colorSchemeChoice == "system" {
         applyConfiguredDefaultIconForCurrentAppearance(force: true)
       }

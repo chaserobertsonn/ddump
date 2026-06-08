@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.0}"
+APP_VERSION="${DDUMP_VERSION:-0.3.1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -20,6 +20,8 @@ LOG_DIR="${APP_SUPPORT_DIR}/logs"
 USER_CONFIG="${APP_SUPPORT_DIR}/config.env"
 DEFAULT_CONFIG="${PROJECT_DIR}/config/config.env"
 APP_BUNDLE="${HOME}/Applications/DDump.app"
+PREBUILT_APP_BUNDLE="${PROJECT_DIR}/app/DDump.app"
+MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${LAUNCH_AGENT_DIR}/${LABEL}.plist"
@@ -44,9 +46,16 @@ for s in ddump.sh ddump-trust.sh ddump-monitor.sh ddump-control.sh \
 done
 
 # ---------------------------------------------------------------------------
-# Build/install the optional Swift UI app
+# Install the Swift UI app. Packaged DMGs include a prebuilt universal app so
+# friends do not need Xcode or Command Line Tools just to install DDump.
 # ---------------------------------------------------------------------------
-if [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
+if [[ -d "$PREBUILT_APP_BUNDLE" ]]; then
+  rm -rf "$APP_BUNDLE"
+  mkdir -p "$(dirname "$APP_BUNDLE")"
+  cp -R "$PREBUILT_APP_BUNDLE" "$APP_BUNDLE"
+  /usr/bin/touch "$APP_BUNDLE"
+  echo "Installed Mac app: ${APP_BUNDLE}"
+elif [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
   if command -v swiftc >/dev/null 2>&1; then
     mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
     cat >"${APP_BUNDLE}/Contents/Info.plist" <<PLIST
@@ -92,7 +101,18 @@ PLIST
         cp "${PROJECT_DIR}/app/Assets/${asset}" "${APP_BUNDLE}/Contents/Resources/${asset}"
       fi
     done
-    if swiftc -parse-as-library -o "${APP_BUNDLE}/Contents/MacOS/DDump" "${PROJECT_DIR}/app/DDumpApp.swift"; then
+    mkdir -p /private/tmp/ddump-clang-cache
+    BUILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/ddump-swift-build.XXXXXX")"
+    build_slice() {
+      local arch="$1"
+      local out="$2"
+      CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/ddump-clang-cache}" \
+        swiftc -parse-as-library \
+          -target "${arch}-apple-macos${MACOS_DEPLOYMENT_TARGET}" \
+          -o "$out" \
+          "${PROJECT_DIR}/app/DDumpApp.swift"
+    }
+    if build_slice "$(uname -m)" "${APP_BUNDLE}/Contents/MacOS/DDump"; then
       chmod +x "${APP_BUNDLE}/Contents/MacOS/DDump"
       /usr/bin/touch "$APP_BUNDLE"
       echo "Installed Mac app: ${APP_BUNDLE}"

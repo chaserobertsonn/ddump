@@ -5,7 +5,8 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_VERSION="${DDUMP_VERSION:-0.3.0}"
+APP_VERSION="${DDUMP_VERSION:-0.3.1}"
+MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_BUNDLE="${DIST_DIR}/DDump.app"
 
@@ -65,8 +66,28 @@ for asset in logo-icon.png logo-icon-512.png logo-mark.svg; do
 done
 
 mkdir -p /private/tmp/ddump-clang-cache
-CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/ddump-clang-cache}" \
-  swiftc -parse-as-library -o "${APP_BUNDLE}/Contents/MacOS/DDump" "${PROJECT_DIR}/app/DDumpApp.swift"
+BUILD_TMP="${DIST_DIR}/swift-build"
+rm -rf "$BUILD_TMP"
+mkdir -p "$BUILD_TMP"
+
+build_slice() {
+  local arch="$1"
+  local out="$2"
+  CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/ddump-clang-cache}" \
+    swiftc -parse-as-library \
+      -target "${arch}-apple-macos${MACOS_DEPLOYMENT_TARGET}" \
+      -o "$out" \
+      "${PROJECT_DIR}/app/DDumpApp.swift"
+}
+
+if build_slice arm64 "${BUILD_TMP}/DDump-arm64" && build_slice x86_64 "${BUILD_TMP}/DDump-x86_64"; then
+  lipo -create "${BUILD_TMP}/DDump-arm64" "${BUILD_TMP}/DDump-x86_64" -output "${APP_BUNDLE}/Contents/MacOS/DDump"
+  echo "Built universal app binary for macOS ${MACOS_DEPLOYMENT_TARGET}+"
+else
+  host_arch="$(uname -m)"
+  echo "Warning: universal build failed; building host architecture ${host_arch} only." >&2
+  build_slice "$host_arch" "${APP_BUNDLE}/Contents/MacOS/DDump"
+fi
 
 chmod +x "${APP_BUNDLE}/Contents/MacOS/DDump"
 /usr/bin/touch "$APP_BUNDLE"

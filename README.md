@@ -163,6 +163,11 @@ Download the latest DMG from GitHub Releases, open it, then double-click
 `Install DDump.command`. The installer creates `~/Applications/DDump.app` and
 the helper files under your user Library.
 
+DDump release DMGs are built as universal Mac apps (`arm64` and `x86_64`) with
+a macOS 13.0+ deployment target. macOS 15.x users should use DDump 0.3.1 or
+newer; DDump 0.3.0 was accidentally built on a newer SDK as a macOS 26-only
+binary.
+
 Early builds are unsigned. If macOS blocks launch, control-click the installer
 or app and choose Open.
 
@@ -299,7 +304,7 @@ the Finder mount helper should be installed or started.
 
 ```bash
 bash -n bin/*.sh
-swiftc -parse-as-library -o /private/tmp/DDump-check app/DDumpApp.swift
+MACOSX_DEPLOYMENT_TARGET=13.0 ./scripts/build-app.sh
 ```
 
 `swiftc` requires Apple command-line build tools on macOS.
