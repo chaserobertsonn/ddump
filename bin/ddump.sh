@@ -113,15 +113,12 @@ ntfy_notify() {
   local title="$2"
   local text="$3"
   shift 3
+  if [[ "$event_key" == "mount_failed" ]]; then
+    log "Suppressing mount_failed ntfy; DDump no longer uses managed Google Drive mounts."
+    return 0
+  fi
   local topic="${NTFY_TOPIC:-}"
   [[ -n "$topic" ]] || return 0
-
-  if [[ "$event_key" == "mount_failed" ]]; then
-    if [[ "${GDRIVE_DIRECT_UPLOAD:-1}" == "1" || "${GDRIVE_MOUNT_ENABLED:-0}" != "1" ]]; then
-      log "Suppressing mount_failed ntfy because direct upload is active or Google Drive mount mode is disabled."
-      return 0
-    fi
-  fi
 
   local enabled_key=""
   local template_key=""
@@ -1345,7 +1342,7 @@ ensure_gdrive_mount_for_post_move() {
   if [[ ! -f "$plist" ]]; then
     move_last_status="blocked"
     move_last_detail="Google Drive mount agent missing: ${plist}"
-    ntfy_notify "mount_failed" "DDump: mount failed" "${move_last_detail}"
+    log "Suppressing mount_failed notification; DDump no longer uses managed Google Drive mounts: ${move_last_detail}"
     return 1
   fi
 
@@ -1409,7 +1406,7 @@ ensure_gdrive_mount_for_post_move() {
 
   move_last_status="blocked"
   move_last_detail="Google Drive mount did not become ready after retries (${GDRIVE_MOUNT_RETRY_SECONDS:-15,30,60,180})"
-  ntfy_notify "mount_failed" "DDump: mount failed" "${move_last_detail}"
+  log "Suppressing mount_failed notification; DDump no longer uses managed Google Drive mounts: ${move_last_detail}"
   return 1
 }
 
