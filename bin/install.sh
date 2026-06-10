@@ -176,6 +176,16 @@ replace_key_if_exact() {
   fi
 }
 
+set_config_key() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" "$USER_CONFIG"; then
+    /usr/bin/sed -i '' "s|^${key}=.*|${key}=${value}|" "$USER_CONFIG"
+  else
+    /bin/echo "${key}=${value}" >>"$USER_CONFIG"
+  fi
+}
+
 normalize_escaped_home_path() {
   # Convert a literal "\$HOME/..." in config values back to "$HOME/..."
   # so shell scripts can expand it at runtime.
@@ -217,7 +227,7 @@ preserve_existing_direct_cloud_upload() {
   fi
   local mount_enabled direct_upload post_move_root
   mount_enabled="$(config_value 'GDRIVE_MOUNT_ENABLED' '0')"
-  direct_upload="$(config_value 'GDRIVE_DIRECT_UPLOAD' '1')"
+  direct_upload="$(config_value 'GDRIVE_DIRECT_UPLOAD' '0')"
   post_move_root="$(config_value 'POST_MOVE_ROOT' '')"
   if [[ "$mount_enabled" == "1" && "$direct_upload" == "1" && "$post_move_root" == *'GoogleDrive'* ]]; then
     /bin/echo 'CLOUD_UPLOADS_ENABLED="1"' >>"$USER_CONFIG"
@@ -253,9 +263,10 @@ add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper com
 add_missing_key 'FINDERSERVER_TIMER_CHECK_SECONDS' '"300"' "During upload, check timer this often."
 add_missing_key 'FINDERSERVER_TIMER_MIN_SECONDS' '"300"' "If timer is at/below this value, refresh it."
 preserve_existing_direct_cloud_upload
-add_missing_key 'CLOUD_UPLOADS_ENABLED' '"0"' "Enable cloud uploads. Direct rclone upload is used by default; this does not enable a Finder mount."
+add_missing_key 'CLOUD_UPLOADS_ENABLED' '"0"' "Enable cloud uploads. Google Drive Desktop local-folder copy is used by default; rclone is an advanced fallback."
+add_missing_key 'ENABLE_POST_EJECT_MOVE' '"1"' "Copy staged files to the configured destination after local copy/eject. Staging is kept as the backup."
 add_missing_key 'GDRIVE_MOUNT_ENABLED' '"0"' "Advanced: enable DDump-managed Finder mount automation instead of direct rclone uploads."
-add_missing_key 'GDRIVE_DIRECT_UPLOAD' '"1"' "Upload Google Drive destinations directly with rclone copy instead of requiring a mounted Finder folder."
+add_missing_key 'GDRIVE_DIRECT_UPLOAD' '"0"' "Advanced: upload Google Drive destinations directly with rclone copy instead of using the local Google Drive Desktop folder."
 add_missing_key 'GDRIVE_MOUNT_POINT' '"$HOME/GoogleDrive"' "Mounted cloud folder path used for uploads."
 add_missing_key 'GDRIVE_REMOTE' '"combined:"' "rclone remote/path mounted by DDump."
 add_missing_key 'RCLONE_BIN' '"$HOME/bin/rclone"' "rclone binary path (fallback: command -v rclone)."
@@ -272,7 +283,25 @@ add_missing_key 'GDRIVE_MOUNT_WAIT_SECONDS' '"30"' "How long each mount attempt 
 add_missing_key 'GDRIVE_ACTION_TIMEOUT_SECONDS' '"180"' "Maximum seconds DDump waits for a mount action before timing out."
 add_missing_key 'CLOUD_IDLE_UNMOUNT_SECONDS' '"180"' "Unmount cloud drive after this many idle seconds without the DDump app or an active transfer."
 add_missing_key 'PREVENT_FINDER_NETWORK_METADATA' '"1"' "Prevent Finder .DS_Store metadata writes from poisoning the combined rclone mount."
+add_missing_key 'GOOGLE_DRIVE_DESKTOP_ENABLED' '"1"' "Allow DDump to launch Google Drive Desktop for local Drive-folder destinations."
+add_missing_key 'GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE' '"1"' "Restart Google Drive Desktop once if a local Drive-folder destination is unavailable or frozen."
+add_missing_key 'GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS' '"5"' "Seconds to wait between force-quitting Google Drive Desktop and relaunching it."
+add_missing_key 'GOOGLE_DRIVE_DESKTOP_APP_NAME' '"Google Drive"' "macOS application name for Google Drive Desktop."
+add_missing_key 'GOOGLE_DRIVE_DESKTOP_APP_PATH' '"/Applications/Google Drive.app"' "Fallback app path for Google Drive Desktop."
 replace_key_if_exact 'GDRIVE_MOUNT_RETRY_SECONDS' '5,15,60,180,360,600' '15,30,60,180'
+
+if [[ "$(config_value 'CLOUD_UPLOADS_ENABLED' '0')" == "1" ]] \
+  && [[ "$(config_value 'ENABLE_POST_EJECT_MOVE' '1')" != "1" ]]; then
+  set_config_key 'ENABLE_POST_EJECT_MOVE' '"1"'
+  echo "Re-enabled ENABLE_POST_EJECT_MOVE because cloud uploads are enabled."
+fi
+
+if [[ "$(config_value 'CLOUD_UPLOADS_ENABLED' '0')" == "1" ]] \
+  && [[ "$(config_value 'GOOGLE_DRIVE_DESKTOP_ENABLED' '1')" == "1" ]] \
+  && [[ "$(config_value 'GDRIVE_DIRECT_UPLOAD' '0')" == "1" ]]; then
+  set_config_key 'GDRIVE_DIRECT_UPLOAD' '"0"'
+  echo "Switched Google Drive uploads to local Google Drive Desktop copy mode; staging remains the backup."
+fi
 
 # v2 keys (new)
 add_missing_key 'TRUSTED_NAME_PREFIXES' '""' "Volume name prefixes that auto-trust (comma-separated)."
@@ -285,7 +314,8 @@ add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only file
 add_missing_key 'USE_NOTIFICATIONS' '"1"' "Native macOS notifications instead of Terminal monitor."
 add_missing_key 'NOTIFICATION_TIMEOUT_SECONDS' '"60"'
 add_missing_key 'FOLDER_NAMING_STRATEGY' '"sequential"' "How to name shoot folders: smart | calendar | sequential | custom | camera."
-add_missing_key 'FOLDER_NAMING_FALLBACK' '"sequential"'
+add_missing_key 'FOLDER_NAMING_FALLBACK' '"cluster"'
+add_missing_key 'REBUCKET_PRESERVE_SOURCE_FOLDERS' '"1"' "Keep camera/source folder paths inside shoot/calendar buckets."
 add_missing_key 'SMART_SAMPLE_PATH' '""' "Real shoot folder path used by smart naming to infer the daily Drive structure."
 add_missing_key 'SMART_ASSIGN_EXISTING_FOLDERS' '"0"' "Advanced smart naming: map clusters into existing folders under today's Drive date folder."
 replace_key_if_exact 'SMART_ASSIGN_EXISTING_FOLDERS' '1' '0'
@@ -293,7 +323,7 @@ add_missing_key 'SPLIT_PHOTO_VIDEO' '"0"' "Optional smart-mode split: videos go 
 add_missing_key 'FOLDER_NAME_SEQUENTIAL_PREFIX' '"Shoot-"'
 add_missing_key 'FOLDER_NAME_CUSTOM_VALUES' '""'
 add_missing_key 'FOLDER_NAME_UNCATEGORIZED' '"Uncategorized"'
-add_missing_key 'CLUSTER_GAP_MINUTES' '"45"'
+add_missing_key 'CLUSTER_GAP_MINUTES' '"30"'
 add_missing_key 'CLUSTER_FOLDER_TEMPLATE' '"Cluster {n} {start}-{end}"'
 add_missing_key 'CLUSTER_GROUPING_ENABLED' '"1"' "When enabled, nearby capture times group together before naming."
 add_missing_key 'CLUSTER_ATTACH_MINUTES' '"120"' "Across cards, reuse same-day shoot bucket when cluster is within this window."
@@ -464,7 +494,7 @@ NETWORK_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${NETWORK_WATCH_LABEL}.plist"
 CLOUD_IDLE_WATCH_PLIST_PATH="${LAUNCH_AGENT_DIR}/${CLOUD_IDLE_WATCH_LABEL}.plist"
 
 mount_enabled="$(config_value 'GDRIVE_MOUNT_ENABLED' '0')"
-direct_upload="$(config_value 'GDRIVE_DIRECT_UPLOAD' '1')"
+direct_upload="$(config_value 'GDRIVE_DIRECT_UPLOAD' '0')"
 
 if [[ "$mount_enabled" == "1" && "$direct_upload" != "1" ]]; then
   cat >"$MOUNT_PLIST_PATH" <<PLIST

@@ -468,13 +468,30 @@ final class AppState: ObservableObject {
     return expandConfiguredPath(self.get("RCLONE_BIN", default: "\(NSHomeDirectory())/bin/rclone"))
   }
 
+  var googleDriveDesktopRootForUI: String? {
+    let fm = FileManager.default
+    let exact = "\(NSHomeDirectory())/Library/CloudStorage/GoogleDrive"
+    if fm.fileExists(atPath: exact) {
+      return exact
+    }
+    let cloudStorage = "\(NSHomeDirectory())/Library/CloudStorage"
+    guard let entries = try? fm.contentsOfDirectory(atPath: cloudStorage) else { return nil }
+    if let match = entries.sorted().first(where: { $0 == "GoogleDrive" || $0.hasPrefix("GoogleDrive-") }) {
+      return "\(cloudStorage)/\(match)"
+    }
+    return nil
+  }
+
   var defaultCloudUploadFolderForUI: String {
+    if let driveRoot = googleDriveDesktopRootForUI {
+      return "\(driveRoot)/My Drive/DDump Uploads"
+    }
     return "\(gdriveMountPointForUI)/DDump Uploads"
   }
 
   var cloudDestinationReadyForUI: Bool {
     let destination = uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
-    return !destination.isEmpty && pathUsesGDriveMount(destination)
+    return !destination.isEmpty && pathUsesGoogleDriveDestination(destination)
   }
 
   var cloudSetupConnectionOKForUI: Bool {
@@ -482,9 +499,26 @@ final class AppState: ObservableObject {
   }
 
   var cloudSetupNeedsAttentionForUI: Bool {
-    let directUpload = get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1"
+    let directUpload = get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1"
+    let managedMount = get("GDRIVE_MOUNT_ENABLED", default: "0") == "1"
     return cloudUploadsEnabledForUI
-      && (!cloudRcloneReady || !cloudRemoteConfigured || !cloudDestinationReadyForUI || !cloudSetupConnectionOKForUI || (!directUpload && !cloudMountActive))
+      && (
+        !cloudDestinationReadyForUI
+        || !cloudSetupConnectionOKForUI
+        || ((directUpload || managedMount) && (!cloudRcloneReady || !cloudRemoteConfigured))
+        || (managedMount && !cloudMountActive)
+      )
+  }
+
+  func pathUsesGoogleDriveDestination(_ path: String) -> Bool {
+    if pathUsesGDriveMount(path) { return true }
+    let expandedPath = expandConfiguredPath(path)
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    let cloudBase = "\(NSHomeDirectory())/Library/CloudStorage/GoogleDrive"
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    return expandedPath == cloudBase
+      || expandedPath.hasPrefix(cloudBase + "/")
+      || expandedPath.hasPrefix(cloudBase + "-")
   }
 
   func pathUsesGDriveMount(_ path: String) -> Bool {
@@ -557,7 +591,7 @@ final class AppState: ObservableObject {
   func openUploadDestination(openTodayFolder: Bool = true) {
     let destination = (openTodayFolder ? todaysUploadDestinationForUI : uploadRootForUI)
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1",
+    if get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1",
        let remoteDest = cloudRemotePath(for: destination) {
       openCloudRemoteDestination(remoteDest)
       return
@@ -994,7 +1028,7 @@ client_secret=\(quotedClientSecret)
 
   func ensureUploadServerForAppSession(showProgress: Bool = false, reason: String = "Upload server") {
     guard gdriveMountEnabledForUI else { return }
-    guard get("GDRIVE_DIRECT_UPLOAD", default: "1") != "1" else { return }
+    guard get("GDRIVE_DIRECT_UPLOAD", default: "0") != "1" else { return }
     guard cloudSetupConnectionOKForUI else {
       refreshCloudMountStatus(showProgress: false)
       return
@@ -1600,7 +1634,7 @@ exit 0
       }
       return
     }
-    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1" {
+    if get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1" {
       DispatchQueue.main.async {
         if showProgress {
           self.cloudActionInProgress = false
@@ -2139,7 +2173,7 @@ exit 4
             self.set("GDRIVE_REMOTE", selectedRemote)
             self.set("CLOUD_UPLOADS_ENABLED", "1")
             self.set("GDRIVE_MOUNT_ENABLED", "0")
-            self.set("GDRIVE_DIRECT_UPLOAD", "1")
+            self.set("GDRIVE_DIRECT_UPLOAD", "0")
             self.set("ENABLE_POST_EJECT_MOVE", "1")
             self.set("CLOUD_SETUP_CONNECTION_OK", "0")
             self.lastUtilityMessage = "Google Drive connected. Next, choose the upload folder."
@@ -2291,7 +2325,7 @@ exit 0
         self.set("GDRIVE_REMOTE", selectedRemote)
         self.set("CLOUD_UPLOADS_ENABLED", "1")
         self.set("GDRIVE_MOUNT_ENABLED", "0")
-        self.set("GDRIVE_DIRECT_UPLOAD", "1")
+        self.set("GDRIVE_DIRECT_UPLOAD", "0")
         self.set("ENABLE_POST_EJECT_MOVE", "1")
         self.set("CLOUD_SETUP_CONNECTION_OK", "0")
         let currentDest = self.get("POST_MOVE_ROOT", default: "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2313,7 +2347,7 @@ exit 0
   func chooseCloudDestinationFolder() {
     guard !cloudActionInProgress else { return }
     appendAppLog("cloud setup button: choose upload folder")
-    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1" {
+    if get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1" {
       presentCloudPathPrompt()
     } else {
       lastUtilityMessage = "Opening your Google Drive folder…"
@@ -2372,7 +2406,7 @@ exit 0
     set("ENABLE_POST_EJECT_MOVE", "1")
     set("CLOUD_UPLOADS_ENABLED", "1")
     set("GDRIVE_MOUNT_ENABLED", "0")
-    set("GDRIVE_DIRECT_UPLOAD", "1")
+    set("GDRIVE_DIRECT_UPLOAD", "0")
     set("CLOUD_SETUP_CONNECTION_OK", "0")
     lastUtilityMessage = "Upload folder chosen. Testing \(rel)…"
     appendAppLog("cloud setup choose remote path success: \(rel)")
@@ -2392,7 +2426,7 @@ exit 0
     panel.canCreateDirectories = true
     panel.directoryURL = FileManager.default.fileExists(atPath: defaultURL.path) ? defaultURL : mountURL
     panel.prompt = "Use This Folder"
-    panel.message = "Choose the mounted Google Drive folder where DDump should upload finished dumps."
+    panel.message = "Choose the Google Drive folder where DDump should copy finished dumps."
     guard panel.runModal() == .OK, let url = panel.url else {
       lastUtilityMessage = "No upload folder chosen yet. Click Choose upload folder to continue."
       appendAppLog("cloud setup choose folder cancelled")
@@ -2400,8 +2434,8 @@ exit 0
     }
 
     let selectedPath = url.path
-    guard pathUsesGDriveMount(selectedPath) else {
-      lastUtilityMessage = "Choose a folder inside the mounted Google Drive folder DDump opened."
+    guard pathUsesGoogleDriveDestination(selectedPath) else {
+      lastUtilityMessage = "Choose a folder inside Google Drive."
       appendAppLog("cloud setup choose folder rejected outside mount: \(selectedPath)")
       showUtilityDialog(
         title: "Choose a Google Drive folder",
@@ -2413,7 +2447,7 @@ exit 0
     set("POST_MOVE_ROOT", selectedPath)
     set("ENABLE_POST_EJECT_MOVE", "1")
     set("CLOUD_UPLOADS_ENABLED", "1")
-    set("GDRIVE_MOUNT_ENABLED", "1")
+    set("GDRIVE_MOUNT_ENABLED", "0")
     set("GDRIVE_DIRECT_UPLOAD", "0")
     set("CLOUD_SETUP_CONNECTION_OK", "0")
     lastUtilityMessage = "Upload folder chosen. Testing the connection…"
@@ -2427,7 +2461,7 @@ exit 0
       destination = defaultCloudUploadFolderForUI
       set("POST_MOVE_ROOT", destination)
     }
-    guard pathUsesGDriveMount(destination) else {
+    guard pathUsesGoogleDriveDestination(destination) else {
       lastUtilityMessage = "Choose a folder inside the Google Drive folder before testing."
       set("CLOUD_SETUP_CONNECTION_OK", "0")
       appendAppLog("cloud setup test blocked: destination outside mount")
@@ -2444,8 +2478,12 @@ exit 0
     }
     lastUtilityMessage = "Testing the upload folder…"
     appendAppLog("cloud setup button: test upload folder")
-    if get("GDRIVE_DIRECT_UPLOAD", default: "1") == "1" {
+    if get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1" {
       testDirectCloudUploadConnection(destination: destinationForTest, showProgress: showProgress)
+      return
+    }
+    if get("GDRIVE_MOUNT_ENABLED", default: "0") != "1" {
+      testLocalCloudFolderConnection(destination: destinationForTest, showProgress: showProgress)
       return
     }
     startCloudMount(userMessagePrefix: "Cloud setup", showProgress: false) { ready in
@@ -2510,6 +2548,69 @@ exit 0
               text: "\(reason)\nClick Retry cloud test to try again."
             )
           }
+        }
+      }
+    }
+  }
+
+  private func testLocalCloudFolderConnection(destination: String, showProgress: Bool) {
+    DispatchQueue.global(qos: .utility).async {
+      let appPath = self.get("GOOGLE_DRIVE_DESKTOP_APP_PATH", default: "/Applications/Google Drive.app")
+      if FileManager.default.fileExists(atPath: appPath) {
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-a", appPath]
+        try? task.run()
+      } else {
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-a", self.get("GOOGLE_DRIVE_DESKTOP_APP_NAME", default: "Google Drive")]
+        try? task.run()
+      }
+
+      Thread.sleep(forTimeInterval: 5)
+
+      let destURL = URL(fileURLWithPath: NSString(string: destination).expandingTildeInPath)
+      let testURL = destURL.appendingPathComponent(".ddump-connection-test-\(UUID().uuidString)")
+      do {
+        try FileManager.default.createDirectory(at: destURL, withIntermediateDirectories: true)
+        try "DDump Google Drive Desktop handoff test \(Date())\n".write(to: testURL, atomically: false, encoding: .utf8)
+        let attrs = try FileManager.default.attributesOfItem(atPath: testURL.path)
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        guard size > 0 else {
+          throw NSError(domain: "DDump", code: 1, userInfo: [NSLocalizedDescriptionKey: "The test file was not written."])
+        }
+        try? FileManager.default.removeItem(at: testURL)
+        DispatchQueue.main.async {
+          if showProgress {
+            self.cloudActionInProgress = false
+            self.cloudActionMessage = ""
+          }
+          self.set("CLOUD_SETUP_CONNECTION_OK", "1")
+          self.set("CLOUD_SETUP_TESTED_AT", self.nowTimestamp())
+          self.lastUtilityMessage = "Google Drive Desktop folder is ready. DDump will copy finished dumps there and keep staging as backup."
+          self.appendAppLog("cloud setup local Drive Desktop test success: \(destination)")
+          self.refreshCloudMountStatus(showProgress: false)
+          self.showUtilityDialog(
+            title: "Cloud setup complete",
+            text: "DDump verified local Google Drive handoff to:\n\(destination)\n\nGoogle Drive Desktop will sync it from there. Staging stays on disk as backup."
+          )
+        }
+      } catch {
+        try? FileManager.default.removeItem(at: testURL)
+        DispatchQueue.main.async {
+          if showProgress {
+            self.cloudActionInProgress = false
+            self.cloudActionMessage = ""
+          }
+          self.set("CLOUD_SETUP_CONNECTION_OK", "0")
+          let reason = self.plainCloudFailure(error.localizedDescription)
+          self.lastUtilityMessage = reason
+          self.appendAppLog("cloud setup local Drive Desktop test failed: \(reason)")
+          self.showUtilityDialog(
+            title: "Google Drive folder test failed",
+            text: "\(reason)\nOpen Google Drive Desktop, wait for it to finish starting, then retry."
+          )
         }
       }
     }
@@ -4313,11 +4414,13 @@ struct CloudSettings: View {
         sectionHeader("Cloud setup")
         VStack(alignment: .leading, spacing: 12) {
           let cloudOff = !enabled
-          let needsInstall = enabled && !state.cloudRcloneReady
-          let needsConnect = enabled && state.cloudRcloneReady && !state.cloudRemoteConfigured
-          let needsDestination = enabled && state.cloudRcloneReady && state.cloudRemoteConfigured && !state.cloudDestinationReadyForUI
-          let needsTest = enabled && state.cloudRcloneReady && state.cloudRemoteConfigured && state.cloudDestinationReadyForUI && !state.cloudSetupConnectionOKForUI
-          let done = enabled && state.cloudRcloneReady && state.cloudRemoteConfigured && state.cloudDestinationReadyForUI && state.cloudSetupConnectionOKForUI
+          let directUpload = state.get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1"
+          let needsRclone = directUpload || managedMountEnabled
+          let needsInstall = enabled && needsRclone && !state.cloudRcloneReady
+          let needsConnect = enabled && needsRclone && state.cloudRcloneReady && !state.cloudRemoteConfigured
+          let needsDestination = enabled && (!needsRclone || (state.cloudRcloneReady && state.cloudRemoteConfigured)) && !state.cloudDestinationReadyForUI
+          let needsTest = enabled && (!needsRclone || (state.cloudRcloneReady && state.cloudRemoteConfigured)) && state.cloudDestinationReadyForUI && !state.cloudSetupConnectionOKForUI
+          let done = enabled && (!needsRclone || (state.cloudRcloneReady && state.cloudRemoteConfigured)) && state.cloudDestinationReadyForUI && state.cloudSetupConnectionOKForUI
           let stepNumber: Int = {
             if cloudOff { return 1 }
             if needsInstall { return 1 }
@@ -4340,9 +4443,9 @@ struct CloudSettings: View {
             if cloudOff { return "Turn cloud uploads on to start the guided setup." }
             if needsInstall { return "DDump installs the small helper it needs to talk to Google Drive." }
             if needsConnect { return "DDump opens Google sign-in directly. You do not need to create or name anything manually." }
-            if needsDestination { return "Pick the Google Drive folder where finished dumps should land." }
+            if needsDestination { return "Pick the Google Drive Desktop folder where finished dumps should land." }
             if needsTest { return "DDump writes and removes a tiny test file to prove the upload folder works." }
-            return "DDump is ready to upload finished dumps."
+            return "DDump is ready to copy finished dumps to Google Drive while keeping staging as backup."
           }()
 
           HStack(alignment: .center, spacing: 10) {
@@ -4364,8 +4467,8 @@ struct CloudSettings: View {
             .fixedSize(horizontal: false, vertical: true)
 
           HStack(spacing: 12) {
-            wizardMilestone(state.cloudRcloneReady, "Helper")
-            wizardMilestone(state.cloudRemoteConfigured, "Google Drive")
+            wizardMilestone(!needsRclone || state.cloudRcloneReady, "Helper")
+            wizardMilestone(!needsRclone || state.cloudRemoteConfigured, "Google Drive")
             wizardMilestone(state.cloudDestinationReadyForUI, "Folder")
             wizardMilestone(state.cloudSetupConnectionOKForUI, "Tested")
           }
@@ -4378,7 +4481,7 @@ struct CloudSettings: View {
                 state.set("CLOUD_UPLOADS_ENABLED", "1")
                 state.set("ENABLE_POST_EJECT_MOVE", "1")
                 state.set("GDRIVE_MOUNT_ENABLED", "0")
-                state.set("GDRIVE_DIRECT_UPLOAD", "1")
+                state.set("GDRIVE_DIRECT_UPLOAD", "0")
                 state.refreshCloudMountStatus()
                 state.lastUtilityMessage = "Cloud uploads are on. Continue setup below."
               } label: {
@@ -4441,7 +4544,7 @@ struct CloudSettings: View {
                 state.set("CLOUD_UPLOADS_ENABLED", "0")
                 state.set("ENABLE_POST_EJECT_MOVE", "0")
                 state.set("GDRIVE_MOUNT_ENABLED", "0")
-                state.set("GDRIVE_DIRECT_UPLOAD", "1")
+                state.set("GDRIVE_DIRECT_UPLOAD", "0")
                 state.refreshCloudMountStatus()
                 state.lastUtilityMessage = "Cloud uploads are disabled."
               } label: {
@@ -4506,7 +4609,7 @@ struct CloudSettings: View {
               Text("Enable DDump-managed cloud mount")
                 .font(DDumpFont.ui(14, weight: .medium))
                 .foregroundColor(.ddumpFG1)
-              Text("Advanced fallback only. Direct rclone upload is preferred and does not keep a Finder mount alive.")
+              Text("Advanced fallback only. Google Drive Desktop folder copy is preferred and keeps staging as the backup.")
                 .font(DDumpFont.ui(12))
                 .foregroundColor(.ddumpFG3)
             }
@@ -4522,7 +4625,7 @@ struct CloudSettings: View {
                 state.set("CLOUD_UPLOADS_ENABLED", "1")
                 state.set("ENABLE_POST_EJECT_MOVE", "1")
                 state.set("GDRIVE_MOUNT_ENABLED", v ? "1" : "0")
-                state.set("GDRIVE_DIRECT_UPLOAD", v ? "0" : "1")
+                state.set("GDRIVE_DIRECT_UPLOAD", "0")
                 state.refreshCloudMountStatus()
               }
           }

@@ -17,7 +17,9 @@ It is built for high-confidence transfer workflows:
 2. DDump checks trust + photo presence.
 3. DDump finds candidates (lookback-only by default).
 4. DDump copies to staging and verifies each file.
-5. DDump re-buckets staged files by your naming strategy.
+5. DDump groups staged files by capture-time clusters, names those groups by
+   your selected strategy, and preserves the camera/source folder tree inside
+   each named shoot folder.
 6. DDump copies staged buckets to destination(s).
 7. DDump verifies destination copy parity (file count + bytes).
 8. DDump records receipts/logs/state and handles eject rules.
@@ -74,9 +76,17 @@ Strategies:
 
 - `sequential` (default): `Shoot-1`, `Shoot-2`, ...
 - `custom`: cycle through configured list.
-- `calendar`: match file capture times to connected calendar events.
+- `calendar`: match each capture-time cluster to connected calendar events.
 - `smart`: infer date-ladder destination shape from a sample path.
 - `camera`: keep camera folder structure names.
+
+DDump preserves the original camera/source folders inside each shoot bucket by
+default. For example, files copied from `DCIM/104_2026` into a calendar bucket
+land at `Kaysville Shoot/DCIM/104_2026/...`, not flattened into one folder.
+When a card contains multiple shoots, the 30-minute cluster gap splits them
+before calendar naming and upload. If no calendar event matches a cluster, DDump
+falls back to a time-cluster folder name instead of merging everything into
+`Shoot-1`.
 
 Smart mode is for date-ladder destination folders such as:
 
@@ -248,6 +258,7 @@ Important keys:
 - `PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE`
 - `FOLDER_NAMING_STRATEGY`
 - `FOLDER_NAMING_FALLBACK`
+- `REBUCKET_PRESERVE_SOURCE_FOLDERS`
 - `SMART_SAMPLE_PATH`
 - `SMART_ASSIGN_EXISTING_FOLDERS`
 - `CLUSTER_GROUPING_ENABLED`
@@ -260,6 +271,9 @@ Important keys:
 - `GDRIVE_REMOTE`
 - `GDRIVE_MOUNT_POINT`
 - `GDRIVE_MOUNT_RETRY_SECONDS`
+- `GOOGLE_DRIVE_DESKTOP_ENABLED`
+- `GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE`
+- `GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS`
 - `RCLONE_CACHE_DIR`
 - `PREVENT_FINDER_NETWORK_METADATA`
 - `CLOUD_IDLE_UNMOUNT_SECONDS`
@@ -276,15 +290,32 @@ Important keys:
 - `UPDATE_GITHUB_REPO`
 
 Cloud uploads are off by default for new installs. When a user turns them on in
-the app, DDump now uploads Google Drive destinations directly with `rclone copy`
-by default (`GDRIVE_DIRECT_UPLOAD=1`). A configured destination such as
+the app, DDump uses Google Drive Desktop local-folder copy mode by default
+(`GDRIVE_DIRECT_UPLOAD=0`). Files are copied from staging into the configured
+Google Drive folder; the staging folder is kept as the local backup until the
+user runs Safe Cleanup. Legacy destinations such as
+`$HOME/GoogleDrive/Densley/1 — Media/1 — Uploads/1 — Photo` are resolved to the
+real Google Drive Desktop location under `~/Library/CloudStorage/GoogleDrive-*`
+when possible, including matching shared-drive folders.
+
+Direct rclone upload remains available as an advanced/fallback mode by setting
+`GDRIVE_DIRECT_UPLOAD=1`. In that mode, a configured destination such as
 `$HOME/GoogleDrive/Densley/1 — Media/1 — Uploads/1 — Photo` is mapped to the
 matching rclone remote path, for example `combined:Densley/1 — Media/1 — Uploads/1 — Photo`.
-This avoids requiring Finder, macFUSE, or an always-on mounted Google Drive
-folder during normal imports. The old mounted-folder flow remains available for
-advanced testing by setting `GDRIVE_DIRECT_UPLOAD=0` and `GDRIVE_MOUNT_ENABLED=1`.
+The old mounted-folder flow remains available for advanced testing by setting
+`GDRIVE_DIRECT_UPLOAD=0` and `GDRIVE_MOUNT_ENABLED=1`.
 `CLOUD_UPLOADS_ENABLED=1` means cloud upload is enabled; it does not imply that
 the Finder mount helper should be installed or started.
+
+If direct rclone upload is disabled and the destination is a local Google Drive
+Desktop folder, DDump can launch Google Drive Desktop and restart it once when
+the destination folder is unavailable or frozen. That restart is controlled by
+`GOOGLE_DRIVE_DESKTOP_ENABLED=1`,
+`GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE=1`, and
+`GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS=5`. In that mode, "copied" means
+DDump verified the handoff into the local Drive folder; Google Drive Desktop
+still owns the final cloud sync. Direct rclone upload remains the stronger
+cloud-side verification path.
 
 ## Current Defaults Worth Noting
 

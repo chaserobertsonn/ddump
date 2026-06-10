@@ -381,14 +381,15 @@ POST_MOVE_YEAR_FORMAT="%Y"
 POST_MOVE_MONTH_FORMAT="%Y.%m"
 POST_MOVE_DAY_FORMAT="%Y.%m.%d"
 FOLDER_NAMING_STRATEGY="sequential"
-FOLDER_NAMING_FALLBACK="sequential"
+FOLDER_NAMING_FALLBACK="cluster"
+REBUCKET_PRESERVE_SOURCE_FOLDERS="1"
 SMART_SAMPLE_PATH=""
 SMART_ASSIGN_EXISTING_FOLDERS="0"
 SPLIT_PHOTO_VIDEO="0"
 FOLDER_NAME_SEQUENTIAL_PREFIX="Shoot-"
 FOLDER_NAME_CUSTOM_VALUES=""
 FOLDER_NAME_UNCATEGORIZED="Uncategorized"
-CLUSTER_GAP_MINUTES="45"
+CLUSTER_GAP_MINUTES="30"
 CLUSTER_FOLDER_TEMPLATE="Cluster {n} {start}-{end}"
 CLUSTER_GROUPING_ENABLED="1"
 CLUSTER_ATTACH_MINUTES="120"
@@ -417,7 +418,7 @@ FINDERSERVER_TIMER_CHECK_SECONDS="300"
 FINDERSERVER_TIMER_MIN_SECONDS="300"
 FINDERSERVER_GUARD_PID_FILE="${STATE_DIR}/finderserver-guard.pid"
 GDRIVE_MOUNT_ENABLED="0"
-GDRIVE_DIRECT_UPLOAD="1"
+GDRIVE_DIRECT_UPLOAD="0"
 GDRIVE_MOUNT_POINT="${HOME}/GoogleDrive"
 GDRIVE_REMOTE="combined:"
 RCLONE_BIN="${HOME}/bin/rclone"
@@ -429,6 +430,11 @@ RCLONE_TPS_BURST="2"
 GDRIVE_MOUNT_LABEL="com.ddump.rclone-gdrive"
 GDRIVE_MOUNT_RETRY_SECONDS="15,30,60,180"
 GDRIVE_MOUNT_WAIT_SECONDS="30"
+GOOGLE_DRIVE_DESKTOP_ENABLED="1"
+GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE="1"
+GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS="5"
+GOOGLE_DRIVE_DESKTOP_APP_NAME="Google Drive"
+GOOGLE_DRIVE_DESKTOP_APP_PATH="/Applications/Google Drive.app"
 NTFY_TOPIC=""
 NTFY_NOTIFY_STAGING_STARTED="0"
 NTFY_NOTIFY_CARD_EJECTED="1"
@@ -870,6 +876,7 @@ effective_post_move_root() {
       root="$fallback"
     fi
   fi
+  root="$(normalize_post_move_root "$root")"
   printf '%s' "$root"
 }
 
@@ -929,6 +936,7 @@ collect_post_move_roots() {
   for item in "${_extra_roots[@]}"; do
     item="$(trim "$item")"
     [[ -n "$item" ]] || continue
+    item="$(normalize_post_move_root "$item")"
     [[ "$item" == "$primary" ]] && continue
     /bin/echo "$item"
   done
@@ -960,6 +968,194 @@ path_is_gdrive_path() {
     "$gdrive"|"$gdrive"/*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+path_is_google_drive_desktop_path() {
+  local path="$1"
+  local expanded cloud_root legacy_root
+  expanded="$(expand_config_path "$path")"
+  cloud_root="${HOME}/Library/CloudStorage/GoogleDrive"
+  legacy_root="${HOME}/GoogleDrive"
+  case "$expanded" in
+    "$cloud_root"|"$cloud_root"-*|"$cloud_root"/*|"$cloud_root"-*/*) return 0 ;;
+    "$legacy_root"|"$legacy_root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+google_drive_desktop_cloud_root() {
+  local root
+  if [[ -d "${HOME}/Library/CloudStorage/GoogleDrive" ]]; then
+    printf '%s\n' "${HOME}/Library/CloudStorage/GoogleDrive"
+    return 0
+  fi
+
+  for root in "${HOME}"/Library/CloudStorage/GoogleDrive-*; do
+    [[ -d "$root" ]] || continue
+    printf '%s\n' "$root"
+    return 0
+  done
+
+  return 1
+}
+
+google_drive_desktop_join_legacy_rel() {
+  local cloud_root="$1"
+  local rel="$2"
+  rel="${rel#/}"
+  if [[ -z "$rel" ]]; then
+    printf '%s\n' "$cloud_root"
+    return 0
+  fi
+
+  local first rest candidate
+  first="${rel%%/*}"
+  if [[ "$rel" == */* ]]; then
+    rest="${rel#*/}"
+  else
+    rest=""
+  fi
+
+  for candidate in \
+    "${cloud_root}/${rel}" \
+    "${cloud_root}/Shared drives/${rel}" \
+    "${cloud_root}/My Drive/${rel}"; do
+    if [[ -e "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for candidate in "${cloud_root}/Shared drives/${first}"*; do
+    [[ -d "$candidate" ]] || continue
+    if [[ -z "$rest" ]]; then
+      printf '%s\n' "$candidate"
+    else
+      printf '%s/%s\n' "$candidate" "$rest"
+    fi
+    return 0
+  done
+
+  if [[ -d "${cloud_root}/My Drive/${first}" ]]; then
+    if [[ -z "$rest" ]]; then
+      printf '%s\n' "${cloud_root}/My Drive/${first}"
+    else
+      printf '%s/%s\n' "${cloud_root}/My Drive/${first}" "$rest"
+    fi
+    return 0
+  fi
+
+  printf '%s/%s\n' "${cloud_root}/My Drive" "$rel"
+}
+
+normalize_post_move_root() {
+  local raw="$1"
+  [[ -n "$raw" ]] || return 0
+
+  local expanded legacy rel cloud_root normalized
+  expanded="$(expand_config_path "$raw")"
+  legacy="${HOME}/GoogleDrive"
+
+  if [[ "${GDRIVE_DIRECT_UPLOAD:-0}" != "1" ]]; then
+    case "$expanded" in
+      "$legacy") rel="" ;;
+      "$legacy"/*) rel="${expanded#"$legacy"/}" ;;
+      *) printf '%s\n' "$raw"; return 0 ;;
+    esac
+
+    if cloud_root="$(google_drive_desktop_cloud_root)"; then
+      normalized="$(google_drive_desktop_join_legacy_rel "$cloud_root" "$rel")"
+      if [[ -n "$normalized" ]]; then
+        printf '%s\n' "$normalized"
+        return 0
+      fi
+    fi
+  fi
+
+  printf '%s\n' "$raw"
+}
+
+google_drive_desktop_running() {
+  /usr/bin/pgrep -f 'Google Drive\.app/Contents/MacOS/Google Drive|/Applications/Google Drive\.app' >/dev/null 2>&1 \
+    || /usr/bin/pgrep -f 'Google Drive/Contents/MacOS/Google Drive|drivefs' >/dev/null 2>&1
+}
+
+launch_google_drive_desktop() {
+  local app_name app_path
+  app_name="${GOOGLE_DRIVE_DESKTOP_APP_NAME:-Google Drive}"
+  app_path="$(expand_config_path "${GOOGLE_DRIVE_DESKTOP_APP_PATH:-/Applications/Google Drive.app}")"
+  if /usr/bin/open -a "$app_name" >/dev/null 2>&1; then
+    log "Launched Google Drive Desktop with open -a '${app_name}'."
+    return 0
+  fi
+  if [[ -d "$app_path" ]] && /usr/bin/open "$app_path" >/dev/null 2>&1; then
+    log "Launched Google Drive Desktop from ${app_path}."
+    return 0
+  fi
+  log "Google Drive Desktop launch failed; app not found or macOS refused launch."
+  return 1
+}
+
+restart_google_drive_desktop() {
+  local delay
+  delay="$(sanitize_positive_int "${GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS:-5}" "5")"
+  log "Restarting Google Drive Desktop after destination check failed."
+  /usr/bin/osascript -e 'tell application "Google Drive" to quit' >/dev/null 2>&1 || true
+  /bin/sleep 2
+  /usr/bin/pkill -TERM -f 'Google Drive\.app/Contents/MacOS/Google Drive|/Applications/Google Drive\.app|drivefs' >/dev/null 2>&1 || true
+  /bin/sleep "$delay"
+  if google_drive_desktop_running; then
+    /usr/bin/pkill -KILL -f 'Google Drive\.app/Contents/MacOS/Google Drive|/Applications/Google Drive\.app|drivefs' >/dev/null 2>&1 || true
+    /bin/sleep 1
+  fi
+  launch_google_drive_desktop
+}
+
+google_drive_desktop_path_responsive() {
+  local path="$1"
+  /usr/bin/python3 - "$path" <<'PY' >/dev/null 2>&1
+import os
+import signal
+import sys
+
+path = sys.argv[1]
+
+def timeout(_signum, _frame):
+    raise TimeoutError("Google Drive folder probe timed out")
+
+signal.signal(signal.SIGALRM, timeout)
+signal.alarm(8)
+try:
+    os.makedirs(path, exist_ok=True)
+    test = os.path.join(path, ".ddump-drive-probe")
+    with open(test, "w", encoding="utf-8") as handle:
+        handle.write("ok\n")
+    os.remove(test)
+finally:
+    signal.alarm(0)
+PY
+}
+
+ensure_google_drive_desktop_ready_for_path() {
+  local path="$1"
+  path_is_google_drive_desktop_path "$path" || return 0
+  [[ "${GOOGLE_DRIVE_DESKTOP_ENABLED:-1}" == "1" ]] || return 0
+
+  if ! google_drive_desktop_running; then
+    log "Google Drive Desktop is not running; launching it for ${path}."
+    launch_google_drive_desktop || return 1
+    /bin/sleep 5
+  fi
+
+  if google_drive_desktop_path_responsive "$path"; then
+    return 0
+  fi
+
+  log "Google Drive Desktop path is not responsive: ${path}"
+  [[ "${GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE:-1}" == "1" ]] || return 1
+  restart_google_drive_desktop || return 1
+  /bin/sleep 5
+  google_drive_desktop_path_responsive "$path"
 }
 
 direct_cloud_upload_enabled_for_root() {
@@ -1073,7 +1269,7 @@ rclone_copyto_with_watchdog() {
       /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
       /bin/sleep 3
       /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
-      /bin/wait "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
       return 124
     fi
     /bin/sleep 1
@@ -1082,7 +1278,7 @@ rclone_copyto_with_watchdog() {
       update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     fi
   done
-  if /bin/wait "$pid"; then
+  if wait "$pid"; then
     update_upload_status_from_rclone_log "$remote_dest" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     return 0
   else
@@ -1123,7 +1319,7 @@ rclone_copy_directory_to_remote_target() {
       /bin/kill -TERM "$pid" >/dev/null 2>&1 || true
       /bin/sleep 3
       /bin/kill -KILL "$pid" >/dev/null 2>&1 || true
-      /bin/wait "$pid" >/dev/null 2>&1 || true
+      wait "$pid" >/dev/null 2>&1 || true
       return 124
     fi
     /bin/sleep 1
@@ -1132,7 +1328,7 @@ rclone_copy_directory_to_remote_target() {
       update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     fi
   done
-  if /bin/wait "$pid"; then
+  if wait "$pid"; then
     update_upload_status_from_rclone_log "$remote_dest_dir" "$item_name" "$current_upload_done" "$current_upload_failed" "$current_upload_total"
     return 0
   else
@@ -1155,13 +1351,13 @@ gdrive_mount_active() {
       /bin/kill -TERM "$probe_pid" >/dev/null 2>&1 || true
       /bin/sleep 1
       /bin/kill -KILL "$probe_pid" >/dev/null 2>&1 || true
-      /bin/wait "$probe_pid" >/dev/null 2>&1 || true
+      wait "$probe_pid" >/dev/null 2>&1 || true
       return 1
     fi
     /bin/sleep 1
     elapsed=$((elapsed + 1))
   done
-  /bin/wait "$probe_pid" >/dev/null 2>&1
+  wait "$probe_pid" >/dev/null 2>&1
 }
 
 gdrive_mount_present() {
@@ -1485,6 +1681,29 @@ copy_path_to_post_target() {
   [[ "$src_stats" == "$dest_stats" ]]
 }
 
+copy_path_to_post_target_with_drive_retry() {
+  local src_path="$1"
+  local dest_path="$2"
+  local target_dir="$3"
+
+  if copy_path_to_post_target "$src_path" "$dest_path"; then
+    return 0
+  fi
+
+  if path_is_google_drive_desktop_path "$target_dir" \
+    && ! path_uses_gdrive_mount "$target_dir" \
+    && [[ "${GOOGLE_DRIVE_DESKTOP_ENABLED:-1}" == "1" ]] \
+    && [[ "${GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE:-1}" == "1" ]]; then
+    log "Post-move copy failed for Google Drive Desktop destination; restarting app before one retry: ${dest_path}"
+    if ensure_google_drive_desktop_ready_for_path "$target_dir"; then
+      copy_path_to_post_target "$src_path" "$dest_path"
+      return "$?"
+    fi
+  fi
+
+  return 1
+}
+
 queue_entry_already_uploaded() {
   local src_path="$1"
   local target_dir="$2"
@@ -1610,7 +1829,7 @@ move_queued_paths_to_post_target() {
   if [[ "$ENABLE_POST_EJECT_MOVE" != "1" ]]; then
     move_last_status="disabled"
     move_last_detail="post-move disabled"
-    return 0
+    return 1
   fi
 
   if [[ ! -s "$queue_file" ]]; then
@@ -1693,6 +1912,14 @@ move_queued_paths_to_post_target() {
       if ! ensure_gdrive_mount_for_post_move "$root"; then
         overall_failed=$((overall_failed + 1))
         log "Post-move blocked for ${vol_name}: ${move_last_detail}"
+        notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
+        continue
+      fi
+
+      if ! path_uses_gdrive_mount "$root" && ! ensure_google_drive_desktop_ready_for_path "$root"; then
+        overall_failed=$((overall_failed + 1))
+        move_last_detail="Google Drive Desktop folder unavailable after restart"
+        log "Post-move blocked for ${vol_name}: ${move_last_detail}: ${root}"
         notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
         continue
       fi
@@ -1791,7 +2018,7 @@ move_queued_paths_to_post_target() {
 
       if [[ -e "$dest_path" ]]; then
         if [[ -d "$src_path" && -d "$dest_path" ]]; then
-          if copy_path_to_post_target "$src_path" "$dest_path"; then
+          if copy_path_to_post_target_with_drive_retry "$src_path" "$dest_path" "$target_dir"; then
             db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
             db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
             copied_count=$((copied_count + 1))
@@ -1814,7 +2041,7 @@ move_queued_paths_to_post_target() {
         continue
       fi
 
-      if copy_path_to_post_target "$src_path" "$dest_path"; then
+      if copy_path_to_post_target_with_drive_retry "$src_path" "$dest_path" "$target_dir"; then
         db_update_upload_job_status "$src_path" "uploaded" "0" "0" ""
         db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
         copied_count=$((copied_count + 1))
@@ -2402,14 +2629,14 @@ diskutil_eject_with_timeout() {
       /bin/kill -TERM "$eject_pid" >/dev/null 2>&1 || true
       /bin/sleep 1
       /bin/kill -KILL "$eject_pid" >/dev/null 2>&1 || true
-      /bin/wait "$eject_pid" >/dev/null 2>&1 || true
+      wait "$eject_pid" >/dev/null 2>&1 || true
       log "Eject timed out after ${timeout}s for ${vol_name}; continuing with upload."
       return 124
     fi
     /bin/sleep 1
     elapsed=$((elapsed + 1))
   done
-  /bin/wait "$eject_pid" >/dev/null 2>&1
+  wait "$eject_pid" >/dev/null 2>&1
 }
 
 activate_ddump_app_for_card() {
@@ -3444,9 +3671,13 @@ compute_buckets_calendar() {
   local calendar_script="${APP_SUPPORT_DIR}/bin/ddump-calendar-lookup.sh"
   [[ -x "$calendar_script" ]] || return 1
 
-  local imported_list file_times dates_file events_file matched_tsv unmatched_list fallback_tsv
+  local cluster_script="${APP_SUPPORT_DIR}/bin/ddump-cluster.sh"
+  [[ -x "$cluster_script" ]] || return 1
+
+  local imported_list cluster_out cluster_times dates_file events_file matched_tsv unmatched_list fallback_tsv
   imported_list="$(mktemp "${STATE_DIR}/calendar-imported.${run_id}.XXXXXX")"
-  file_times="$(mktemp "${STATE_DIR}/calendar-times.${run_id}.XXXXXX")"
+  cluster_out="$(mktemp "${STATE_DIR}/calendar-clusters.${run_id}.XXXXXX")"
+  cluster_times="$(mktemp "${STATE_DIR}/calendar-cluster-times.${run_id}.XXXXXX")"
   dates_file="$(mktemp "${STATE_DIR}/calendar-dates.${run_id}.XXXXXX")"
   events_file="$(mktemp "${STATE_DIR}/calendar-events.${run_id}.XXXXXX")"
   matched_tsv="$(mktemp "${STATE_DIR}/calendar-matched.${run_id}.XXXXXX")"
@@ -3454,25 +3685,36 @@ compute_buckets_calendar() {
   fallback_tsv="$(mktemp "${STATE_DIR}/calendar-fallback.${run_id}.XXXXXX")"
   cat >"$imported_list"
 
-  local f epoch ymd
-  while IFS= read -r f || [[ -n "$f" ]]; do
+  /bin/bash "$cluster_script" --gap-minutes "${CLUSTER_GAP_MINUTES:-30}" <"$imported_list" >"$cluster_out"
+
+  local f cid cstart_iso cend_iso cstart_epoch cend_epoch ymd end_ymd
+  while IFS=$'\t' read -r f cid cstart_iso cend_iso || [[ -n "$f$cid$cstart_iso$cend_iso" ]]; do
     [[ -f "$f" ]] || continue
-    epoch="$(file_capture_epoch "$f")"
-    if [[ -z "$epoch" ]]; then
+    if [[ "$cid" == "unknown" || -z "$cstart_iso" || -z "$cend_iso" ]]; then
       /bin/echo "$f" >>"$unmatched_list"
       continue
     fi
-    ymd="$(epoch_date_ymd "$epoch")"
+    cstart_epoch="$(iso_to_epoch "$cstart_iso")"
+    cend_epoch="$(iso_to_epoch "$cend_iso")"
+    if [[ ! "$cstart_epoch" =~ ^[0-9]+$ || ! "$cend_epoch" =~ ^[0-9]+$ ]]; then
+      /bin/echo "$f" >>"$unmatched_list"
+      continue
+    fi
+    ymd="$(epoch_date_ymd "$cstart_epoch")"
     if [[ -z "$ymd" ]]; then
       /bin/echo "$f" >>"$unmatched_list"
       continue
     fi
-    /usr/bin/printf '%s\t%s\n' "$epoch" "$f" >>"$file_times"
+    /usr/bin/printf '%s\t%s\t%s\t%s\n' "$f" "$cid" "$cstart_epoch" "$cend_epoch" >>"$cluster_times"
     /bin/echo "$ymd" >>"$dates_file"
-  done <"$imported_list"
+    end_ymd="$(epoch_date_ymd "$cend_epoch")"
+    if [[ -n "$end_ymd" && "$end_ymd" != "$ymd" ]]; then
+      /bin/echo "$end_ymd" >>"$dates_file"
+    fi
+  done <"$cluster_out"
 
-  if [[ ! -s "$file_times" ]]; then
-    rm -f "$imported_list" "$file_times" "$dates_file" "$events_file" "$matched_tsv" "$unmatched_list" "$fallback_tsv"
+  if [[ ! -s "$cluster_times" ]]; then
+    rm -f "$imported_list" "$cluster_out" "$cluster_times" "$dates_file" "$events_file" "$matched_tsv" "$unmatched_list" "$fallback_tsv"
     return 1
   fi
 
@@ -3492,16 +3734,25 @@ compute_buckets_calendar() {
           next
         }
         {
-          epoch = $1
-          path = $2
+          path = $1
+          cluster_start = $3
+          cluster_end = $4
           best = ""
-          best_span = 999999999
+          best_overlap = 0
+          if (cluster_end < cluster_start) {
+            tmp = cluster_start
+            cluster_start = cluster_end
+            cluster_end = tmp
+          }
           for (i = 1; i <= n; i++) {
-            if (epoch >= start[i] && epoch <= end[i]) {
-              span = end[i] - start[i]
-              if (span < best_span) {
+            overlap_start = cluster_start > start[i] ? cluster_start : start[i]
+            overlap_end = cluster_end < end[i] ? cluster_end : end[i]
+            overlap = overlap_end - overlap_start
+            if (overlap >= 0) {
+              overlap += 1
+              if (overlap > best_overlap) {
                 best = title[i]
-                best_span = span
+                best_overlap = overlap
               }
             }
           }
@@ -3511,11 +3762,11 @@ compute_buckets_calendar() {
             print path >> unmatched
           }
         }
-      ' "$events_file" "$file_times" >"$matched_tsv"
+      ' "$events_file" "$cluster_times" >"$matched_tsv"
   fi
 
   if [[ -s "$unmatched_list" ]]; then
-    compute_buckets_with_fallback "${FOLDER_NAMING_FALLBACK:-sequential}" "$dest_dir" <"$unmatched_list" >"$fallback_tsv"
+    compute_buckets_with_fallback "${FOLDER_NAMING_FALLBACK:-cluster}" "$dest_dir" <"$unmatched_list" >"$fallback_tsv"
   fi
 
   if [[ ! -s "$matched_tsv" && ! -s "$fallback_tsv" ]]; then
@@ -3524,7 +3775,7 @@ compute_buckets_calendar() {
     cat "$matched_tsv" "$fallback_tsv"
   fi
 
-  rm -f "$imported_list" "$file_times" "$dates_file" "$events_file" "$matched_tsv" "$unmatched_list" "$fallback_tsv"
+  rm -f "$imported_list" "$cluster_out" "$cluster_times" "$dates_file" "$events_file" "$matched_tsv" "$unmatched_list" "$fallback_tsv"
 }
 
 sanitize_bucket_name() {
@@ -3562,6 +3813,24 @@ compute_buckets_manual_override() {
     printf '%s\t%s\n' "$f" "$bucket"
   done
   return 0
+}
+
+rebucket_relative_path() {
+  local src_path="$1"
+  local dest_dir="$2"
+  local rel
+
+  case "$src_path" in
+    "$dest_dir"/*) rel="${src_path#"$dest_dir"/}" ;;
+    *) rel="$(basename "$src_path")" ;;
+  esac
+
+  rel="${rel#/}"
+  case "$rel" in
+    ""|.*|*/../*|../*|*/..) rel="$(basename "$src_path")" ;;
+  esac
+
+  printf '%s' "$rel"
 }
 
 rebucket_imported_files() {
@@ -3628,7 +3897,7 @@ rebucket_imported_files() {
   local bucket_set
   bucket_set="$(mktemp)"
 
-  local src_path bucket_name bucket_dir base target stem ext n rebucket_failed
+  local src_path bucket_name bucket_dir base rel rel_dir target stem ext n rebucket_failed
   rebucket_failed=0
   while IFS=$'\t' read -r src_path bucket_name; do
     [[ -z "$src_path" || -z "$bucket_name" ]] && continue
@@ -3643,15 +3912,31 @@ rebucket_imported_files() {
     fi
 
     base="$(basename "$src_path")"
-    target="${bucket_dir}/${base}"
+    if [[ "${REBUCKET_PRESERVE_SOURCE_FOLDERS:-1}" == "1" ]]; then
+      rel="$(rebucket_relative_path "$src_path" "$dest_dir")"
+      case "$rel" in
+        "$bucket_name"/*) rel="${rel#"$bucket_name"/}" ;;
+      esac
+      rel_dir="$(dirname "$rel")"
+      if [[ "$rel_dir" != "." ]]; then
+        if ! /bin/mkdir -p "${bucket_dir}/${rel_dir}"; then
+          log "Rebucket failed: cannot create preserved folder ${bucket_dir}/${rel_dir}"
+          rebucket_failed=$((rebucket_failed + 1))
+          continue
+        fi
+      fi
+      target="${bucket_dir}/${rel}"
+    else
+      target="${bucket_dir}/${base}"
+    fi
     if [[ -e "$target" ]]; then
       stem="${base%.*}"
       ext="${base##*.}"
       n=1
-      while [[ -e "${bucket_dir}/${stem}-${n}.${ext}" ]]; do
+      while [[ -e "$(dirname "$target")/${stem}-${n}.${ext}" ]]; do
         n=$((n + 1))
       done
-      target="${bucket_dir}/${stem}-${n}.${ext}"
+      target="$(dirname "$target")/${stem}-${n}.${ext}"
     fi
 
     if /bin/mv "$src_path" "$target"; then
@@ -4011,7 +4296,9 @@ recover_pending_imports() {
       continue
     fi
 
-	    if move_queued_paths_to_post_target "$queue_file" "pending recovery"; then
+    if [[ ! -s "$queue_file" ]]; then
+      log "Pending recovery has no queued upload items after rebucket; leaving ${pending_file} unchanged."
+    elif move_queued_paths_to_post_target "$queue_file" "pending recovery" && [[ "$move_last_status" == "success" ]]; then
       if [[ -n "$move_last_target" ]]; then
         write_upload_receipt "pending recovery" "success" "$move_last_target" "$queue_file"
       fi
@@ -4556,7 +4843,9 @@ for vol_path in /Volumes/*; do
       record_pending_queue "$pending_imports_file" "$dest_dir" "$post_move_queue_file"
     fi
 
-    if [[ "$rebucket_ok" == "1" ]] && move_queued_paths_to_post_target "$post_move_queue_file" "$vol_name"; then
+    if [[ "$rebucket_ok" == "1" && ! -s "$post_move_queue_file" ]]; then
+      log "No post-transfer upload queued for ${vol_name}; skipping upload-complete notification."
+    elif [[ "$rebucket_ok" == "1" ]] && move_queued_paths_to_post_target "$post_move_queue_file" "$vol_name" && [[ "$move_last_status" == "success" ]]; then
       # Where did the files land?
       friendly_target="$move_last_target"
       if [[ -z "$friendly_target" ]]; then
