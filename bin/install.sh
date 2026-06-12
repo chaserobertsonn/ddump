@@ -254,6 +254,11 @@ add_missing_key 'PROMPT_FOR_UNKNOWN_CARD_ACTION' '"1"'
 add_missing_key 'SKIP_INTERNAL_VOLUMES' '"1"'
 add_missing_key 'IGNORE_VOLUME_NAMES' '"Macintosh HD,Recovery"'
 add_missing_key 'IGNORE_NO_UUID_VOLUMES' '"1"'
+add_missing_key 'CAMERA_CARD_DETECTION_MODE' '"smart"' "Smart unknown-volume detection: skip installer/update volumes unless they look like camera cards."
+add_missing_key 'CAMERA_CARD_MIN_MEDIA_FILES' '"3"'
+add_missing_key 'CAMERA_CARD_SCAN_MAX_DEPTH' '"6"'
+add_missing_key 'CAMERA_CARD_HINT_DIRS' '"DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"'
+add_missing_key 'CAMERA_CARD_REJECT_INSTALLER_SHAPES' '"1"'
 add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
 add_missing_key 'EJECT_TIMEOUT_SECONDS' '"20"' "Maximum seconds to wait for macOS card eject before continuing with upload."
 add_missing_key 'SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION' '"1"'

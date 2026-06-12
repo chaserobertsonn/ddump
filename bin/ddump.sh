@@ -236,6 +236,111 @@ volume_has_photos() {
   [[ -n "$hit" ]]
 }
 
+photo_find_name_args() {
+  local raw_list="${PHOTO_FILE_EXTENSIONS:-}"
+  [[ -n "$raw_list" ]] || return 1
+
+  local item first=1
+  IFS=',' read -r -a _ext_list <<<"$raw_list"
+  printf '%s\0' '('
+  for item in "${_ext_list[@]}"; do
+    item="$(trim "$item")"
+    [[ -n "$item" ]] || continue
+    item="${item#.}"
+    if [[ "$first" -eq 0 ]]; then
+      printf '%s\0' '-o'
+    fi
+    printf '%s\0%s\0' '-iname' "*.${item}"
+    first=0
+  done
+  printf '%s\0' ')'
+}
+
+camera_card_media_sample_count() {
+  local vol_path="$1"
+  local max_depth limit count
+  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-6}" "6")"
+  limit="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
+  [[ "$limit" -lt 1 ]] && limit=1
+
+  local find_args=()
+  local token
+  while IFS= read -r -d '' token; do
+    find_args+=("$token")
+  done < <(photo_find_name_args)
+
+  count="$(/usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f "${find_args[@]}" -print 2>/dev/null \
+    | /usr/bin/head -n "$limit" \
+    | /usr/bin/wc -l \
+    | /usr/bin/awk '{print $1}')"
+  printf '%s' "${count:-0}"
+}
+
+volume_has_camera_hint_dir() {
+  local vol_path="$1"
+  local raw_list="${CAMERA_CARD_HINT_DIRS:-}"
+  [[ -n "$raw_list" ]] || return 1
+
+  local item
+  IFS=',' read -r -a _hint_list <<<"$raw_list"
+  for item in "${_hint_list[@]}"; do
+    item="$(trim "$item")"
+    [[ -n "$item" ]] || continue
+    if [[ -d "${vol_path}/${item}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+volume_has_installer_shape() {
+  local vol_path="$1"
+  local hit
+  hit="$(/usr/bin/find "$vol_path" -maxdepth 2 \( \
+      -name '*.app' -o \
+      -name '*.pkg' -o \
+      -name '*.mpkg' -o \
+      -name '*.dmg' -o \
+      -name '.background' -o \
+      -name 'Applications' \
+    \) -print -quit 2>/dev/null || true)"
+  [[ -n "$hit" ]]
+}
+
+volume_looks_like_camera_card() {
+  local vol_path="$1"
+  local mode="${CAMERA_CARD_DETECTION_MODE:-smart}"
+  local min_media media_count has_hint=0 has_installer=0
+
+  if [[ "$mode" == "off" || "$mode" == "photos" ]]; then
+    volume_has_photos "$vol_path"
+    return
+  fi
+
+  if volume_has_camera_hint_dir "$vol_path"; then
+    has_hint=1
+  fi
+  if [[ "${CAMERA_CARD_REJECT_INSTALLER_SHAPES:-1}" == "1" ]] && volume_has_installer_shape "$vol_path"; then
+    has_installer=1
+  fi
+
+  min_media="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
+  [[ "$min_media" -lt 1 ]] && min_media=1
+  media_count="$(camera_card_media_sample_count "$vol_path")"
+  [[ "$media_count" =~ ^[0-9]+$ ]] || media_count=0
+
+  if [[ "$has_installer" -eq 1 && "$has_hint" -ne 1 ]]; then
+    return 1
+  fi
+  if [[ "$has_hint" -eq 1 && "$media_count" -ge 1 ]]; then
+    return 0
+  fi
+  if [[ "$media_count" -ge "$min_media" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 count_recent_photos_on_volume() {
   # Returns: "<total>\t<recent>" — number of photo files, and number modified within PHOTO_RECENCY_HOURS.
   local vol_path="$1"
@@ -372,6 +477,11 @@ REQUIRE_PHOTOS_OR_TRUSTED="1"
 PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr"
 VIDEO_FILE_EXTENSIONS="mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"
 PHOTO_RECENCY_HOURS="24"
+CAMERA_CARD_DETECTION_MODE="smart"
+CAMERA_CARD_MIN_MEDIA_FILES="3"
+CAMERA_CARD_SCAN_MAX_DEPTH="6"
+CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"
+CAMERA_CARD_REJECT_INSTALLER_SHAPES="1"
 CLOUD_UPLOADS_ENABLED="0"
 ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
@@ -4362,16 +4472,16 @@ for vol_path in /Volumes/*; do
   # real photo card just because diskutil mislabels its location.
   if [[ "$SKIP_INTERNAL_VOLUMES" == "1" ]] && ! is_trusted_name_prefix "$vol_name" \
        && is_internal_volume "$vol_path" && ! is_uuid_trusted "$uuid" \
-       && ! volume_has_photos "$vol_path"; then
-    log "Skipping internal volume with no photos: ${vol_name}"
+       && ! volume_looks_like_camera_card "$vol_path"; then
+    log "Skipping internal volume that does not look like a camera card: ${vol_name}"
     continue
   fi
 
-  # Silent-skip volumes that don't look like photo media: no photo files in the
-  # first few directories, not trusted by UUID, and not name-prefixed. Prevents
-  # popup/notification on every DMG installer, app mount, etc.
+  # Silent-skip volumes that don't look like camera media: not trusted by UUID,
+  # not name-prefixed, and lacking camera-card shape. Prevents popup/notification
+  # on DMG installers, app mounts, update volumes, etc.
   vol_has_photos=0
-  if volume_has_photos "$vol_path"; then
+  if volume_looks_like_camera_card "$vol_path"; then
     vol_has_photos=1
   fi
 
@@ -4379,7 +4489,7 @@ for vol_path in /Volumes/*; do
         && "$vol_has_photos" -ne 1 ]] \
      && ! is_trusted_name_prefix "$vol_name" \
      && ! is_uuid_trusted "$uuid"; then
-    log "Silently skipping non-photo volume: ${vol_name} (no photo files, not trusted, no name prefix)"
+    log "Silently skipping non-camera volume: ${vol_name} (not trusted, no name prefix, no camera-card media shape)"
     continue
   fi
 

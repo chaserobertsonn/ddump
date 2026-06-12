@@ -321,13 +321,18 @@ cloud-side verification path.
 
 - Lookback mode is enforced for safe card ingest behavior.
 - DDump scans the whole card for eligible media inside the lookback window by default. The folder chooser is an advanced opt-in.
+- Unknown volumes use smart camera-card detection. DDump does not require `DCIM`,
+  but it ignores installer/update/app mounts unless they contain camera-card
+  shape, such as camera hint folders or multiple media files.
 - Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.
 - SQLite memory is OFF by default (staging memory mode is default).
 - Card eject grace defaults to 60 seconds.
 - Update checks and auto updates are OFF by default until a public release/update feed is configured.
 - Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.
 - Default ntfy toggles prioritize card ejected, upload complete, and pending recovery. Mount-failure ntfy alerts are off by default because cloud mounts are short lived and retried from the app.
-- The Google Drive mount uses a DDump-owned rclone cache and prevents Finder network `.DS_Store` writes by default. This avoids stale metadata uploads at the root of the combined Drive mount.
+- Google Drive Desktop local-folder copy is the default cloud handoff. The
+  DDump-managed rclone mount remains an advanced fallback and is disabled by
+  default.
 - Calendar provider defaults to `none`; setup is opt-in from the Calendar tab.
 - Calendar ambiguity prompts default on so clusters between scheduled shoots can be assigned before final naming is trusted.
 
