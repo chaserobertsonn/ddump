@@ -59,8 +59,18 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 - Sequential naming (`Shoot-1`, `Shoot-2`, ...).
 - Custom rotating naming list.
 - Calendar naming via Google Calendar events.
+- Calendar naming via local Apple Calendar permission for iCloud, Google,
+  Exchange, and other calendars already synced to macOS.
+- Calendar naming via private ICS/webcal links.
+- Offline/default shoot name for template naming when calendar events are not
+  available.
 - Smart naming via sample destination path inference.
+- Smart destination preview for tomorrow/next-week folder structure.
+- Smart path warnings when a selected sample points inside card folders such as
+  `DCIM`.
 - Camera-native naming mode.
+- Lightroom-style folder and file templates with EXIF/date/calendar/sequence
+  tokens.
 - Naming fallback strategy.
 - Time-cluster grouping toggle independent of naming mode.
 - Cluster gap tuning.
@@ -70,10 +80,17 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 ### D) Destination transfer and cloud resilience
 
 - Destination copy (not move) so staging remains backup.
+- Flat destination shoot folders by default; DDump does not recreate
+  `DCIM/101_2026` under the final shoot folder unless the user opts into
+  preserving source folders.
 - Primary destination root.
 - Multiple additional destination roots.
 - Fallback destination root.
 - Staging-only operation mode.
+- Provider-neutral synced-folder destinations: Google Drive Desktop, Dropbox,
+  Box, OneDrive, iCloud Drive, pCloud, NAS, or local disk.
+- Google Drive Desktop local-folder handoff as the fast primary path.
+- rclone as advanced fallback/verification path rather than required public setup.
 - Mount preflight checks before destination transfer.
 - Destination reconciliation (skip if already present and matching stats).
 - Pending upload queue + retry backoff schedule.
@@ -83,9 +100,11 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 
 ### E) Mount and network operations
 
-- Bundled rclone mount helper script and LaunchAgent.
-- Mount retry backoff (`15,30,60,180` default).
-- Hard restart mount action in app.
+- Bundled rclone helper scripts for advanced fallback workflows.
+- Managed mount helpers are disabled by default; normal users choose a synced
+  folder instead.
+- Mount retry backoff (`15,30,60,180` default) only for advanced managed-mount mode.
+- Hard restart mount action in app for advanced mode.
 - Finder-server keepalive guard during uploads.
 - Auto-off timer guard refresh loop during uploads.
 - Network reconnect watcher that auto-triggers retry when internet returns and pending uploads exist.
@@ -117,7 +136,12 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 - Retry pending uploads action.
 - Safe cleanup action.
 - Settings tabs: General, Naming, Detection, Notifications, Cloud, Calendar.
+- First-run wizard for staging folder, destination folder, fallback backup,
+  auto-eject, scan window, offline shoot name, and ntfy basics.
+- Restart setup wizard button in General settings; each wizard page can be
+  skipped.
 - General settings include destination mode, destination folders, appearance, and update checks.
+- Launch-size setting: remember last window size, compact, or large.
 - Info tooltips (`i`) for key settings.
 - Theme mode: light/dark/system.
 - Icon preset library:
@@ -187,9 +211,18 @@ Yes, but generic sync apps do not manage card trust, lookback ingest logic, rein
 
 DDump stages locally and retries delivery automatically. Reconnect watcher triggers when internet returns.
 
+### "What cloud services work?"
+
+Any service that syncs a local folder works: Google Drive Desktop, Dropbox, Box,
+OneDrive, iCloud Drive, pCloud, NAS folders, and local disks. DDump handles card
+ingest and organization, then copies into that folder; the provider app handles
+cloud sync.
+
 ### "What if mount drops?"
 
-DDump preflights mount state, retries mount with backoff, guards timer during upload, and alerts on failure.
+Normal consumer setup does not rely on a DDump-managed mount. Advanced rclone
+fallback mode preflights state, retries with backoff, guards timer during upload,
+and alerts on failure.
 
 ### "What if files are missing?"
 

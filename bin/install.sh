@@ -318,9 +318,14 @@ add_missing_key 'CANDIDATE_MODE' '"lookback"' "Import candidate scan mode: lookb
 add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only files newer than this many hours are considered."
 add_missing_key 'USE_NOTIFICATIONS' '"1"' "Native macOS notifications instead of Terminal monitor."
 add_missing_key 'NOTIFICATION_TIMEOUT_SECONDS' '"60"'
-add_missing_key 'FOLDER_NAMING_STRATEGY' '"sequential"' "How to name shoot folders: smart | calendar | sequential | custom | camera."
+add_missing_key 'FOLDER_NAMING_STRATEGY' '"sequential"' "How to name shoot folders: template | smart | calendar | sequential | custom | camera."
 add_missing_key 'FOLDER_NAMING_FALLBACK' '"cluster"'
-add_missing_key 'REBUCKET_PRESERVE_SOURCE_FOLDERS' '"1"' "Keep camera/source folder paths inside shoot/calendar buckets."
+add_missing_key 'REBUCKET_PRESERVE_SOURCE_FOLDERS' '"0"' "Keep destination shoot folders flat; set 1 to preserve camera/source folder paths inside buckets."
+add_missing_key 'FOLDER_NAME_TEMPLATE' '"{smart_camera} - {shoot} - {date_ymd}"' "Template strategy folder name; supports EXIF, calendar, date, sequence, and camera tokens."
+add_missing_key 'SMART_CAMERA_LABEL_MODE' '"smart"' "Smart camera token mode: smart | brand | model | full."
+add_missing_key 'FILE_RENAME_ENABLED' '"0"' "Optional filename replacement during folder rebucketing."
+add_missing_key 'FILE_NAME_TEMPLATE' '"{filename}"' "Filename template. Extension is preserved automatically."
+add_missing_key 'DEFAULT_SHOOT_NAME' '""' "Optional offline/default shoot label used when calendar naming has no event."
 add_missing_key 'SMART_SAMPLE_PATH' '""' "Real shoot folder path used by smart naming to infer the daily Drive structure."
 add_missing_key 'SMART_ASSIGN_EXISTING_FOLDERS' '"0"' "Advanced smart naming: map clusters into existing folders under today's Drive date folder."
 replace_key_if_exact 'SMART_ASSIGN_EXISTING_FOLDERS' '1' '0'
@@ -384,10 +389,12 @@ add_missing_key 'NETWORK_RESUME_COOLDOWN_SECONDS' '"120"' "Minimum seconds betwe
 add_missing_key 'APP_COLOR_SCHEME' '"system"' "App appearance: system | light | dark."
 add_missing_key 'APP_ICON_DEFAULT_LIGHT' '""' "Stored icon preset ID used when app appearance is light."
 add_missing_key 'APP_ICON_DEFAULT_DARK' '""' "Stored icon preset ID used when app appearance is dark."
+add_missing_key 'ONBOARDING_COMPLETED' '"0"' "First-run setup wizard completion flag."
 add_missing_key 'UPDATE_CHECKS_ENABLED' '"0"' "Enable public-release update checks."
 add_missing_key 'AUTO_UPDATES_ENABLED' '"0"' "Open the GitHub download page automatically when a newer release is found."
 add_missing_key 'UPDATE_CHECK_FREQUENCY' '"weekly"' "Update check cadence: startup | weekly | monthly."
 add_missing_key 'UPDATE_GITHUB_REPO' '"chaserobertsonn/ddump"' "GitHub owner/repo used for release update checks."
+add_missing_key 'WINDOW_RESTORE_MODE' '"remember"' "Main window behavior: remember | compact | large."
 
 normalize_escaped_home_path 'RCLONE_BIN'
 normalize_escaped_home_path 'FINDERSERVER_BIN'
@@ -396,6 +403,11 @@ normalize_escaped_home_path 'DB_FILE'
 if grep -q '^VERIFY_COPY_HASH="1"$' "$USER_CONFIG"; then
   /usr/bin/sed -i '' 's/^VERIFY_COPY_HASH="1"$/VERIFY_COPY_HASH="0"/' "$USER_CONFIG"
   echo "Updated VERIFY_COPY_HASH to 0 (size verification remains enabled; full hash verify is optional)."
+fi
+
+if grep -q '^REBUCKET_PRESERVE_SOURCE_FOLDERS="1"$' "$USER_CONFIG"; then
+  /usr/bin/sed -i '' 's/^REBUCKET_PRESERVE_SOURCE_FOLDERS="1"$/REBUCKET_PRESERVE_SOURCE_FOLDERS="0"/' "$USER_CONFIG"
+  echo "Updated REBUCKET_PRESERVE_SOURCE_FOLDERS to 0 so destination shoot folders do not nest DCIM/camera folders."
 fi
 
 if grep -q '^DAILY_FOLDER_FORMAT="%Y-%m-%d-dump"$' "$USER_CONFIG"; then

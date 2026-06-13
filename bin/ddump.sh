@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_SUPPORT_DIR="${HOME}/Library/Application Support/DDump"
@@ -492,7 +492,12 @@ POST_MOVE_MONTH_FORMAT="%Y.%m"
 POST_MOVE_DAY_FORMAT="%Y.%m.%d"
 FOLDER_NAMING_STRATEGY="sequential"
 FOLDER_NAMING_FALLBACK="cluster"
-REBUCKET_PRESERVE_SOURCE_FOLDERS="1"
+REBUCKET_PRESERVE_SOURCE_FOLDERS="0"
+FOLDER_NAME_TEMPLATE="{smart_camera} - {shoot} - {date_ymd}"
+SMART_CAMERA_LABEL_MODE="smart"
+FILE_RENAME_ENABLED="0"
+FILE_NAME_TEMPLATE="{filename}"
+DEFAULT_SHOOT_NAME=""
 SMART_SAMPLE_PATH=""
 SMART_ASSIGN_EXISTING_FOLDERS="0"
 SPLIT_PHOTO_VIDEO="0"
@@ -3644,9 +3649,9 @@ compute_buckets_cluster() {
     else
       start_hm="${cstart_iso:11:5}"
       end_hm="${cend_iso:11:5}"
-      bucket="${tmpl//\{n\}/$cid}"
-      bucket="${bucket//\{start\}/$start_hm}"
-      bucket="${bucket//\{end\}/$end_hm}"
+      bucket="$(replace_naming_token "$tmpl" "n" "$cid")"
+      bucket="$(replace_naming_token "$bucket" "start" "$start_hm")"
+      bucket="$(replace_naming_token "$bucket" "end" "$end_hm")"
     fi
     printf '%s\t%s\n' "$file_path" "$bucket"
   done <"$cluster_out"
@@ -3713,9 +3718,9 @@ compute_buckets_smart() {
       else
         start_hm="${cstart_iso:11:5}"
         end_hm="${cend_iso:11:5}"
-        bucket="${tmpl//\{n\}/$cid}"
-        bucket="${bucket//\{start\}/$start_hm}"
-        bucket="${bucket//\{end\}/$end_hm}"
+        bucket="$(replace_naming_token "$tmpl" "n" "$cid")"
+        bucket="$(replace_naming_token "$bucket" "start" "$start_hm")"
+        bucket="$(replace_naming_token "$bucket" "end" "$end_hm")"
       fi
     fi
     printf '%s\t%s\n' "$file_path" "$bucket"
@@ -3740,11 +3745,247 @@ file_capture_epoch() {
   [[ "$epoch" =~ ^[0-9]+$ ]] && printf '%s' "$epoch"
 }
 
+metadata_field() {
+  local src_file="$1"
+  local tag="$2"
+  local value=""
+  if command -v exiftool >/dev/null 2>&1; then
+    value="$(exiftool -s3 "-${tag}" "$src_file" 2>/dev/null | /usr/bin/head -n 1 || true)"
+  fi
+  value="$(trim "$value")"
+  printf '%s' "$value"
+}
+
+squash_name_spaces() {
+  /usr/bin/sed -E 's/[[:space:]]+/ /g; s/^ +//; s/ +$//'
+}
+
+simplify_camera_make() {
+  local make="$1"
+  make="$(printf '%s' "$make" | squash_name_spaces)"
+  local lower
+  lower="$(printf '%s' "$make" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *canon*) printf 'Canon' ;;
+    *sony*) printf 'Sony' ;;
+    *nikon*) printf 'Nikon' ;;
+    *fujifilm*|*fuji*) printf 'Fuji' ;;
+    *panasonic*|*lumix*) printf 'Panasonic' ;;
+    *olympus*|*om\ digital*|*om-system*|*om\ system*) printf 'OM System' ;;
+    *dji*) printf 'DJI' ;;
+    *gopro*) printf 'GoPro' ;;
+    *leica*) printf 'Leica' ;;
+    *hasselblad*) printf 'Hasselblad' ;;
+    "") printf '' ;;
+    *) printf '%s' "$make" ;;
+  esac
+}
+
+simplify_camera_model() {
+  local make="$1"
+  local model="$2"
+  local brand="$3"
+  local short
+  short="$(printf '%s' "$model" | squash_name_spaces)"
+  short="${short#"$make"}"
+  short="${short#"$brand"}"
+  short="$(printf '%s' "$short" | squash_name_spaces)"
+
+  short="${short#Canon EOS }"
+  short="${short#EOS }"
+  short="${short#ILCE-}"
+  short="${short#NIKON }"
+  short="${short#Nikon }"
+  short="${short#FUJIFILM }"
+  short="${short#LUMIX }"
+  short="${short#Panasonic }"
+  short="${short#DJI }"
+
+  case "$short" in
+    "") short="$model" ;;
+    ILCE-7SM3|7SM3) short="a7S III" ;;
+    ILCE-7M4|7M4) short="a7 IV" ;;
+    ILCE-7RM5|7RM5) short="a7R V" ;;
+    ILCE-1|1) short="a1" ;;
+    FC7303|FC3582|FC3411|FC3170) short="Mavic" ;;
+  esac
+
+  printf '%s' "$short" | squash_name_spaces
+}
+
+smart_camera_label_for_file() {
+  local src_file="$1"
+  local mode="${SMART_CAMERA_LABEL_MODE:-smart}"
+  local make model brand model_short label
+  make="$(metadata_field "$src_file" "Make")"
+  model="$(metadata_field "$src_file" "Model")"
+  brand="$(simplify_camera_make "$make")"
+  model_short="$(simplify_camera_model "$make" "$model" "$brand")"
+
+  case "$mode" in
+    brand) label="$brand" ;;
+    full) label="$(printf '%s %s' "$brand" "$model_short" | squash_name_spaces)" ;;
+    model) label="$model_short" ;;
+    smart|*)
+      if [[ -n "$brand" ]]; then
+        label="$brand"
+      elif [[ -n "$model_short" ]]; then
+        label="$model_short"
+      else
+        label="Camera"
+      fi
+      ;;
+  esac
+
+  if [[ -z "$label" || "$label" == " " ]]; then
+    label="Camera"
+  fi
+  printf '%s' "$label"
+}
+
 epoch_date_ymd() {
   local epoch="$1"
   /bin/date -r "$epoch" '+%Y-%m-%d' 2>/dev/null \
     || /bin/date -d "@$epoch" '+%Y-%m-%d' 2>/dev/null \
     || true
+}
+
+epoch_strftime() {
+  local epoch="$1"
+  local fmt="$2"
+  /bin/date -r "$epoch" "$fmt" 2>/dev/null \
+    || /bin/date -d "@$epoch" "$fmt" 2>/dev/null \
+    || true
+}
+
+template_sequence_value() {
+  local seq="$1"
+  local width="$2"
+  /usr/bin/printf "%0${width}d" "$seq" 2>/dev/null || printf '%s' "$seq"
+}
+
+replace_naming_token() {
+  local text="$1"
+  local token="$2"
+  local value="$3"
+  local pattern="\\{${token}\\}"
+  printf '%s' "${text//$pattern/$value}"
+}
+
+render_naming_template() {
+  local template="$1"
+  local src_file="$2"
+  local shoot_name="${3:-}"
+  local cluster_name="${4:-}"
+  local seq="${5:-1}"
+  local total="${6:-1}"
+  local smart_camera_override="${7:-}"
+  if [[ -z "$shoot_name" || "$shoot_name" == "${FOLDER_NAME_UNCATEGORIZED:-Uncategorized}" || "$shoot_name" == Cluster* ]]; then
+    local default_shoot
+    default_shoot="$(trim "${DEFAULT_SHOOT_NAME:-}")"
+    [[ -n "$default_shoot" ]] && shoot_name="$default_shoot"
+  fi
+
+  local base filename ext parent folder epoch year month day date_ymd date_short date_slash time_hms hour minute second
+  base="$(basename "$src_file")"
+  ext="${base##*.}"
+  if [[ "$base" == "$ext" ]]; then ext=""; fi
+  filename="${base%.*}"
+  if [[ -z "$filename" ]]; then filename="$base"; fi
+  parent="$(dirname "$src_file")"
+  folder="$(basename "$parent")"
+  epoch="$(file_capture_epoch "$src_file")"
+  if [[ "$epoch" =~ ^[0-9]+$ ]]; then
+    year="$(epoch_strftime "$epoch" '+%Y')"
+    month="$(epoch_strftime "$epoch" '+%m')"
+    day="$(epoch_strftime "$epoch" '+%d')"
+    date_ymd="$(epoch_strftime "$epoch" '+%Y%m%d')"
+    date_short="$(epoch_strftime "$epoch" '+%y%m%d')"
+    date_slash="$(epoch_strftime "$epoch" '+%m-%d-%y')"
+    time_hms="$(epoch_strftime "$epoch" '+%H%M%S')"
+    hour="$(epoch_strftime "$epoch" '+%H')"
+    minute="$(epoch_strftime "$epoch" '+%M')"
+    second="$(epoch_strftime "$epoch" '+%S')"
+  else
+    year="$(/bin/date '+%Y')"
+    month="$(/bin/date '+%m')"
+    day="$(/bin/date '+%d')"
+    date_ymd="$(/bin/date '+%Y%m%d')"
+    date_short="$(/bin/date '+%y%m%d')"
+    date_slash="$(/bin/date '+%m-%d-%y')"
+    time_hms="$(/bin/date '+%H%M%S')"
+    hour="$(/bin/date '+%H')"
+    minute="$(/bin/date '+%M')"
+    second="$(/bin/date '+%S')"
+  fi
+
+  local make model brand model_short smart_camera lens serial artist software iso focal exposure gps dimensions camera_type title out
+  make="$(metadata_field "$src_file" "Make")"
+  model="$(metadata_field "$src_file" "Model")"
+  brand="$(simplify_camera_make "$make")"
+  model_short="$(simplify_camera_model "$make" "$model" "$brand")"
+  smart_camera="$(smart_camera_label_for_file "$src_file")"
+  [[ -n "$smart_camera_override" ]] && smart_camera="$smart_camera_override"
+  lens="$(metadata_field "$src_file" "LensModel")"
+  [[ -n "$lens" ]] || lens="$(metadata_field "$src_file" "Lens")"
+  serial="$(metadata_field "$src_file" "SerialNumber")"
+  artist="$(metadata_field "$src_file" "Artist")"
+  software="$(metadata_field "$src_file" "Software")"
+  iso="$(metadata_field "$src_file" "ISO")"
+  focal="$(metadata_field "$src_file" "FocalLength")"
+  exposure="$(metadata_field "$src_file" "ExposureTime")"
+  gps="$(metadata_field "$src_file" "GPSPosition")"
+  dimensions="$(metadata_field "$src_file" "ImageSize")"
+  title="$(metadata_field "$src_file" "Title")"
+  camera_type="$smart_camera"
+
+  out="$template"
+  out="$(replace_naming_token "$out" "smart_camera" "$smart_camera")"
+  out="$(replace_naming_token "$out" "camera_type" "$camera_type")"
+  out="$(replace_naming_token "$out" "camera_brand" "$brand")"
+  out="$(replace_naming_token "$out" "camera_make" "$make")"
+  out="$(replace_naming_token "$out" "camera_model" "$model")"
+  out="$(replace_naming_token "$out" "camera_model_short" "$model_short")"
+  out="$(replace_naming_token "$out" "calendar_event" "$shoot_name")"
+  out="$(replace_naming_token "$out" "shoot" "$shoot_name")"
+  out="$(replace_naming_token "$out" "cluster" "$cluster_name")"
+  out="$(replace_naming_token "$out" "date_ymd" "$date_ymd")"
+  out="$(replace_naming_token "$out" "date_yymmdd" "$date_short")"
+  out="$(replace_naming_token "$out" "date" "$date_slash")"
+  out="$(replace_naming_token "$out" "year" "$year")"
+  out="$(replace_naming_token "$out" "month" "$month")"
+  out="$(replace_naming_token "$out" "day" "$day")"
+  out="$(replace_naming_token "$out" "time" "$time_hms")"
+  out="$(replace_naming_token "$out" "hour" "$hour")"
+  out="$(replace_naming_token "$out" "minute" "$minute")"
+  out="$(replace_naming_token "$out" "second" "$second")"
+  out="$(replace_naming_token "$out" "folder" "$folder")"
+  out="$(replace_naming_token "$out" "parent_folder" "$folder")"
+  out="$(replace_naming_token "$out" "filename" "$filename")"
+  out="$(replace_naming_token "$out" "original_filename" "$filename")"
+  out="$(replace_naming_token "$out" "basename" "$filename")"
+  out="$(replace_naming_token "$out" "ext" "$ext")"
+  out="$(replace_naming_token "$out" "extension" "$ext")"
+  out="$(replace_naming_token "$out" "sequence_2" "$(template_sequence_value "$seq" 2)")"
+  out="$(replace_naming_token "$out" "sequence_3" "$(template_sequence_value "$seq" 3)")"
+  out="$(replace_naming_token "$out" "sequence_4" "$(template_sequence_value "$seq" 4)")"
+  out="$(replace_naming_token "$out" "sequence_5" "$(template_sequence_value "$seq" 5)")"
+  out="$(replace_naming_token "$out" "sequence" "$seq")"
+  out="$(replace_naming_token "$out" "image_number" "$seq")"
+  out="$(replace_naming_token "$out" "total" "$total")"
+  out="$(replace_naming_token "$out" "lens" "$lens")"
+  out="$(replace_naming_token "$out" "serial" "$serial")"
+  out="$(replace_naming_token "$out" "artist" "$artist")"
+  out="$(replace_naming_token "$out" "software" "$software")"
+  out="$(replace_naming_token "$out" "iso" "$iso")"
+  out="$(replace_naming_token "$out" "focal_length" "$focal")"
+  out="$(replace_naming_token "$out" "exposure" "$exposure")"
+  out="$(replace_naming_token "$out" "gps" "$gps")"
+  out="$(replace_naming_token "$out" "dimensions" "$dimensions")"
+  out="$(replace_naming_token "$out" "title" "$title")"
+  out="$(printf '%s' "$out" | /usr/bin/sed -E 's/[[:space:]]*-[[:space:]]*/ - /g; s/( - )+$/ /; s/^( - )+//; s/[[:space:]]+/ /g; s/^ +//; s/ +$//')"
+  [[ -n "$out" ]] || out="${FOLDER_NAME_UNCATEGORIZED:-Uncategorized}"
+  printf '%s' "$out"
 }
 
 compute_buckets_camera() {
@@ -3761,6 +4002,92 @@ compute_buckets_camera() {
   done
 }
 
+build_smart_camera_label_map() {
+  local bucket_tsv="$1"
+  local label_tsv="$2"
+  local camera_tsv file_path base_bucket make model brand model_short full serial
+  camera_tsv="$(mktemp "${STATE_DIR}/template-camera.${run_id}.XXXXXX")"
+
+  while IFS=$'\t' read -r file_path base_bucket || [[ -n "$file_path$base_bucket" ]]; do
+    [[ -n "$file_path" ]] || continue
+    make="$(metadata_field "$file_path" "Make")"
+    model="$(metadata_field "$file_path" "Model")"
+    brand="$(simplify_camera_make "$make")"
+    model_short="$(simplify_camera_model "$make" "$model" "$brand")"
+    full="$(printf '%s %s' "$brand" "$model_short" | squash_name_spaces)"
+    [[ -n "$full" ]] || full="${brand:-Camera}"
+    serial="$(metadata_field "$file_path" "SerialNumber")"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$file_path" "$base_bucket" "${brand:-Camera}" "$full" "$serial" >>"$camera_tsv"
+  done <"$bucket_tsv"
+
+  /usr/bin/awk -F '\t' '
+    {
+      file[NR]=$1; bucket[NR]=$2; brand[NR]=$3; full[NR]=$4; serial[NR]=$5
+      b=$2; br=$3; fu=$4; se=$5
+      if (!(b SUBSEP br in seen_brand)) { seen_brand[b SUBSEP br]=1; brand_count[b]++ }
+      if (!(b SUBSEP br SUBSEP fu in seen_model)) { seen_model[b SUBSEP br SUBSEP fu]=1; model_count[b SUBSEP br]++ }
+      if (se != "" && !(b SUBSEP fu SUBSEP se in seen_serial)) {
+        seen_serial[b SUBSEP fu SUBSEP se]=1
+        serial_count[b SUBSEP fu]++
+        serial_index[b SUBSEP fu SUBSEP se]=serial_count[b SUBSEP fu]
+      }
+    }
+    END {
+      for (i=1; i<=NR; i++) {
+        label=brand[i]
+        if (brand_count[bucket[i]] > 1) {
+          label=brand[i]
+        } else if (model_count[bucket[i] SUBSEP brand[i]] > 1) {
+          label=full[i]
+        } else if (serial[i] != "" && serial_count[bucket[i] SUBSEP full[i]] > 1) {
+          label=full[i] " " serial_index[bucket[i] SUBSEP full[i] SUBSEP serial[i]]
+        }
+        if (label == "") { label="Camera" }
+        print file[i] "\t" label
+      }
+    }
+  ' "$camera_tsv" >"$label_tsv"
+
+  rm -f "$camera_tsv"
+}
+
+smart_camera_label_from_map() {
+  local label_tsv="$1"
+  local file_path="$2"
+  [[ -f "$label_tsv" ]] || return 0
+  /usr/bin/awk -F '\t' -v f="$file_path" '$1 == f { print $2; exit }' "$label_tsv"
+}
+
+compute_buckets_template() {
+  local dest_dir="$1"
+  local template="${FOLDER_NAME_TEMPLATE:-}"
+  [[ -n "$template" ]] || template="{smart_camera} - {shoot} - {date_ymd}"
+  local imported_list base_tsv label_tsv file_path base_bucket bucket smart_label
+  imported_list="$(mktemp "${STATE_DIR}/template-imported.${run_id}.XXXXXX")"
+  base_tsv="$(mktemp "${STATE_DIR}/template-base.${run_id}.XXXXXX")"
+  label_tsv="$(mktemp "${STATE_DIR}/template-label.${run_id}.XXXXXX")"
+  cat >"$imported_list"
+
+  if [[ "${CALENDAR_PROVIDER:-none}" != "none" ]] && compute_buckets_calendar "$dest_dir" <"$imported_list" >"$base_tsv"; then
+    :
+  else
+    local fallback="${FOLDER_NAMING_FALLBACK:-cluster}"
+    [[ "$fallback" == "template" ]] && fallback="cluster"
+    compute_buckets_with_fallback "$fallback" "$dest_dir" <"$imported_list" >"$base_tsv"
+  fi
+
+  build_smart_camera_label_map "$base_tsv" "$label_tsv"
+
+  while IFS=$'\t' read -r file_path base_bucket || [[ -n "$file_path$base_bucket" ]]; do
+    [[ -n "$file_path" ]] || continue
+    smart_label="$(smart_camera_label_from_map "$label_tsv" "$file_path")"
+    bucket="$(render_naming_template "$template" "$file_path" "$base_bucket" "$base_bucket" "1" "1" "$smart_label")"
+    printf '%s\t%s\n' "$file_path" "$bucket"
+  done <"$base_tsv"
+
+  rm -f "$imported_list" "$base_tsv" "$label_tsv"
+}
+
 compute_buckets_with_fallback() {
   local fallback="$1"
   local dest_dir="$2"
@@ -3769,6 +4096,7 @@ compute_buckets_with_fallback() {
     custom) compute_buckets_custom "$dest_dir" || compute_buckets_sequential "$dest_dir" ;;
     camera) compute_buckets_camera "$dest_dir" ;;
     cluster) compute_buckets_cluster "$dest_dir" ;;
+    template) compute_buckets_template "$dest_dir" ;;
     *) compute_buckets_sequential "$dest_dir" ;;
   esac
 }
@@ -3903,6 +4231,31 @@ sanitize_bucket_name() {
   printf '%.180s' "$cleaned"
 }
 
+render_file_name_for_rebucket() {
+  local src_path="$1"
+  local bucket_name="$2"
+  local seq="$3"
+  local total="$4"
+  local smart_camera_override="${5:-}"
+  local template="${FILE_NAME_TEMPLATE:-}"
+  [[ -n "$template" ]] || template="{filename}"
+  local base ext rendered stem
+  base="$(basename "$src_path")"
+  ext="${base##*.}"
+  if [[ "$base" == "$ext" ]]; then ext=""; fi
+  rendered="$(render_naming_template "$template" "$src_path" "$bucket_name" "$bucket_name" "$seq" "$total" "$smart_camera_override")"
+  rendered="$(sanitize_bucket_name "$rendered")"
+  if [[ -n "$ext" ]]; then
+    case "$(printf '%s' "$rendered" | /usr/bin/tr '[:upper:]' '[:lower:]')" in
+      *."$(printf '%s' "$ext" | /usr/bin/tr '[:upper:]' '[:lower:]')") stem="${rendered%.*}" ;;
+      *) stem="$rendered" ;;
+    esac
+    printf '%s.%s' "$stem" "$ext"
+  else
+    printf '%s' "$rendered"
+  fi
+}
+
 manual_shoot_name_override() {
   [[ -f "$MANUAL_SHOOT_NAME_FILE" ]] || return 1
   local raw
@@ -3986,6 +4339,9 @@ rebucket_imported_files() {
       calendar)
         compute_buckets_calendar "$dest_dir" <"$imported_list" >"$bucket_tsv" || primary_ok=0
         ;;
+      template)
+        compute_buckets_template "$dest_dir" <"$imported_list" >"$bucket_tsv" || primary_ok=0
+        ;;
       *)
         log "Unknown FOLDER_NAMING_STRATEGY='$strategy'; keeping camera folders."
         rm -f "$bucket_tsv"
@@ -4004,14 +4360,22 @@ rebucket_imported_files() {
   fi
 
   : > "$queue_file"
-  local bucket_set
+  local bucket_set camera_label_tsv
   bucket_set="$(mktemp)"
+  camera_label_tsv="$(mktemp "${STATE_DIR}/rebucket-camera-labels.${run_id}.XXXXXX")"
+  if [[ "${FILE_RENAME_ENABLED:-0}" == "1" ]]; then
+    build_smart_camera_label_map "$bucket_tsv" "$camera_label_tsv"
+  fi
 
-  local src_path bucket_name bucket_dir base rel rel_dir target stem ext n rebucket_failed
+  local src_path bucket_name bucket_dir base output_base rel rel_dir target stem ext n rebucket_failed seq total_count smart_label
   rebucket_failed=0
+  seq=0
+  total_count="$(/usr/bin/wc -l <"$bucket_tsv" | /usr/bin/awk '{print $1}')"
+  [[ "$total_count" =~ ^[0-9]+$ ]] || total_count=0
   while IFS=$'\t' read -r src_path bucket_name; do
     [[ -z "$src_path" || -z "$bucket_name" ]] && continue
     [[ -f "$src_path" ]] || continue
+    seq=$((seq + 1))
 
     bucket_name="$(sanitize_bucket_name "$bucket_name")"
     bucket_dir="${dest_dir}/${bucket_name}"
@@ -4022,12 +4386,19 @@ rebucket_imported_files() {
     fi
 
     base="$(basename "$src_path")"
-    if [[ "${REBUCKET_PRESERVE_SOURCE_FOLDERS:-1}" == "1" ]]; then
+    output_base="$base"
+    if [[ "${FILE_RENAME_ENABLED:-0}" == "1" ]]; then
+      smart_label="$(smart_camera_label_from_map "$camera_label_tsv" "$src_path")"
+      output_base="$(render_file_name_for_rebucket "$src_path" "$bucket_name" "$seq" "$total_count" "$smart_label")"
+    fi
+    if [[ "${REBUCKET_PRESERVE_SOURCE_FOLDERS:-0}" == "1" ]]; then
       rel="$(rebucket_relative_path "$src_path" "$dest_dir")"
       case "$rel" in
         "$bucket_name"/*) rel="${rel#"$bucket_name"/}" ;;
       esac
       rel_dir="$(dirname "$rel")"
+      rel="${rel_dir}/${output_base}"
+      [[ "$rel_dir" == "." ]] && rel="$output_base"
       if [[ "$rel_dir" != "." ]]; then
         if ! /bin/mkdir -p "${bucket_dir}/${rel_dir}"; then
           log "Rebucket failed: cannot create preserved folder ${bucket_dir}/${rel_dir}"
@@ -4037,16 +4408,20 @@ rebucket_imported_files() {
       fi
       target="${bucket_dir}/${rel}"
     else
-      target="${bucket_dir}/${base}"
+      target="${bucket_dir}/${output_base}"
     fi
     if [[ -e "$target" ]]; then
-      stem="${base%.*}"
-      ext="${base##*.}"
+      stem="${output_base%.*}"
+      ext="${output_base##*.}"
+      if [[ "$stem" == "$ext" ]]; then
+        stem="$output_base"
+        ext=""
+      fi
       n=1
-      while [[ -e "$(dirname "$target")/${stem}-${n}.${ext}" ]]; do
+      while [[ -e "$(dirname "$target")/${stem}-${n}${ext:+.${ext}}" ]]; do
         n=$((n + 1))
       done
-      target="$(dirname "$target")/${stem}-${n}.${ext}"
+      target="$(dirname "$target")/${stem}-${n}${ext:+.${ext}}"
     fi
 
     if /bin/mv "$src_path" "$target"; then
@@ -4063,7 +4438,7 @@ rebucket_imported_files() {
   # Clean up now-empty camera folders left behind by the moves.
   /usr/bin/find "$dest_dir" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
 
-  rm -f "$bucket_tsv" "$bucket_set"
+  rm -f "$bucket_tsv" "$bucket_set" "$camera_label_tsv"
   if [[ "$rebucket_failed" -gt 0 ]]; then
     return 1
   fi

@@ -69,24 +69,44 @@ It is built for high-confidence transfer workflows:
 - Staging-only mode (disable destination transfer).
 - Post-transfer is copy-based (staging remains as backup).
 - Optional smart-mode video split to sibling Video path.
+- Works with any provider that exposes a normal local folder: Google Drive
+  Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, NAS folders, or local
+  disks. DDump copies into the chosen folder; that provider handles syncing.
 
 ### 5) Folder naming and grouping
 
 Strategies:
 
+- `template`: generate names from tokens such as `{smart_camera}`,
+  `{calendar_event}`, `{date_ymd}`, `{lens}`, `{sequence_3}`, or `{folder}`.
 - `sequential` (default): `Shoot-1`, `Shoot-2`, ...
 - `custom`: cycle through configured list.
 - `calendar`: match each capture-time cluster to connected calendar events.
 - `smart`: infer date-ladder destination shape from a sample path.
 - `camera`: keep camera folder structure names.
 
-DDump preserves the original camera/source folders inside each shoot bucket by
-default. For example, files copied from `DCIM/104_2026` into a calendar bucket
-land at `Kaysville Shoot/DCIM/104_2026/...`, not flattened into one folder.
+DDump keeps destination shoot folders flat by default. For example, files copied
+from `DCIM/104_2026` into a calendar bucket land directly in
+`Kaysville Shoot/...`, not inside another `DCIM/104_2026` folder. The original
+staging safety copy is still retained until Safe Cleanup.
 When a card contains multiple shoots, the 30-minute cluster gap splits them
 before calendar naming and upload. If no calendar event matches a cluster, DDump
 falls back to a time-cluster folder name instead of merging everything into
 `Shoot-1`.
+
+Template mode is for Lightroom-style naming without the Lightroom dialog. A
+folder template like `{smart_camera} - {calendar_event} - {date_ymd}` can produce
+`Canon - Pablo Wedding - 20260622`. Optional file renaming uses the same token
+set and preserves file extensions automatically. Smart camera labels simplify
+EXIF make/model values into human labels such as `Canon`, `Sony`, or `DJI`.
+In `smart` mode DDump keeps the label short unless the same shoot needs extra
+detail, then expands to labels such as `Sony a7S III` or numbered matching
+bodies when serial metadata is available.
+
+For no-internet days, set `DEFAULT_SHOOT_NAME` or use Settings -> Naming ->
+Default offline shoot name. Template mode can use that value for `{shoot}` when
+there is no calendar event. Capture-time clustering still separates groups when
+the gap threshold says they are different shoots.
 
 Smart mode is for date-ladder destination folders such as:
 
@@ -95,6 +115,15 @@ Smart mode is for date-ladder destination folders such as:
 ```
 
 Paste one real sample shoot folder in Settings -> Naming. DDump reuses the root before the date ladder, then automatically uploads to today's `YYYY/YYYY.MM/YYYY.MM.DD` folder on every run.
+Select the lowest real folder that proves the structure, not only the broad
+parent. For example, choose a path like:
+
+```text
+.../Uploads/1 - Photo/2026/2026.06/2026.06.12/Shoot Name
+```
+
+The app previews what DDump thinks tomorrow and next week will look like before
+you rely on the structure.
 
 During an active card transfer, the main progress panel also has an optional Shoot name field. If filled in before staging finishes, that name overrides automatic bucket naming for that run.
 
@@ -259,6 +288,11 @@ Important keys:
 - `FOLDER_NAMING_STRATEGY`
 - `FOLDER_NAMING_FALLBACK`
 - `REBUCKET_PRESERVE_SOURCE_FOLDERS`
+- `FOLDER_NAME_TEMPLATE`
+- `SMART_CAMERA_LABEL_MODE`
+- `FILE_RENAME_ENABLED`
+- `FILE_NAME_TEMPLATE`
+- `DEFAULT_SHOOT_NAME`
 - `SMART_SAMPLE_PATH`
 - `SMART_ASSIGN_EXISTING_FOLDERS`
 - `CLUSTER_GROUPING_ENABLED`
@@ -288,6 +322,7 @@ Important keys:
 - `AUTO_UPDATES_ENABLED`
 - `UPDATE_CHECK_FREQUENCY`
 - `UPDATE_GITHUB_REPO`
+- `WINDOW_RESTORE_MODE`
 
 Cloud uploads are off by default for new installs. When a user turns them on in
 the app, DDump uses Google Drive Desktop local-folder copy mode by default
@@ -317,6 +352,21 @@ DDump verified the handoff into the local Drive folder; Google Drive Desktop
 still owns the final cloud sync. Direct rclone upload remains the stronger
 cloud-side verification path.
 
+First launch shows a short setup wizard for staging, destination, fallback,
+auto-eject, scan window, offline shoot name, and ntfy topic. Every wizard page
+can be skipped. To rerun it later, open Settings -> General -> Restart setup
+wizard.
+
+For public calendar naming, use Settings -> Calendar -> Mac Calendar first.
+That uses local macOS Calendar permission and works with iCloud, Google,
+Exchange, and subscribed calendars already synced to the Mac. Google Calendar
+OAuth remains optional for users who specifically want direct Google sign-in.
+
+Destination shoot folders are flat by default:
+`REBUCKET_PRESERVE_SOURCE_FOLDERS=0` means DDump creates the shoot/calendar
+folder and places media files directly inside it instead of recreating camera
+folders like `DCIM/101_2026` under the destination.
+
 ## Current Defaults Worth Noting
 
 - Lookback mode is enforced for safe card ingest behavior.
@@ -335,6 +385,8 @@ cloud-side verification path.
   default.
 - Calendar provider defaults to `none`; setup is opt-in from the Calendar tab.
 - Calendar ambiguity prompts default on so clusters between scheduled shoots can be assigned before final naming is trusted.
+- Window launch behavior defaults to `WINDOW_RESTORE_MODE=remember`; Settings
+  -> General can switch to compact or large fixed startup sizes.
 
 ## Development Checks
 

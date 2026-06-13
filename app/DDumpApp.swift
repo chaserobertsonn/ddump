@@ -189,6 +189,7 @@ final class AppState: ObservableObject {
   @Published var cloudLastCheckedAt: String = ""
   @Published var networkOnline: Bool = false
   @Published var cloudSetupBrowserRunning: Bool = false
+  @Published var onboardingRestartRequested: Bool = false
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
@@ -203,14 +204,18 @@ final class AppState: ObservableObject {
   init() {
     refreshStatus()
     refreshConfig()
+    refreshHealth()
     timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-      self?.refreshStatus()
-      self?.refreshControlFlags()
-      self?.refreshLockState()
-      self?.refreshHealth()
-      self?.statusTick += 1
-      if (self?.statusTick ?? 0) % 5 == 0 {
-        self?.refreshCloudMountStatus(showProgress: false)
+      guard let self else { return }
+      self.refreshStatus()
+      self.refreshControlFlags()
+      self.refreshLockState()
+      self.statusTick += 1
+      if self.statusTick % 5 == 0 {
+        self.refreshHealth()
+      }
+      if self.statusTick % 15 == 0 {
+        self.refreshCloudMountStatus(showProgress: false)
       }
     }
     // Passive cloud-use marker: do not remount on a timer. The idle watcher
@@ -424,6 +429,19 @@ final class AppState: ObservableObject {
     case "light": return .light
     case "dark": return .dark
     default: return nil
+    }
+  }
+
+  func requestOnboardingRestart() {
+    set("ONBOARDING_COMPLETED", "0")
+    DispatchQueue.main.async {
+      self.onboardingRestartRequested = true
+    }
+  }
+
+  func clearOnboardingRestartRequest() {
+    DispatchQueue.main.async {
+      self.onboardingRestartRequested = false
     }
   }
 
@@ -3015,6 +3033,7 @@ extension View {
 struct ContentView: View {
   @EnvironmentObject var state: AppState
   @State private var showingSettings = false
+  @State private var showingOnboarding = false
 
   var phaseColor: Color {
     switch state.phase {
@@ -3105,7 +3124,7 @@ struct ContentView: View {
       .padding(.top, 22)
       .padding(.bottom, 16)
       .background(Color.ddumpBG)
-      .frame(minWidth: 840, minHeight: 860)
+      .frame(minWidth: 640, minHeight: 560)
 
       HStack(spacing: 12) {
         Button {
@@ -3144,6 +3163,212 @@ struct ContentView: View {
       SettingsSheet(isPresented: $showingSettings)
         .environmentObject(state)
         .preferredColorScheme(state.preferredColorScheme())
+    }
+    .sheet(isPresented: $showingOnboarding) {
+      FirstRunWizard(isPresented: $showingOnboarding)
+        .environmentObject(state)
+        .preferredColorScheme(state.preferredColorScheme())
+    }
+    .onAppear {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        if state.get("ONBOARDING_COMPLETED", default: "0") != "1" {
+          showingOnboarding = true
+        }
+      }
+    }
+    .ddumpOnChange(of: state.onboardingRestartRequested) { requested in
+      guard requested else { return }
+      showingSettings = false
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        showingOnboarding = true
+        state.clearOnboardingRestartRequest()
+      }
+    }
+  }
+}
+
+struct FirstRunWizard: View {
+  @Binding var isPresented: Bool
+  @EnvironmentObject var state: AppState
+  @State private var page = 0
+  @State private var stagingFolder = "\(NSHomeDirectory())/Temp"
+  @State private var primaryDestination = ""
+  @State private var fallbackEnabled = false
+  @State private var fallbackDestination = ""
+  @State private var autoEject = true
+  @State private var lookbackHours = "24"
+  @State private var ntfyTopic = ""
+  @State private var defaultShootName = ""
+
+  private let pageCount = 4
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack {
+        Text("Set Up DDump")
+          .font(DDumpFont.display(26, weight: .semibold))
+        Spacer()
+        Text("Step \(page + 1) of \(pageCount)")
+          .foregroundColor(.secondary)
+      }
+
+      Group {
+        switch page {
+        case 0: introPage
+        case 1: folderPage
+        case 2: safetyPage
+        default: notificationPage
+        }
+      }
+      .frame(minHeight: 330, alignment: .topLeading)
+
+      HStack {
+        Button(page == pageCount - 1 ? "Skip and Finish" : "Skip this Step") {
+          skipStep()
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+
+        Spacer()
+
+        Button("Back") {
+          page = max(0, page - 1)
+        }
+        .disabled(page == 0)
+        .buttonStyle(DDumpSecondaryButtonStyle())
+
+        Button(page == pageCount - 1 ? "Finish" : "Next") {
+          if page == pageCount - 1 {
+            finish()
+          } else {
+            saveCurrent()
+            page += 1
+          }
+        }
+        .buttonStyle(DDumpPrimaryButtonStyle())
+      }
+    }
+    .padding(28)
+    .frame(minWidth: 560, idealWidth: 700, maxWidth: 760)
+    .background(Color.ddumpBG)
+    .onAppear {
+      stagingFolder = state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp")
+      primaryDestination = state.get("POST_MOVE_ROOT")
+      fallbackDestination = state.get("POST_MOVE_FALLBACK_ROOT")
+      fallbackEnabled = !fallbackDestination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      autoEject = state.get("EJECT_ON_SUCCESS", default: "1") == "1"
+      lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
+      ntfyTopic = state.get("NTFY_TOPIC")
+      defaultShootName = state.get("DEFAULT_SHOOT_NAME")
+    }
+  }
+
+  private var introPage: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Plug in a camera card and DDump copies only new media into staging. It can eject the card when the local copy is safe, then copy to any synced folder you choose.")
+      wizardBullet("No Terminal setup for normal use.")
+      wizardBullet("Internet is only needed for Google Calendar OAuth or cloud sync apps.")
+      wizardBullet("Apple Calendar works locally with calendars already synced to this Mac.")
+      wizardBullet("Staging stays as the safety copy; cloud folders are the handoff copy.")
+    }
+    .foregroundColor(.ddumpFG1)
+  }
+
+  private var folderPage: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Choose where DDump keeps its safety copy and where it hands finished folders to your sync app.")
+        .foregroundColor(.secondary)
+      labeledFolder("Staging folder", value: $stagingFolder, prompt: "Choose staging folder")
+      labeledFolder("Primary destination", value: $primaryDestination, prompt: "Choose primary destination")
+      Toggle("Use a fallback backup destination if the primary is unavailable", isOn: $fallbackEnabled)
+      if fallbackEnabled {
+        labeledFolder("Fallback destination", value: $fallbackDestination, prompt: "Choose fallback destination")
+      }
+      Text("Dropbox, Box, OneDrive, iCloud Drive, pCloud, and Google Drive Desktop all work as normal folder destinations if their apps sync that folder.")
+        .font(.caption)
+        .foregroundColor(.secondary)
+    }
+  }
+
+  private var safetyPage: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Toggle("Auto-eject card after local copy is verified", isOn: $autoEject)
+      HStack {
+        Text("Scan window")
+        Spacer()
+        TextField("24", text: $lookbackHours)
+          .frame(width: 80)
+          .multilineTextAlignment(.trailing)
+        Text("hours")
+      }
+      TextField("Default offline shoot name (optional)", text: $defaultShootName)
+      Text("If a calendar is not connected or internet is unavailable, this name can fill the {shoot} token in template naming. Time clusters still keep separate groups when needed.")
+        .font(.caption)
+        .foregroundColor(.secondary)
+    }
+  }
+
+  private var notificationPage: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("Optional phone alerts")
+        .font(DDumpFont.ui(17, weight: .semibold))
+      Text("Install ntfy on your phone, create or choose a private topic name, then paste that topic here. Leave it blank to use only macOS notifications.")
+        .foregroundColor(.secondary)
+      TextField("ntfy topic", text: $ntfyTopic)
+      Text("You can customize which events use ntfy later in Settings > Notifications.")
+        .font(.caption)
+        .foregroundColor(.secondary)
+    }
+  }
+
+  private func wizardBullet(_ text: String) -> some View {
+    HStack(alignment: .top, spacing: 8) {
+      Image(systemName: "checkmark.circle.fill").foregroundColor(.ddumpSuccess)
+      Text(text)
+    }
+  }
+
+  private func labeledFolder(_ label: String, value: Binding<String>, prompt: String) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(label).font(.caption).foregroundColor(.secondary)
+      HStack {
+        TextField(label, text: value)
+        Button("Choose…") {
+          if let picked = pickFolder(prompt: prompt) {
+            value.wrappedValue = picked
+          }
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+    }
+  }
+
+  private func saveCurrent() {
+    state.set("DEST_ROOT", stagingFolder)
+    if !primaryDestination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      state.set("POST_MOVE_ROOT", primaryDestination)
+      state.set("ENABLE_POST_EJECT_MOVE", "1")
+    }
+    state.set("POST_MOVE_FALLBACK_ROOT", fallbackEnabled ? fallbackDestination : "")
+    state.set("EJECT_ON_SUCCESS", autoEject ? "1" : "0")
+    state.set("LOOKBACK_HOURS", lookbackHours)
+    state.set("CANDIDATE_MODE", "lookback")
+    state.set("NTFY_TOPIC", ntfyTopic)
+    state.set("DEFAULT_SHOOT_NAME", defaultShootName)
+  }
+
+  private func finish() {
+    saveCurrent()
+    state.set("ONBOARDING_COMPLETED", "1")
+    isPresented = false
+  }
+
+  private func skipStep() {
+    saveCurrent()
+    if page == pageCount - 1 {
+      state.set("ONBOARDING_COMPLETED", "1")
+      isPresented = false
+    } else {
+      page += 1
     }
   }
 }
@@ -3197,7 +3422,7 @@ struct SettingsSheet: View {
       .padding(.horizontal, 24)
       .padding(.top, 18)
 
-      HStack(spacing: 4) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 4)], spacing: 4) {
         ForEach(SettingsTab.allCases, id: \.self) { t in
           DDumpTabChip(icon: t.icon, title: t.rawValue, active: tab == t) {
             tab = t
@@ -3221,7 +3446,7 @@ struct SettingsSheet: View {
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
     }
-    .frame(minWidth: 880, idealWidth: 1040, maxWidth: .infinity, minHeight: 720, idealHeight: 880, maxHeight: .infinity)
+    .frame(minWidth: 680, idealWidth: 820, maxWidth: 920, minHeight: 540, idealHeight: 680, maxHeight: 760)
     .background(Color.ddumpBG)
   }
 }
@@ -3230,53 +3455,55 @@ struct ControlBar: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    HStack(spacing: 8) {
-      if state.paused {
+    let columns = [GridItem(.adaptive(minimum: 138), spacing: 8)]
+
+    VStack(alignment: .leading, spacing: 8) {
+      LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+        if state.paused {
+          Button {
+            state.resume()
+          } label: {
+            Label("Resume", systemImage: "play.fill")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+          .keyboardShortcut("r", modifiers: .command)
+        } else {
+          Button {
+            state.pause()
+          } label: {
+            Label("Pause", systemImage: "pause.fill")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+          .keyboardShortcut("p", modifiers: .command)
+          .disabled(!state.runActive)
+        }
+
         Button {
-          state.resume()
+          state.stop()
         } label: {
-          Label("Resume", systemImage: "play.fill")
+          Label("Stop after this file", systemImage: "stop.fill")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
-        .keyboardShortcut("r", modifiers: .command)
-      } else {
+        .keyboardShortcut(".", modifiers: .command)
+        .disabled(!state.runActive || state.stopRequested)
+
         Button {
-          state.pause()
+          state.doNotEject()
         } label: {
-          Label("Pause", systemImage: "pause.fill")
+          Label("Do not eject", systemImage: "pin.slash.fill")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
-        .keyboardShortcut("p", modifiers: .command)
         .disabled(!state.runActive)
-      }
 
-      Button {
-        state.stop()
-      } label: {
-        Label("Stop after this file", systemImage: "stop.fill")
+        Button {
+          state.ejectNow()
+        } label: {
+          Label("Eject after this file", systemImage: "eject.fill")
+        }
+        .buttonStyle(DDumpPrimaryButtonStyle())
+        .keyboardShortcut("e", modifiers: .command)
+        .disabled(!state.runActive || state.ejectQueued)
       }
-      .buttonStyle(DDumpSecondaryButtonStyle())
-      .keyboardShortcut(".", modifiers: .command)
-      .disabled(!state.runActive || state.stopRequested)
-
-      Button {
-        state.doNotEject()
-      } label: {
-        Label("Do not eject", systemImage: "pin.slash.fill")
-      }
-      .buttonStyle(DDumpSecondaryButtonStyle())
-      .disabled(!state.runActive)
-
-      Button {
-        state.ejectNow()
-      } label: {
-        Label("Eject after this file", systemImage: "eject.fill")
-      }
-      .buttonStyle(DDumpPrimaryButtonStyle())
-      .keyboardShortcut("e", modifiers: .command)
-      .disabled(!state.runActive || state.ejectQueued)
-
-      Spacer()
 
       if state.ejectQueued {
         Label("Eject queued", systemImage: "eject.circle")
@@ -3389,7 +3616,7 @@ struct HealthPanel: View {
       .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
       .overlay(alignment: .bottom) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
 
-      HStack(spacing: 10) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], alignment: .leading, spacing: 8) {
         Button {
           state.retryPendingUploads()
         } label: {
@@ -3411,22 +3638,6 @@ struct HealthPanel: View {
           Label("Receipts", systemImage: "doc.plaintext")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
-
-        Button {
-          state.cleanupOldStagingFolders()
-        } label: {
-          Label("Safe Cleanup", systemImage: "trash")
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-        .disabled(state.runActive)
-
-        Button {
-          state.startManualSelectionImport()
-        } label: {
-          Label("Manual Select Import…", systemImage: "slider.horizontal.3")
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-        .disabled(state.runActive)
       }
       .font(DDumpFont.ui(12))
 
@@ -3789,6 +4000,7 @@ struct GeneralSettings: View {
   @State private var updateChecksEnabled: Bool = false
   @State private var autoUpdatesEnabled: Bool = false
   @State private var updateCheckFrequency: String = "weekly"
+  @State private var windowRestoreMode: String = "remember"
 
   var body: some View {
     Form {
@@ -3816,6 +4028,14 @@ struct GeneralSettings: View {
         TextField("Primary destination", text: $uploadRoot, onCommit: {
           state.set("POST_MOVE_ROOT", uploadRoot)
         })
+        if let warning = dateLadderRootWarning(uploadRoot) {
+          Label(warning, systemImage: "exclamationmark.triangle")
+            .font(.caption)
+            .foregroundColor(.ddumpWarning)
+        }
+        Text("Use any normal synced folder: Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, or a local/NAS folder. DDump copies there after staging; that sync app handles the cloud upload.")
+          .font(.caption)
+          .foregroundColor(.secondary)
         TextField("Additional destinations (comma-separated)", text: $uploadRoots, onCommit: {
           state.set("POST_MOVE_ROOTS", uploadRoots)
         })
@@ -3845,8 +4065,59 @@ struct GeneralSettings: View {
       } header: {
         Text("Destinations")
       } footer: {
-        Text("Files go: SD card → staging. Then DDump copies to the destination(s). Disable destination transfer to keep staging-only backups.")
+        Text("Files go: SD card → staging. Then DDump copies to destination folder(s). Staging is the safety copy; cloud apps sync from the destination folder.")
           .font(.caption).foregroundColor(.secondary)
+      }
+
+      Section("Launch") {
+        HStack {
+          Text("Window size")
+          Spacer()
+          Picker("", selection: $windowRestoreMode) {
+            Text("Remember last size").tag("remember")
+            Text("Compact").tag("compact")
+            Text("Large").tag("large")
+          }
+          .labelsHidden()
+          .frame(width: 190)
+          .ddumpOnChange(of: windowRestoreMode) { v in
+            state.set("WINDOW_RESTORE_MODE", v)
+          }
+        }
+
+        Button {
+          state.requestOnboardingRestart()
+        } label: {
+          Label("Restart setup wizard", systemImage: "sparkles")
+        }
+        .buttonStyle(DDumpPrimaryButtonStyle())
+
+        Text("Use Restart setup wizard any time you want to walk through staging, destination, auto-eject, scan window, and notification choices again. Each wizard page can be skipped.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+      }
+
+      Section("Manual tools") {
+        HStack {
+          Button {
+            state.startManualSelectionImport()
+          } label: {
+            Label("Manual select import…", systemImage: "slider.horizontal.3")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+          .disabled(state.runActive)
+
+          Button {
+            state.cleanupOldStagingFolders()
+          } label: {
+            Label("Safe cleanup", systemImage: "trash")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+          .disabled(state.runActive)
+        }
+        Text("These are kept out of the main screen because most users only need them occasionally.")
+          .font(.caption)
+          .foregroundColor(.secondary)
       }
 
       Section("Check updates") {
@@ -3896,7 +4167,19 @@ struct GeneralSettings: View {
       updateChecksEnabled = state.get("UPDATE_CHECKS_ENABLED", default: "0") == "1"
       autoUpdatesEnabled = state.get("AUTO_UPDATES_ENABLED", default: "0") == "1"
       updateCheckFrequency = state.get("UPDATE_CHECK_FREQUENCY", default: "weekly")
+      windowRestoreMode = state.get("WINDOW_RESTORE_MODE", default: "remember")
     }
+  }
+
+  private func dateLadderRootWarning(_ path: String) -> String? {
+    let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let pattern = #"/[0-9]{4}/[0-9]{4}\.[0-9]{2}/[0-9]{4}\.[0-9]{2}\.[0-9]{2}(/)?$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) != nil else {
+      return nil
+    }
+    return "This looks like a dated day folder. Choose the parent before the year folder, or use Smart mode with a sample path, so DDump does not nest dates twice."
   }
 }
 
@@ -3912,15 +4195,28 @@ struct NamingSettings: View {
   @State private var smartSamplePath: String = ""
   @State private var smartAssignExisting: Bool = false
   @State private var splitPhotoVideo: Bool = false
+  @State private var defaultShootName: String = ""
+  @State private var folderTemplate: String = "{smart_camera} - {shoot} - {date_ymd}"
+  @State private var smartCameraMode: String = "smart"
+  @State private var fileRenameEnabled: Bool = false
+  @State private var fileNameTemplate: String = "{filename}"
 
-  let strategies = ["sequential", "custom", "calendar", "smart", "camera"]
+  let strategies = ["template", "sequential", "custom", "calendar", "smart", "camera"]
+  let smartCameraModes = ["smart", "brand", "model", "full"]
+  let templateTokens = [
+    "{smart_camera}", "{camera_brand}", "{camera_model_short}", "{camera_model}",
+    "{calendar_event}", "{shoot}", "{cluster}", "{date}", "{date_ymd}", "{date_yymmdd}",
+    "{year}", "{month}", "{day}", "{time}", "{folder}", "{filename}", "{sequence}",
+    "{sequence_2}", "{sequence_3}", "{sequence_4}", "{total}", "{lens}", "{serial}",
+    "{artist}", "{software}", "{iso}", "{focal_length}", "{gps}", "{dimensions}"
+  ]
 
   var body: some View {
     Form {
       Section("Folder naming") {
         HStack(spacing: 6) {
           Text("Strategy")
-          InfoHint(text: "Sequential: Shoot-1, Shoot-2. Custom: picks from your list. Calendar: event titles. Smart: infer from sample path. Camera: keep camera folder names.")
+          InfoHint(text: "Template: combine camera, calendar, date, and metadata tokens. Sequential: Shoot-1, Shoot-2. Calendar: event titles. Smart: infer from sample path. Camera: keep camera folder names.")
           Spacer()
           Picker("", selection: $strategy) {
             ForEach(strategies, id: \.self) { Text($0).tag($0) }
@@ -3941,6 +4237,67 @@ struct NamingSettings: View {
           .frame(width: 220)
         }
         .ddumpOnChange(of: fallback) { v in state.set("FOLDER_NAMING_FALLBACK", v) }
+      }
+
+      Section("Template strategy") {
+        TextField("Default offline shoot name", text: $defaultShootName, onCommit: {
+          state.set("DEFAULT_SHOOT_NAME", defaultShootName)
+        })
+        Text("Used for {shoot} when calendar naming has no event or internet is unavailable. Leave blank to use capture-time cluster names.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+
+        HStack(spacing: 6) {
+          TextField("Folder template", text: $folderTemplate, onCommit: {
+            state.set("FOLDER_NAME_TEMPLATE", folderTemplate)
+          })
+          InfoHint(text: "Example: {smart_camera} - {calendar_event} - {date_ymd}")
+        }
+        HStack(spacing: 6) {
+          Text("Smart camera label")
+          InfoHint(text: "Smart keeps labels short and expands only when a shoot has multiple brands, models, or camera bodies. Brand uses Canon/Sony/DJI. Model uses simplified model. Full combines both.")
+          Spacer()
+          Picker("", selection: $smartCameraMode) {
+            ForEach(smartCameraModes, id: \.self) { Text($0).tag($0) }
+          }
+          .labelsHidden()
+          .frame(width: 180)
+        }
+        .ddumpOnChange(of: smartCameraMode) { v in state.set("SMART_CAMERA_LABEL_MODE", v) }
+
+        Toggle("Rename files with a template", isOn: $fileRenameEnabled)
+          .ddumpOnChange(of: fileRenameEnabled) { v in
+            state.set("FILE_RENAME_ENABLED", v ? "1" : "0")
+          }
+        HStack(spacing: 6) {
+          TextField("File template", text: $fileNameTemplate, onCommit: {
+            state.set("FILE_NAME_TEMPLATE", fileNameTemplate)
+          })
+          InfoHint(text: "Extension is preserved automatically. Example: {smart_camera}-{date_ymd}-{sequence_4}")
+        }
+        .disabled(!fileRenameEnabled)
+
+        Text("Tokens")
+          .font(.caption)
+          .foregroundColor(.secondary)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], alignment: .leading, spacing: 8) {
+          ForEach(templateTokens, id: \.self) { token in
+            Button(token) {
+              if fileRenameEnabled {
+                fileNameTemplate += token
+                state.set("FILE_NAME_TEMPLATE", fileNameTemplate)
+              } else {
+                folderTemplate += token
+                state.set("FOLDER_NAME_TEMPLATE", folderTemplate)
+              }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+          }
+        }
+        Text("Template names can use EXIF fields when the camera provides them: make, model, lens, serial, ISO, focal length, dimensions, GPS, capture date/time, plus calendar event and sequence tokens.")
+          .font(.caption)
+          .foregroundColor(.secondary)
       }
 
       Section("Time grouping") {
@@ -3994,6 +4351,31 @@ struct NamingSettings: View {
           })
           InfoHint(text: "Paste one real destination path. DDump reuses its year/month/day folder pattern automatically.")
         }
+        if let preview = smartStructurePreview() {
+          VStack(alignment: .leading, spacing: 6) {
+            Text("DDump reads that as:")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            Text("Root: \(preview.root)")
+              .font(.system(size: 12, weight: .regular, design: .monospaced))
+            Text("Tomorrow: \(preview.tomorrow)")
+              .font(.system(size: 12, weight: .regular, design: .monospaced))
+            Text("Next week: \(preview.nextWeek)")
+              .font(.system(size: 12, weight: .regular, design: .monospaced))
+            if let warning = preview.warning {
+              Label(warning, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundColor(.ddumpWarning)
+            }
+          }
+          .padding(10)
+          .background(Color.white.opacity(0.035))
+          .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+          Text("Choose the lowest real shoot/date folder, for example .../2026/2026.06/2026.06.12/1 - Photo. DDump infers the parent before the year/month/day ladder and previews future folders here.")
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
         Toggle("Use existing folders under today's Drive date folder", isOn: $smartAssignExisting)
           .ddumpOnChange(of: smartAssignExisting) { v in
             state.set("SMART_ASSIGN_EXISTING_FOLDERS", v ? "1" : "0")
@@ -4020,7 +4402,64 @@ struct NamingSettings: View {
       smartSamplePath = state.get("SMART_SAMPLE_PATH")
       smartAssignExisting = (state.get("SMART_ASSIGN_EXISTING_FOLDERS", default: "0") == "1")
       splitPhotoVideo = (state.get("SPLIT_PHOTO_VIDEO", default: "0") == "1")
+      defaultShootName = state.get("DEFAULT_SHOOT_NAME")
+      folderTemplate = state.get("FOLDER_NAME_TEMPLATE", default: "{smart_camera} - {shoot} - {date_ymd}")
+      smartCameraMode = state.get("SMART_CAMERA_LABEL_MODE", default: "smart")
+      fileRenameEnabled = (state.get("FILE_RENAME_ENABLED", default: "0") == "1")
+      fileNameTemplate = state.get("FILE_NAME_TEMPLATE", default: "{filename}")
     }
+  }
+
+  private struct SmartPreview {
+    let root: String
+    let tomorrow: String
+    let nextWeek: String
+    let warning: String?
+  }
+
+  private func smartStructurePreview() -> SmartPreview? {
+    let sample = smartSamplePath.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sample.isEmpty else { return nil }
+    let pattern = #"^(.+)/[0-9]{4}/[0-9]{4}\.[0-9]{2}/[0-9]{4}\.[0-9]{2}\.[0-9]{2}(/.*)?$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: sample, range: NSRange(sample.startIndex..., in: sample)),
+          let rootRange = Range(match.range(at: 1), in: sample) else {
+      return nil
+    }
+    let root = String(sample[rootRange])
+    let suffix: String
+    if let suffixRange = Range(match.range(at: 2), in: sample) {
+      suffix = String(sample[suffixRange])
+    } else {
+      suffix = ""
+    }
+    let calendar = Calendar.current
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+    let nextWeek = calendar.date(byAdding: .day, value: 7, to: Date()) ?? Date()
+    let warning: String?
+    if suffix.lowercased().contains("/dcim/") || suffix.lowercased().hasSuffix("/dcim") {
+      warning = "This sample is inside a card folder like DCIM. Choose the shoot folder or dated destination folder instead so DDump does not infer a path too deep."
+    } else {
+      warning = nil
+    }
+    return SmartPreview(
+      root: root,
+      tomorrow: smartPath(root: root, date: tomorrow, suffix: suffix),
+      nextWeek: smartPath(root: root, date: nextWeek, suffix: suffix),
+      warning: warning
+    )
+  }
+
+  private func smartPath(root: String, date: Date, suffix: String) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy"
+    let year = formatter.string(from: date)
+    formatter.dateFormat = "yyyy.MM"
+    let month = formatter.string(from: date)
+    formatter.dateFormat = "yyyy.MM.dd"
+    let day = formatter.string(from: date)
+    return "\(root)/\(year)/\(month)/\(day)\(suffix)"
   }
 }
 
@@ -5023,14 +5462,27 @@ struct CalendarSettings: View {
   var body: some View {
     Form {
       Section("Calendar wizard") {
-        Text("Calendar naming can use Google Calendar, Apple Calendar, or a private calendar link. Setup happens from buttons in this app.")
+        Text("Calendar naming can use Apple Calendar, Google Calendar, or a private calendar link. Apple Calendar is the recommended public/offline option because it reads calendars already synced to this Mac and does not require Google API verification.")
           .font(.callout)
           .foregroundColor(.secondary)
 
         CalendarProviderRow(
+          icon: "calendar",
+          title: "Mac Calendar",
+          detail: "Recommended. Uses the local macOS Calendar database after one permission prompt. Works with iCloud, Google, Exchange, and subscribed calendars already synced to this Mac.",
+          selected: provider == "apple",
+          status: provider == "apple" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : "",
+          primaryAction: {
+          provider = "apple"
+          state.connectAppleCalendar()
+          },
+          secondaryAction: nil
+        )
+
+        CalendarProviderRow(
           icon: "g.circle",
           title: "Google Calendar",
-          detail: "Opens Google sign-in in your browser and requests read-only calendar access. No Terminal setup.",
+          detail: "Optional direct Google sign-in. Useful if the Mac Calendar app is not synced, but public distribution may require Google OAuth verification.",
           selected: provider == "google",
           status: provider == "google" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : ""
         ) {
@@ -5040,19 +5492,6 @@ struct CalendarSettings: View {
         } secondaryAction: {
           state.checkGoogleCalendarConnection()
         }
-
-        CalendarProviderRow(
-          icon: "calendar",
-          title: "Apple Calendar",
-          detail: "Uses macOS Calendar permission. Reads calendars already synced to the Mac, including iCloud, Google, and Exchange.",
-          selected: provider == "apple",
-          status: provider == "apple" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : "",
-          primaryAction: {
-          provider = "apple"
-          state.connectAppleCalendar()
-          },
-          secondaryAction: nil
-        )
 
         CalendarProviderRow(
           icon: "link",
@@ -5581,6 +6020,30 @@ func pickFolder(prompt: String) -> String? {
 
 // MARK: - Window frame persistence
 
+func configuredWindowRestoreMode() -> String {
+  let mode = readShellEnv(at: DDumpPaths.configFile)["WINDOW_RESTORE_MODE"] ?? "remember"
+  switch mode {
+  case "compact", "large", "remember": return mode
+  default: return "remember"
+  }
+}
+
+func applyConfiguredWindowMode(_ window: NSWindow) {
+  let mode = configuredWindowRestoreMode()
+  switch mode {
+  case "compact":
+    window.setFrameAutosaveName("")
+    window.setContentSize(NSSize(width: 720, height: 620))
+    window.center()
+  case "large":
+    window.setFrameAutosaveName("")
+    window.setContentSize(NSSize(width: 980, height: 820))
+    window.center()
+  default:
+    window.setFrameAutosaveName("DDumpMainWindow")
+  }
+}
+
 /// AppDelegate that assigns a frameAutosaveName to the main window so macOS
 /// remembers its position/size across launches.
 class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
@@ -5591,10 +6054,10 @@ class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
       for window in NSApplication.shared.windows {
         // SwiftUI Settings scenes create separate windows; tag the main one only
         if window.title == "DDump" || window.contentViewController is NSHostingController<AnyView> {
-          window.setFrameAutosaveName("DDumpMainWindow")
+          applyConfiguredWindowMode(window)
         }
         if window.title == "DDump" {
-          window.setFrameAutosaveName("DDumpMainWindow")
+          applyConfiguredWindowMode(window)
         }
       }
     }
@@ -5668,7 +6131,7 @@ struct WindowAccessor: NSViewRepresentable {
     let v = NSView()
     DispatchQueue.main.async {
       if let window = v.window {
-        window.setFrameAutosaveName("DDumpMainWindow")
+        applyConfiguredWindowMode(window)
       }
     }
     return v
