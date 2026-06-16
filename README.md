@@ -220,9 +220,11 @@ Installer sets up:
 - DDump scripts under `~/Library/Application Support/DDump/bin/`
 - App config at `~/Library/Application Support/DDump/config.env`
 - Main importer LaunchAgent `com.ddump`
-- Cloud mount LaunchAgent (`GDRIVE_MOUNT_LABEL`)
 - Network reconnect watcher LaunchAgent `com.ddump.network-watch`
 - macOS app bundle at `~/Applications/DDump.app`
+
+The advanced rclone mount LaunchAgent is only installed when managed mounts are
+explicitly enabled. Public/test installs use normal synced folders by default.
 
 ## Uninstall
 
@@ -382,7 +384,9 @@ folders like `DCIM/101_2026` under the destination.
 - Google Drive Desktop local-folder copy is the default cloud handoff. The
   DDump-managed rclone mount remains an advanced fallback and is disabled by
   default.
-- Calendar provider defaults to `none`; setup is opt-in from the Calendar tab.
+- Calendar provider defaults to Mac Calendar. Calendar naming works after the
+  user approves the standard macOS Calendar permission prompt, and DDump caches
+  upcoming local events for background imports.
 - Calendar ambiguity prompts default on so clusters between scheduled shoots can be assigned before final naming is trusted.
 - Window launch behavior defaults to `WINDOW_RESTORE_MODE=remember`; Settings
   -> General can switch to compact or large fixed startup sizes.
@@ -392,6 +396,11 @@ folders like `DCIM/101_2026` under the destination.
 ```bash
 bash -n bin/*.sh
 MACOSX_DEPLOYMENT_TARGET=13.0 ./scripts/build-app.sh
+./scripts/public-readiness-check.sh
 ```
+
+`scripts/public-readiness-check.sh` is the pre-handoff smoke test for public
+behavior: shell syntax, app build, installed app footprint, config defaults, and
+old managed-mount LaunchAgents.
 
 `swiftc` requires Apple command-line build tools on macOS.

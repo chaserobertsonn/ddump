@@ -11,6 +11,9 @@
 - Swift parse check passes with a writable module cache.
 - Calendar settings wizard added with Apple Calendar permission, Calendar Link
   validation, and Google Calendar browser-sign-in entry point.
+- Apple Calendar is now the recommended public calendar path. DDump caches
+  upcoming local Mac Calendar events for background imports, so Google OAuth is
+  optional instead of required for normal calendar naming.
 - Bundled Google Calendar OAuth helper added. It uses the desktop PKCE flow,
   read-only Calendar scope, and a secure local app-support token file.
 - First-run wizard added for staging folder, destination folder, fallback
@@ -30,7 +33,8 @@
 - The app is currently unsigned and not notarized. Early testers may need to approve it
   in macOS Privacy & Security after first launch.
 - Auto-update is not Sparkle yet. DDump checks GitHub Releases and opens the
-  download page for the user.
+  installer asset or release page for the user. Full one-click/automatic app
+  replacement should wait until the app is signed and notarized.
 - Cloud syncing through a local synced folder requires the user's sync app
   (Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, etc.) to
   be installed and signed in. rclone remains an advanced fallback/verification
@@ -49,6 +53,7 @@
 
 - Run `bash -n bin/*.sh`.
 - Run `CLANG_MODULE_CACHE_PATH=/private/tmp/ddump-clang-cache swiftc -parse-as-library -o /private/tmp/DDump-check app/DDumpApp.swift`.
+- Run `./scripts/public-readiness-check.sh`.
 - Build the DMG with `./scripts/package-dmg.sh`.
 - Install from the DMG on a clean macOS user account.
 - Confirm Settings opens, Cloud setup stays opt-in, and update checks are off by default.
@@ -65,6 +70,8 @@
 ## Senior-Dev Public-Launch Follow-Ups
 
 - Sign and notarize with Apple Developer ID.
+- Add Sparkle or an equivalent signed update feed after notarized builds are
+  stable. Until then, the in-app updater should only open the latest installer.
 - Position Mac Calendar as the primary public calendar path. Keep direct Google
   Calendar OAuth optional unless enough users need it to justify Google's
   verification process.

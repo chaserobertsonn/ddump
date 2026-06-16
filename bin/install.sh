@@ -339,7 +339,7 @@ add_missing_key 'CLUSTER_GAP_MINUTES' '"30"'
 add_missing_key 'CLUSTER_FOLDER_TEMPLATE' '"Cluster {n} {start}-{end}"'
 add_missing_key 'CLUSTER_GROUPING_ENABLED' '"1"' "When enabled, nearby capture times group together before naming."
 add_missing_key 'CLUSTER_ATTACH_MINUTES' '"120"' "Across cards, reuse same-day shoot bucket when cluster is within this window."
-add_missing_key 'CALENDAR_PROVIDER' '"none"' "Calendar source for naming: none | google | apple | ics."
+add_missing_key 'CALENDAR_PROVIDER' '"apple"' "Calendar source for naming: none | google | apple | ics."
 add_missing_key 'CALENDAR_AUTH_STATUS' '"not_authorized"' "Calendar wizard connection state."
 add_missing_key 'GOOGLE_CALENDAR_CLIENT_ID' '"570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com"' "Google Calendar desktop OAuth client ID for read-only calendar setup."
 add_missing_key 'GOOGLE_CALENDAR_CLIENT_SECRET' '""' "Google Calendar desktop OAuth client secret. Desktop secrets are bundled/public identifiers, not user passwords."

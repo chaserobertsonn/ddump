@@ -53,6 +53,7 @@ enum DDumpPaths {
   static var appCloudKeepaliveFile: URL { controlDir.appendingPathComponent("app_cloud_keepalive.touch") }
   static var ejectNowFlag: URL { controlDir.appendingPathComponent("eject_now.flag") }
   static var googleCalendarHelper: URL { appSupport.appendingPathComponent("bin/ddump-google-calendar.py") }
+  static var appleCalendarCache: URL { appSupport.appendingPathComponent("state/calendar_events.tsv") }
 }
 
 func registerBundledFonts() {
@@ -229,6 +230,13 @@ final class AppState: ObservableObject {
     refreshCloudMountStatus(showProgress: false)
     DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
       self?.checkForUpdatesIfNeeded()
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+      guard let self else { return }
+      if self.get("CALENDAR_PROVIDER", default: "apple") == "apple",
+         self.get("CALENDAR_AUTH_STATUS", default: "") == "authorized" {
+        self.refreshAppleCalendarCache(showDialog: false)
+      }
     }
   }
 
@@ -709,11 +717,12 @@ printf 'url=%s\\n' "$link"
         if granted {
           self.set("CALENDAR_PROVIDER", "apple")
           self.set("CALENDAR_AUTH_STATUS", "authorized")
-          self.lastUtilityMessage = "Apple Calendar connected. DDump can read local calendars for shoot naming."
+          self.lastUtilityMessage = "Mac Calendar connected. Refreshing local shoot events..."
+          self.refreshAppleCalendarCache(showDialog: false)
         } else {
           self.set("CALENDAR_AUTH_STATUS", "not_authorized")
           let reason = error?.localizedDescription ?? "Allow Calendar access in System Settings, then try again."
-          self.lastUtilityMessage = "Apple Calendar access was not approved. \(reason)"
+          self.lastUtilityMessage = "Mac Calendar access was not approved. \(reason)"
         }
       }
     }
@@ -722,6 +731,89 @@ printf 'url=%s\\n' "$link"
       store.requestFullAccessToEvents(completion: finish)
     } else {
       store.requestAccess(to: .event, completion: finish)
+    }
+  }
+
+  func refreshAppleCalendarCache(showDialog: Bool = true) {
+    let store = EKEventStore()
+    let calendarFilter = get("CALENDAR_NAME", default: "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    lastUtilityMessage = "Refreshing Mac Calendar events..."
+
+    let refresh: () -> Void = {
+      let calendar = Calendar.current
+      let now = Date()
+      let start = calendar.date(byAdding: .day, value: -14, to: now) ?? now
+      let end = calendar.date(byAdding: .day, value: 90, to: now) ?? now
+      let calendars = store.calendars(for: .event).filter { cal in
+        calendarFilter.isEmpty || cal.title.lowercased().contains(calendarFilter)
+      }
+      let predicate = store.predicateForEvents(withStart: start, end: end, calendars: calendars.isEmpty ? nil : calendars)
+      let events = store.events(matching: predicate)
+        .filter { !$0.isAllDay }
+        .sorted { $0.startDate < $1.startDate }
+
+      let formatter = ISO8601DateFormatter()
+      var lines: [String] = [
+        "# DDump local Mac Calendar cache",
+        "# refreshed_at=\(formatter.string(from: now))",
+        "# range_start=\(formatter.string(from: start))",
+        "# range_end=\(formatter.string(from: end))",
+        "# columns: start_epoch<TAB>end_epoch<TAB>yyyy-mm-dd<TAB>calendar<TAB>title"
+      ]
+      for event in events {
+        let title = event.title?
+          .replacingOccurrences(of: "\t", with: " ")
+          .replacingOccurrences(of: "\n", with: " ")
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Calendar Event"
+        let calTitle = event.calendar.title
+          .replacingOccurrences(of: "\t", with: " ")
+          .replacingOccurrences(of: "\n", with: " ")
+        let dayFormatter = DateFormatter()
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        let day = dayFormatter.string(from: event.startDate)
+        let startEpoch = Int(event.startDate.timeIntervalSince1970)
+        let endEpoch = Int(event.endDate.timeIntervalSince1970)
+        guard endEpoch >= startEpoch else { continue }
+        lines.append("\(startEpoch)\t\(endEpoch)\t\(day)\t\(calTitle)\t\(title)")
+      }
+
+      do {
+        try FileManager.default.createDirectory(at: DDumpPaths.appleCalendarCache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (lines.joined(separator: "\n") + "\n").write(to: DDumpPaths.appleCalendarCache, atomically: true, encoding: .utf8)
+        DispatchQueue.main.async {
+          self.set("CALENDAR_PROVIDER", "apple")
+          self.set("CALENDAR_AUTH_STATUS", "authorized")
+          self.lastUtilityMessage = "Mac Calendar ready. Cached \(events.count) event(s) for background imports."
+          if showDialog {
+            self.showUtilityDialog(title: "Mac Calendar Ready", text: "DDump cached \(events.count) upcoming calendar event(s) for shoot naming.")
+          }
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not save Mac Calendar cache: \(error.localizedDescription)"
+        }
+      }
+    }
+
+    let complete: (Bool, Error?) -> Void = { granted, error in
+      if granted {
+        refresh()
+      } else {
+        DispatchQueue.main.async {
+          self.set("CALENDAR_AUTH_STATUS", "not_authorized")
+          let reason = error?.localizedDescription ?? "Allow Calendar access in System Settings, then try again."
+          self.lastUtilityMessage = "Mac Calendar access was not approved. \(reason)"
+        }
+      }
+    }
+
+    if #available(macOS 14.0, *) {
+      store.requestFullAccessToEvents(completion: complete)
+    } else {
+      store.requestAccess(to: .event, completion: complete)
     }
   }
 
@@ -1187,6 +1279,13 @@ client_secret=\(quotedClientSecret)
       }
       let tag = (json["tag_name"] as? String) ?? ""
       let releaseURL = (json["html_url"] as? String) ?? "https://github.com/\(repo)/releases/latest"
+      let assetURL = ((json["assets"] as? [[String: Any]]) ?? [])
+        .compactMap { asset -> String? in
+          let name = ((asset["name"] as? String) ?? "").lowercased()
+          guard name.hasSuffix(".dmg") || name.hasSuffix(".zip") else { return nil }
+          return asset["browser_download_url"] as? String
+        }
+        .first
       guard !tag.isEmpty else { return }
 
       let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
@@ -1202,11 +1301,11 @@ client_secret=\(quotedClientSecret)
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "DDump update available"
-        alert.informativeText = "Installed version: \(current)\nLatest release: \(tag)\n\nDownload the latest DMG from GitHub Releases."
-        alert.addButton(withTitle: "Open Download Page")
+        alert.informativeText = "Installed version: \(current)\nLatest release: \(tag)\n\nDownload the latest installer, then open it to update DDump. Fully automatic updates will be added with signed public releases."
+        alert.addButton(withTitle: assetURL == nil ? "Open Download Page" : "Download Installer")
         alert.addButton(withTitle: "Later")
         let shouldOpen = self.get("AUTO_UPDATES_ENABLED", default: "0") == "1" || alert.runModal() == .alertFirstButtonReturn
-        if shouldOpen, let url = URL(string: releaseURL) {
+        if shouldOpen, let url = URL(string: assetURL ?? releaseURL) {
           NSWorkspace.shared.open(url)
         }
       }
@@ -5548,6 +5647,16 @@ struct CalendarSettings: View {
             .frame(width: 80)
             .multilineTextAlignment(.trailing)
             .onSubmit { state.set("CALENDAR_EVENT_PADDING_MIN", padding) }
+        }
+        HStack {
+          Button {
+            state.refreshAppleCalendarCache()
+          } label: {
+            Label("Refresh Mac Calendar events", systemImage: "arrow.clockwise")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+          .disabled(provider != "apple")
+          Spacer()
         }
         Toggle("Ask about clusters outside calendar events", isOn: $ambiguityPromptsEnabled)
           .ddumpOnChange(of: ambiguityPromptsEnabled) { v in
