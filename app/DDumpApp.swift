@@ -1213,6 +1213,11 @@ client_secret=\(quotedClientSecret)
     }.resume()
   }
 
+  func checkForUpdatesNow() {
+    lastUtilityMessage = "Checking for DDump updates…"
+    checkForUpdatesIfNeeded(force: true)
+  }
+
   private func normalizedVersion(_ raw: String) -> String {
     raw.trimmingCharacters(in: .whitespacesAndNewlines)
       .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
@@ -4121,6 +4126,13 @@ struct GeneralSettings: View {
       }
 
       Section("Check updates") {
+        Button {
+          state.checkForUpdatesNow()
+        } label: {
+          Label("Update now", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(DDumpPrimaryButtonStyle())
+
         Toggle("Check for updates", isOn: $updateChecksEnabled)
           .ddumpOnChange(of: updateChecksEnabled) { v in
             state.set("UPDATE_CHECKS_ENABLED", v ? "1" : "0")
@@ -4148,7 +4160,7 @@ struct GeneralSettings: View {
         }
         .disabled(!updateChecksEnabled)
 
-        Text("Update checks are off by default. DDump checks GitHub Releases and opens the download page; signed in-app updates can be added later.")
+        Text("Update now checks GitHub Releases immediately. Automatic update checks are off by default; signed in-app updates can be added later.")
           .font(.caption)
           .foregroundColor(.secondary)
       }

@@ -190,7 +190,7 @@ Includes:
 
 - Tooltips (`i` hints) for key settings.
 - Destination mode and destination folders under General.
-- Check-for-updates controls under General, off by default.
+- One-click "Update now" plus optional automatic update checks under General.
 - Theme mode: light/dark/system.
 - Icon preset library with multiple stored icons.
 - Default icon selection for light mode and dark mode.
