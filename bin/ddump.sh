@@ -474,12 +474,12 @@ MANIFEST_RETENTION_DAYS="0"
 USE_FAST_SEEN_INDEX="1"
 SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION="1"
 REQUIRE_PHOTOS_OR_TRUSTED="1"
-PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr"
-VIDEO_FILE_EXTENSIONS="mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"
+PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,braw,mxf,crm,r3d,ari,arri,cine"
+VIDEO_FILE_EXTENSIONS="mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine"
 PHOTO_RECENCY_HOURS="24"
 CAMERA_CARD_DETECTION_MODE="smart"
 CAMERA_CARD_MIN_MEDIA_FILES="3"
-CAMERA_CARD_SCAN_MAX_DEPTH="6"
+CAMERA_CARD_SCAN_MAX_DEPTH="10"
 CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"
 CAMERA_CARD_REJECT_INSTALLER_SHAPES="1"
 CLOUD_UPLOADS_ENABLED="0"
@@ -520,6 +520,7 @@ FAST_SEEN_FILE="${STATE_DIR}/fast_seen.tsv"
 SHOOT_CLUSTER_MAP_FILE="${STATE_DIR}/shoot_cluster_map.tsv"
 PENDING_DIR="${STATE_DIR}/pending_uploads"
 STATUS_FILE="${STATE_DIR}/run_status.env"
+LAST_SKIPPED_VOLUME_FILE="${STATE_DIR}/last_skipped_volume.env"
 CONTROL_DIR="${STATE_DIR}/control"
 PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
 STOP_AFTER_FILE_FLAG="${CONTROL_DIR}/stop_after_file.flag"
@@ -784,6 +785,29 @@ write_status() {
     /bin/echo "updated_at=\"$(/bin/date '+%Y-%m-%d %H:%M:%S')\""
   } >"$status_file_tmp"
   /bin/mv "$status_file_tmp" "$STATUS_FILE"
+}
+
+record_skipped_volume() {
+  local volume_name="$1"
+  local volume_path="$2"
+  local uuid="$3"
+  local reason="$4"
+  local detail="$5"
+  local hint="$6"
+  local skipped_tmp
+  skipped_tmp="$(/usr/bin/mktemp "${STATE_DIR}/skipped-volume.${run_id}.XXXXXX")"
+  {
+    /bin/echo "run_id=\"$(status_escape "$run_id")\""
+    /bin/echo "timestamp=\"$(/bin/date '+%Y-%m-%d %H:%M:%S')\""
+    /bin/echo "epoch=\"$(/bin/date '+%s')\""
+    /bin/echo "volume=\"$(status_escape "$volume_name")\""
+    /bin/echo "path=\"$(status_escape "$volume_path")\""
+    /bin/echo "uuid=\"$(status_escape "$uuid")\""
+    /bin/echo "reason=\"$(status_escape "$reason")\""
+    /bin/echo "detail=\"$(status_escape "$detail")\""
+    /bin/echo "hint=\"$(status_escape "$hint")\""
+  } >"$skipped_tmp"
+  /bin/mv "$skipped_tmp" "$LAST_SKIPPED_VOLUME_FILE"
 }
 
 set_status_phase() {
@@ -4865,6 +4889,14 @@ for vol_path in /Volumes/*; do
      && ! is_trusted_name_prefix "$vol_name" \
      && ! is_uuid_trusted "$uuid"; then
     log "Silently skipping non-camera volume: ${vol_name} (not trusted, no name prefix, no camera-card media shape)"
+    record_skipped_volume \
+      "$vol_name" \
+      "$vol_path" \
+      "$uuid" \
+      "not_camera_shape" \
+      "DDump saw ${vol_name}, but it was not trusted and did not look enough like a camera card." \
+      "Open DDump and use Manual select import if this is a real camera card, or add a trusted name prefix in Settings > Detection."
+    set_status_phase "idle" "Saw ${vol_name}, but it did not look like a camera card."
     continue
   fi
 

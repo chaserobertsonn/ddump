@@ -258,7 +258,8 @@ add_missing_key 'IGNORE_VOLUME_NAMES' '"Macintosh HD,Recovery"'
 add_missing_key 'IGNORE_NO_UUID_VOLUMES' '"1"'
 add_missing_key 'CAMERA_CARD_DETECTION_MODE' '"smart"' "Smart unknown-volume detection: skip installer/update volumes unless they look like camera cards."
 add_missing_key 'CAMERA_CARD_MIN_MEDIA_FILES' '"3"'
-add_missing_key 'CAMERA_CARD_SCAN_MAX_DEPTH' '"6"'
+add_missing_key 'CAMERA_CARD_SCAN_MAX_DEPTH' '"10"'
+replace_key_if_exact 'CAMERA_CARD_SCAN_MAX_DEPTH' '6' '10'
 add_missing_key 'CAMERA_CARD_HINT_DIRS' '"DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"'
 add_missing_key 'CAMERA_CARD_REJECT_INSTALLER_SHAPES' '"1"'
 add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
@@ -313,8 +314,10 @@ fi
 # v2 keys (new)
 add_missing_key 'TRUSTED_NAME_PREFIXES' '""' "Volume name prefixes that auto-trust (comma-separated)."
 add_missing_key 'REQUIRE_PHOTOS_OR_TRUSTED' '"1"' "Silent-skip non-photo volumes (no photo files, no trust)."
-add_missing_key 'PHOTO_FILE_EXTENSIONS' '"jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr"' "File extensions that count as photos for detection."
-add_missing_key 'VIDEO_FILE_EXTENSIONS' '"mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr"' "Extensions treated as video when SPLIT_PHOTO_VIDEO is enabled."
+add_missing_key 'PHOTO_FILE_EXTENSIONS' '"jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,braw,mxf,crm,r3d,ari,arri,cine"' "File extensions that count as photos for detection."
+add_missing_key 'VIDEO_FILE_EXTENSIONS' '"mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine"' "Extensions treated as video when SPLIT_PHOTO_VIDEO is enabled."
+replace_key_if_exact 'PHOTO_FILE_EXTENSIONS' 'jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr' 'jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,braw,mxf,crm,r3d,ari,arri,cine'
+replace_key_if_exact 'VIDEO_FILE_EXTENSIONS' 'mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr' 'mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine'
 add_missing_key 'PHOTO_RECENCY_HOURS' '"24"'
 add_missing_key 'CANDIDATE_MODE' '"lookback"' "Import candidate scan mode: lookback keeps the scan limited to recent files."
 add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only files newer than this many hours are considered."

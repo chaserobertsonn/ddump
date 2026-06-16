@@ -40,6 +40,7 @@ enum DDumpPaths {
   static var logFile: URL { appSupport.appendingPathComponent("logs/ddump.log") }
   static var reportsDir: URL { appSupport.appendingPathComponent("reports") }
   static var pendingDir: URL { appSupport.appendingPathComponent("state/pending_uploads") }
+  static var lastSkippedVolumeFile: URL { appSupport.appendingPathComponent("state/last_skipped_volume.env") }
   static var iconLibraryDir: URL { appSupport.appendingPathComponent("icons") }
   static var iconPresetManifest: URL { iconLibraryDir.appendingPathComponent("presets.json") }
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
@@ -147,6 +148,19 @@ func writeShellConfig(key: String, value: String, at url: URL) {
 
 // MARK: - App state
 
+struct SkippedVolumeNotice {
+  let volume: String
+  let path: String
+  let reason: String
+  let detail: String
+  let hint: String
+  let epoch: TimeInterval
+
+  var isRecent: Bool {
+    epoch > 0 && Date().timeIntervalSince1970 - epoch < 60 * 60
+  }
+}
+
 final class AppState: ObservableObject {
   @Published var phase: String = "idle"
   @Published var message: String = "Waiting for a card…"
@@ -191,6 +205,7 @@ final class AppState: ObservableObject {
   @Published var networkOnline: Bool = false
   @Published var cloudSetupBrowserRunning: Bool = false
   @Published var onboardingRestartRequested: Bool = false
+  @Published var skippedVolumeNotice: SkippedVolumeNotice?
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
@@ -346,7 +361,25 @@ final class AppState: ObservableObject {
       self.ejectStatus = parsed["eject_status"] ?? "pending"
       self.startedEpoch = TimeInterval(parsed["started_epoch"] ?? "0") ?? 0
       self.updatedAt = parsed["updated_at"] ?? ""
+      self.refreshSkippedVolumeNotice()
     }
+  }
+
+  func refreshSkippedVolumeNotice() {
+    let parsed = readShellEnv(at: DDumpPaths.lastSkippedVolumeFile)
+    guard !parsed.isEmpty else {
+      self.skippedVolumeNotice = nil
+      return
+    }
+    let notice = SkippedVolumeNotice(
+      volume: parsed["volume"] ?? "card",
+      path: parsed["path"] ?? "",
+      reason: parsed["reason"] ?? "",
+      detail: parsed["detail"] ?? "DDump saw a volume but skipped it.",
+      hint: parsed["hint"] ?? "Use Manual select import if this is a real camera card.",
+      epoch: TimeInterval(parsed["epoch"] ?? "0") ?? 0
+    )
+    self.skippedVolumeNotice = notice.isRecent ? notice : nil
   }
 
   func refreshConfig() {
@@ -3026,6 +3059,8 @@ struct DDumpPrimaryButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(DDumpFont.ui(13, weight: .medium))
+      .lineLimit(1)
+      .minimumScaleFactor(0.82)
       .foregroundColor(Color(red: 0x1A / 255.0, green: 0x11 / 255.0, blue: 0x07 / 255.0))
       .padding(.horizontal, 12)
       .padding(.vertical, 6)
@@ -3051,6 +3086,8 @@ struct DDumpSecondaryButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(DDumpFont.ui(13, weight: .medium))
+      .lineLimit(1)
+      .minimumScaleFactor(0.82)
       .foregroundColor(.ddumpFG1)
       .padding(.horizontal, 12)
       .padding(.vertical, 6)
@@ -3104,6 +3141,8 @@ struct DDumpTabChip: View {
         Image(systemName: icon)
           .foregroundColor(active ? .ddumpPeach : .ddumpFG2)
         Text(title)
+          .lineLimit(1)
+          .minimumScaleFactor(0.82)
       }
       .font(DDumpFont.ui(12, weight: active ? .medium : .regular))
       .foregroundColor(active ? .ddumpFG1 : .ddumpFG2)
@@ -3205,6 +3244,10 @@ struct ContentView: View {
         if !state.runActive && state.total == 0 {
           IdleView()
             .padding(.top, 18)
+          if state.skippedVolumeNotice != nil {
+            SkippedVolumePanel()
+              .padding(.top, 14)
+          }
         } else {
           ProgressDetail()
             .padding(.top, 18)
@@ -3228,13 +3271,13 @@ struct ContentView: View {
       .padding(.top, 22)
       .padding(.bottom, 16)
       .background(Color.ddumpBG)
-      .frame(minWidth: 640, minHeight: 560)
+      .frame(minWidth: 520, minHeight: 430)
 
       HStack(spacing: 12) {
         Button {
           showingSettings = true
         } label: {
-          Label("Settings…", systemImage: "gearshape")
+          Label("Settings", systemImage: "gearshape")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
         .keyboardShortcut(",", modifiers: .command)
@@ -3244,7 +3287,7 @@ struct ContentView: View {
         Button {
           state.openUploadDestination()
         } label: {
-          Label("Open Uploads", systemImage: "folder")
+          Label("Destination", systemImage: "folder")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
 
@@ -3352,7 +3395,7 @@ struct FirstRunWizard: View {
       }
     }
     .padding(28)
-    .frame(minWidth: 560, idealWidth: 700, maxWidth: 760)
+    .frame(minWidth: 500, idealWidth: 680, maxWidth: 760)
     .background(Color.ddumpBG)
     .onAppear {
       stagingFolder = state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp")
@@ -3379,15 +3422,15 @@ struct FirstRunWizard: View {
 
   private var folderPage: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Choose where DDump keeps its safety copy and where it hands finished folders to your sync app.")
+      Text("Choose where DDump keeps its verified safety copy and where finished folders should go next.")
         .foregroundColor(.secondary)
-      labeledFolder("Staging folder", value: $stagingFolder, prompt: "Choose staging folder")
-      labeledFolder("Primary destination", value: $primaryDestination, prompt: "Choose primary destination")
-      Toggle("Use a fallback backup destination if the primary is unavailable", isOn: $fallbackEnabled)
+      labeledFolder("Safety copy folder", value: $stagingFolder, prompt: "Choose safety copy folder")
+      labeledFolder("Main destination", value: $primaryDestination, prompt: "Choose main destination")
+      Toggle("Use a backup destination if the main destination is unavailable", isOn: $fallbackEnabled)
       if fallbackEnabled {
-        labeledFolder("Fallback destination", value: $fallbackDestination, prompt: "Choose fallback destination")
+        labeledFolder("Backup destination", value: $fallbackDestination, prompt: "Choose backup destination")
       }
-      Text("Pick the folder you normally want finished shoots to land in. If that folder is synced by another app, DDump will hand the organized copy to that app.")
+      Text("The main destination can be on this Mac, an external SSD, a NAS, or a folder watched by your cloud app.")
         .font(.caption)
         .foregroundColor(.secondary)
     }
@@ -3415,10 +3458,18 @@ struct FirstRunWizard: View {
     VStack(alignment: .leading, spacing: 14) {
       Text("Optional phone alerts")
         .font(DDumpFont.ui(17, weight: .semibold))
-      Text("Add a private ntfy topic if you want phone alerts for finished imports, card warnings, or recovery issues. Leave it blank to use only Mac notifications.")
+      Text("DDump can send phone alerts through ntfy, a lightweight push-notification app for iPhone and Android. Leave this blank if Mac notifications are enough.")
         .foregroundColor(.secondary)
-      TextField("ntfy topic", text: $ntfyTopic)
-      Text("You can customize which events use ntfy later in Settings > Notifications.")
+      HStack {
+        TextField("Private ntfy topic", text: $ntfyTopic)
+        Button("Get ntfy") {
+          if let url = URL(string: "https://ntfy.sh/app") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+      Text("Install ntfy on your phone, create or choose a private topic name, then paste that same topic here. You can customize which events use phone alerts later in Settings > Notifications.")
         .font(.caption)
         .foregroundColor(.secondary)
     }
@@ -3526,7 +3577,7 @@ struct SettingsSheet: View {
       .padding(.horizontal, 24)
       .padding(.top, 18)
 
-      LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 4)], spacing: 4) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 4)], spacing: 4) {
         ForEach(SettingsTab.allCases, id: \.self) { t in
           DDumpTabChip(icon: t.icon, title: t.rawValue, active: tab == t) {
             tab = t
@@ -3550,7 +3601,7 @@ struct SettingsSheet: View {
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
     }
-    .frame(minWidth: 680, idealWidth: 820, maxWidth: 920, minHeight: 540, idealHeight: 680, maxHeight: 760)
+    .frame(minWidth: 520, idealWidth: 720, maxWidth: 820, minHeight: 460, idealHeight: 640, maxHeight: 720)
     .background(Color.ddumpBG)
   }
 }
@@ -3559,7 +3610,7 @@ struct ControlBar: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    let columns = [GridItem(.adaptive(minimum: 138), spacing: 8)]
+    let columns = [GridItem(.adaptive(minimum: 120), spacing: 8)]
 
     VStack(alignment: .leading, spacing: 8) {
       LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
@@ -3585,7 +3636,7 @@ struct ControlBar: View {
         Button {
           state.stop()
         } label: {
-          Label("Stop after this file", systemImage: "stop.fill")
+            Label("Stop after file", systemImage: "stop.fill")
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
         .keyboardShortcut(".", modifiers: .command)
@@ -3602,7 +3653,7 @@ struct ControlBar: View {
         Button {
           state.ejectNow()
         } label: {
-          Label("Eject after this file", systemImage: "eject.fill")
+          Label("Eject after file", systemImage: "eject.fill")
         }
         .buttonStyle(DDumpPrimaryButtonStyle())
         .keyboardShortcut("e", modifiers: .command)
@@ -3640,11 +3691,63 @@ struct IdleView: View {
         Label("Detect photo files automatically — no DCIM required", systemImage: "magnifyingglass")
         Label("Copy locally, verify size, optional SHA-256", systemImage: "checkmark.shield")
         Label("Group by capture-time clusters", systemImage: "square.3.layers.3d")
-        Label("Upload to cloud destination(s) you set", systemImage: "icloud.and.arrow.up")
+        Label("Copy to the destination folders you choose", systemImage: "folder.badge.plus")
         Label("Eject only when files are safe", systemImage: "eject")
       }
       .font(DDumpFont.ui(13))
       .foregroundColor(.ddumpFG2)
+    }
+  }
+}
+
+struct SkippedVolumePanel: View {
+  @EnvironmentObject var state: AppState
+
+  var body: some View {
+    if let notice = state.skippedVolumeNotice {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
+          Image(systemName: "info.circle.fill")
+            .foregroundColor(.ddumpWarning)
+          VStack(alignment: .leading, spacing: 4) {
+            Text("DDump saw \(notice.volume), but did not import it.")
+              .font(DDumpFont.ui(13, weight: .semibold))
+              .foregroundColor(.ddumpFG1)
+            Text(notice.detail)
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG2)
+            Text(notice.hint)
+              .font(DDumpFont.ui(12))
+              .foregroundColor(.ddumpFG2)
+          }
+        }
+
+        HStack(spacing: 8) {
+          Button {
+            state.startManualSelectionImport()
+          } label: {
+            Label("Manual import", systemImage: "slider.horizontal.3")
+          }
+          .buttonStyle(DDumpPrimaryButtonStyle())
+          .disabled(state.runActive)
+
+          Button {
+            openInFinder(DDumpPaths.logFile.path)
+          } label: {
+            Label("Open log", systemImage: "doc.text")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+        }
+      }
+      .padding(12)
+      .background(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(Color.ddumpSurface)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(Color.ddumpWarning.opacity(0.45), lineWidth: 1)
+      )
     }
   }
 }
@@ -3655,7 +3758,7 @@ struct DestinationSummaryPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
-        Text("Destination")
+        Text("Main destination")
           .font(DDumpFont.ui(11, weight: .semibold))
           .textCase(.uppercase)
           .tracking(1.4)
@@ -3709,7 +3812,7 @@ struct HealthPanel: View {
         )
       }
 
-      HStack(spacing: 16) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], alignment: .leading, spacing: 8) {
         Label("\(state.localFreeGB)GB free locally", systemImage: "internaldrive")
         Label("\(state.pendingUploadCount) pending upload\(state.pendingUploadCount == 1 ? "" : "s")", systemImage: "arrow.triangle.2.circlepath")
         Label("\(state.stagingFolderCount) staging folder\(state.stagingFolderCount == 1 ? "" : "s")", systemImage: "tray.full")
@@ -3720,7 +3823,7 @@ struct HealthPanel: View {
       .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
       .overlay(alignment: .bottom) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
 
-      LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 8)], alignment: .leading, spacing: 8) {
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 8)], alignment: .leading, spacing: 8) {
         Button {
           state.retryPendingUploads()
         } label: {
@@ -3728,20 +3831,6 @@ struct HealthPanel: View {
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
         .disabled(state.pendingUploadCount == 0 || state.runActive)
-
-        Button {
-          openInFinder(state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
-        } label: {
-          Label("Staging", systemImage: "tray")
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-
-        Button {
-          openInFinder(DDumpPaths.reportsDir.path)
-        } label: {
-          Label("Receipts", systemImage: "doc.plaintext")
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
       }
       .font(DDumpFont.ui(12))
 
@@ -4109,7 +4198,7 @@ struct GeneralSettings: View {
   var body: some View {
     Form {
       Section {
-        Toggle("Enable transfer to destination folders", isOn: $enablePostMove)
+        Toggle("Copy finished folders to destinations", isOn: $enablePostMove)
           .ddumpOnChange(of: enablePostMove) { v in
             state.set("ENABLE_POST_EJECT_MOVE", v ? "1" : "0")
           }
@@ -4126,10 +4215,10 @@ struct GeneralSettings: View {
             .font(.caption)
             .foregroundColor(.secondary)
         }
-        TextField("Local staging folder", text: $localStaging, onCommit: {
+        TextField("Safety copy folder", text: $localStaging, onCommit: {
           state.set("DEST_ROOT", localStaging)
         })
-        TextField("Primary destination", text: $uploadRoot, onCommit: {
+        TextField("Main destination", text: $uploadRoot, onCommit: {
           state.set("POST_MOVE_ROOT", uploadRoot)
         })
         if let warning = dateLadderRootWarning(uploadRoot) {
@@ -4137,30 +4226,30 @@ struct GeneralSettings: View {
             .font(.caption)
             .foregroundColor(.ddumpWarning)
         }
-        Text("Use any normal synced folder: Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, or a local/NAS folder. DDump copies there after staging; that sync app handles the cloud upload.")
+        Text("The main destination can be a folder on this Mac, an external SSD, a NAS folder, or a folder watched by Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, or pCloud. DDump copies there after the safety copy is verified.")
           .font(.caption)
           .foregroundColor(.secondary)
-        TextField("Additional destinations (comma-separated)", text: $uploadRoots, onCommit: {
+        TextField("Additional backup destinations (comma-separated)", text: $uploadRoots, onCommit: {
           state.set("POST_MOVE_ROOTS", uploadRoots)
         })
-        TextField("Fallback destination if primary is unavailable", text: $fallbackRoot, onCommit: {
+        TextField("Emergency fallback if the main destination is unavailable", text: $fallbackRoot, onCommit: {
           state.set("POST_MOVE_FALLBACK_ROOT", fallbackRoot)
         })
         HStack {
-          Button("Browse local…") {
-            if let picked = pickFolder(prompt: "Choose local staging folder") {
+          Button("Browse safety…") {
+            if let picked = pickFolder(prompt: "Choose safety copy folder") {
               localStaging = picked
               state.set("DEST_ROOT", picked)
             }
           }
-          Button("Browse upload…") {
-            if let picked = pickFolder(prompt: "Choose primary upload destination") {
+          Button("Browse main…") {
+            if let picked = pickFolder(prompt: "Choose main destination") {
               uploadRoot = picked
               state.set("POST_MOVE_ROOT", picked)
             }
           }
-          Button("Browse fallback…") {
-            if let picked = pickFolder(prompt: "Choose fallback destination") {
+          Button("Browse backup…") {
+            if let picked = pickFolder(prompt: "Choose backup or fallback destination") {
               fallbackRoot = picked
               state.set("POST_MOVE_FALLBACK_ROOT", picked)
             }
@@ -4169,7 +4258,7 @@ struct GeneralSettings: View {
       } header: {
         Text("Destinations")
       } footer: {
-        Text("Files go: SD card → staging. Then DDump copies to destination folder(s). Staging is the safety copy; cloud apps sync from the destination folder.")
+        Text("Files go: card to safety copy first. After that verification passes, DDump copies organized folders to the main and backup destinations you choose.")
           .font(.caption).foregroundColor(.secondary)
       }
 
@@ -4218,6 +4307,13 @@ struct GeneralSettings: View {
           }
           .buttonStyle(DDumpSecondaryButtonStyle())
           .disabled(state.runActive)
+
+          Button {
+            openInFinder(DDumpPaths.reportsDir.path)
+          } label: {
+            Label("Receipts", systemImage: "doc.plaintext")
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
         }
         Text("These are kept out of the main screen because most users only need them occasionally.")
           .font(.caption)
@@ -4680,7 +4776,7 @@ struct DetectionSettings: View {
       verifyHash = (state.get("VERIFY_COPY_HASH", default: "0") == "1")
       state.set("CANDIDATE_MODE", "lookback")
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
-      videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr")
+      videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine")
       promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "0") == "1")
       sqliteMemoryEnabled = state.sqliteMemoryEnabled
       cardAlmostFullAlertEnabled = (state.get("CARD_ALMOST_FULL_ALERT_ENABLED", default: "1") == "1")
@@ -4743,7 +4839,28 @@ struct NotificationsSettings: View {
   var body: some View {
     Form {
       Section("Delivery") {
-        TextField("ntfy topic", text: $ntfyTopic, onCommit: { state.set("NTFY_TOPIC", ntfyTopic) })
+        VStack(alignment: .leading, spacing: 8) {
+          Text("Phone alerts are optional.")
+            .font(DDumpFont.ui(13, weight: .semibold))
+          Text("DDump can use ntfy to push simple alerts to your phone. Install the ntfy app, choose a private topic name, then paste that topic here. If you leave this blank, DDump only uses Mac notifications.")
+            .font(.caption)
+            .foregroundColor(.secondary)
+          HStack(spacing: 8) {
+            Button("Get ntfy app") {
+              if let url = URL(string: "https://ntfy.sh/app") {
+                NSWorkspace.shared.open(url)
+              }
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+            Button("Open ntfy.sh") {
+              if let url = URL(string: "https://ntfy.sh") {
+                NSWorkspace.shared.open(url)
+              }
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+          }
+        }
+        TextField("Private phone-alert topic", text: $ntfyTopic, onCommit: { state.set("NTFY_TOPIC", ntfyTopic) })
         HStack {
           Text("macOS action timeout (seconds)")
           Spacer()
