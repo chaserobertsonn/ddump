@@ -127,7 +127,9 @@ fi
 # ---------------------------------------------------------------------------
 # User config — keep existing, add missing keys, migrate renamed keys
 # ---------------------------------------------------------------------------
+fresh_config=0
 if [[ ! -f "$USER_CONFIG" ]]; then
+  fresh_config=1
   cp "$DEFAULT_CONFIG" "$USER_CONFIG"
   echo "Created user config: $USER_CONFIG"
 else
@@ -389,7 +391,12 @@ add_missing_key 'NETWORK_RESUME_COOLDOWN_SECONDS' '"120"' "Minimum seconds betwe
 add_missing_key 'APP_COLOR_SCHEME' '"system"' "App appearance: system | light | dark."
 add_missing_key 'APP_ICON_DEFAULT_LIGHT' '""' "Stored icon preset ID used when app appearance is light."
 add_missing_key 'APP_ICON_DEFAULT_DARK' '""' "Stored icon preset ID used when app appearance is dark."
-add_missing_key 'ONBOARDING_COMPLETED' '"0"' "First-run setup wizard completion flag."
+if [[ "$fresh_config" == "1" ]]; then
+  add_missing_key 'ONBOARDING_COMPLETED' '"0"' "First-run setup wizard completion flag."
+else
+  add_missing_key 'ONBOARDING_COMPLETED' '"1"' "First-run setup wizard completion flag."
+  replace_key_if_exact 'ONBOARDING_COMPLETED' '0' '1'
+fi
 add_missing_key 'UPDATE_CHECKS_ENABLED' '"0"' "Enable public-release update checks."
 add_missing_key 'AUTO_UPDATES_ENABLED' '"0"' "Open the GitHub download page automatically when a newer release is found."
 add_missing_key 'UPDATE_CHECK_FREQUENCY' '"weekly"' "Update check cadence: startup | weekly | monthly."

@@ -3269,11 +3269,11 @@ struct FirstRunWizard: View {
 
   private var introPage: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("Plug in a camera card and DDump copies only new media into staging. It can eject the card when the local copy is safe, then copy to any synced folder you choose.")
-      wizardBullet("No Terminal setup for normal use.")
-      wizardBullet("Internet is only needed for Google Calendar OAuth or cloud sync apps.")
-      wizardBullet("Apple Calendar works locally with calendars already synced to this Mac.")
-      wizardBullet("Staging stays as the safety copy; cloud folders are the handoff copy.")
+      Text("Plug in a camera card and DDump copies only new media into a safety staging folder. When the copy is verified, it can eject the card and place organized shoot folders wherever you already sync your work.")
+      wizardBullet("Keep a local safety copy before anything goes to the cloud.")
+      wizardBullet("Name folders from capture times, camera info, or your Mac Calendar.")
+      wizardBullet("Send finished folders to Google Drive, Dropbox, Box, OneDrive, iCloud Drive, pCloud, a local drive, or a NAS folder.")
+      wizardBullet("Change these choices any time in Settings.")
     }
     .foregroundColor(.ddumpFG1)
   }
@@ -3288,7 +3288,7 @@ struct FirstRunWizard: View {
       if fallbackEnabled {
         labeledFolder("Fallback destination", value: $fallbackDestination, prompt: "Choose fallback destination")
       }
-      Text("Dropbox, Box, OneDrive, iCloud Drive, pCloud, and Google Drive Desktop all work as normal folder destinations if their apps sync that folder.")
+      Text("Pick the folder you normally want finished shoots to land in. If that folder is synced by another app, DDump will hand the organized copy to that app.")
         .font(.caption)
         .foregroundColor(.secondary)
     }
@@ -3306,7 +3306,7 @@ struct FirstRunWizard: View {
         Text("hours")
       }
       TextField("Default offline shoot name (optional)", text: $defaultShootName)
-      Text("If a calendar is not connected or internet is unavailable, this name can fill the {shoot} token in template naming. Time clusters still keep separate groups when needed.")
+      Text("Use the scan window to decide how far back DDump should look for new files. The optional shoot name is used when no calendar event matches.")
         .font(.caption)
         .foregroundColor(.secondary)
     }
@@ -3316,7 +3316,7 @@ struct FirstRunWizard: View {
     VStack(alignment: .leading, spacing: 14) {
       Text("Optional phone alerts")
         .font(DDumpFont.ui(17, weight: .semibold))
-      Text("Install ntfy on your phone, create or choose a private topic name, then paste that topic here. Leave it blank to use only macOS notifications.")
+      Text("Add a private ntfy topic if you want phone alerts for finished imports, card warnings, or recovery issues. Leave it blank to use only Mac notifications.")
         .foregroundColor(.secondary)
       TextField("ntfy topic", text: $ntfyTopic)
       Text("You can customize which events use ntfy later in Settings > Notifications.")
@@ -5116,7 +5116,7 @@ struct CloudSettings: View {
           sectionHeader("Status", caption: state.cloudLastCheckedAt.isEmpty ? nil : "Last check \(state.cloudLastCheckedAt)")
           if enabled {
           VStack(spacing: 10) {
-            statusCard(state.cloudRcloneReady, okText: "Cloud helper found", failText: "Cloud helper missing", icon: "terminal", hint: state.cloudRcloneReady ? "" : "Install the cloud helper from guided setup.")
+            statusCard(state.cloudRcloneReady, okText: "Cloud helper found", failText: "Cloud helper missing", icon: "wrench.and.screwdriver", hint: state.cloudRcloneReady ? "" : "Install the cloud helper from guided setup.")
             statusCard(state.cloudRemoteConfigured, okText: "Google Drive connected", failText: "Google Drive not connected", icon: "link", hint: state.cloudRemoteConfigured ? "" : "Use Connect Google Drive in guided setup.")
             statusCard(state.cloudServiceLoaded, okText: "Mount service loaded", failText: "Mount service not loaded", icon: "gearshape.2", hint: state.cloudServiceLoaded ? "" : "Use Start mount to load the LaunchAgent.")
             statusCard(state.cloudMountActive, okText: "Mount active", failText: "Mount inactive", icon: "externaldrive.badge.icloud", hint: state.cloudMountActive ? "" : "DDump will retry with backoff before sending a failure alert.")

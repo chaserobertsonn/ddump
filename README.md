@@ -133,12 +133,11 @@ Grouping controls:
 - Cluster gap minutes.
 - Cross-card cluster attach window (keeps related camera/drone cards grouped).
 
-Calendar setup is handled from Settings -> Calendar. Public users do not need
-Terminal commands. DDump offers three calendar sources:
+Calendar setup is handled from Settings -> Calendar. DDump offers three
+calendar sources:
 
 - Google Calendar: opens browser sign-in from the app, requests read-only
-  Calendar access, and stores a local DDump token. No Terminal or `gcalcli`
-  setup is required.
+  Calendar access, and stores a local DDump token.
 - Apple Calendar: uses the standard macOS Calendar permission prompt and reads
   calendars already synced to the Mac.
 - Calendar Link: accepts a private `.ics` or `webcal` URL and validates that it
