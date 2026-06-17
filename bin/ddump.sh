@@ -435,6 +435,7 @@ trap cleanup EXIT
 
 # Defaults (overridden by config.env then user config.env)
 DEST_ROOT="$HOME/Temp"
+DUMP_FALLBACK_ROOT="$HOME/Temp/DDump"
 LOOKBACK_HOURS="24"
 CANDIDATE_MODE="lookback"
 SOURCE_SUBDIR="DCIM"
@@ -971,12 +972,31 @@ prune_manifest() {
   log "Manifest prune complete: total=${total}, kept=${kept}, removed=${removed}, parse_failed=${parse_failed}, retention_days=${retention_days}."
 }
 
+effective_dump_root() {
+  local root fallback
+  root="${DEST_ROOT:-}"
+  fallback="${DUMP_FALLBACK_ROOT:-}"
+  if [[ -n "$fallback" ]]; then
+    if [[ -z "$root" ]]; then
+      root="$fallback"
+    elif [[ ! -d "$root" ]]; then
+      log "Dump folder unavailable, trying fallback: ${root} -> ${fallback}"
+      root="$fallback"
+    elif [[ ! -w "$root" ]]; then
+      log "Dump folder not writable, trying fallback: ${root} -> ${fallback}"
+      root="$fallback"
+    fi
+  fi
+  printf '%s' "$root"
+}
+
+DEST_ROOT="$(effective_dump_root)"
 if [[ ! -d "$DEST_ROOT" ]]; then
   if /bin/mkdir -p "$DEST_ROOT"; then
-    log "Created destination root: $DEST_ROOT"
+    log "Created dump folder: $DEST_ROOT"
   else
-    log "Destination root is unavailable: $DEST_ROOT"
-    notify "DDump" "Destination folder unavailable: $DEST_ROOT"
+    log "Dump folder is unavailable: $DEST_ROOT"
+    notify "DDump" "Dump folder unavailable: $DEST_ROOT"
     exit 1
   fi
 fi

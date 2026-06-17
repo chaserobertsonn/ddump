@@ -251,6 +251,7 @@ fi
 # v1 keys that still apply
 add_missing_key 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '"0"' "Advanced: prompt for folder selection the first time a trusted card UUID is seen; default scans the whole card within the lookback window."
 replace_key_if_exact 'PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE' '1' '0'
+add_missing_key 'DUMP_FALLBACK_ROOT' '"$HOME/Temp/DDump"' "Fallback dump folder when the configured dump folder is unavailable."
 add_missing_key 'OPEN_APP_ON_CARD_INSERT' '"1"' "Bring DDump forward when a trusted card starts processing."
 add_missing_key 'PROMPT_FOR_UNKNOWN_CARD_ACTION' '"1"'
 add_missing_key 'SKIP_INTERNAL_VOLUMES' '"1"'

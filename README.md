@@ -1,14 +1,14 @@
 # DDump
 
-DDump is a macOS photo-card ingest app for photographers who need a reliable path from SD card to local staging and cloud destination.
+DDump is a macOS photo-card ingest app for photographers who need a reliable path from camera card to a verified Dump Folder and optional Backup Folder.
 
 It is built for high-confidence transfer workflows:
 
 - Import only recent card files (lookback window) or a manual selection.
-- Stage locally first.
+- Copy to a verified Dump Folder first.
 - Verify local copies.
 - Organize into shoot folders.
-- Copy to one or more destinations.
+- Copy to one or more Backup Folders.
 - Retry/resume when cloud/mount/network fails.
 
 ## Core Workflow
@@ -16,12 +16,12 @@ It is built for high-confidence transfer workflows:
 1. Card mounts.
 2. DDump checks trust + photo presence.
 3. DDump finds candidates (lookback-only by default).
-4. DDump copies to staging and verifies each file.
-5. DDump groups staged files by capture-time clusters, names those groups by
+4. DDump copies to the Dump Folder and verifies each file.
+5. DDump groups dumped files by capture-time clusters, names those groups by
    your selected strategy, and preserves the camera/source folder tree inside
    each named shoot folder.
-6. DDump copies staged buckets to destination(s).
-7. DDump verifies destination copy parity (file count + bytes).
+6. DDump copies organized shoot folders to Backup Folder(s).
+7. DDump verifies backup copy parity (file count + bytes).
 8. DDump records receipts/logs/state and handles eject rules.
 9. DDump retries incomplete uploads automatically, including after internet reconnect.
 
@@ -34,17 +34,17 @@ It is built for high-confidence transfer workflows:
 - Per-card saved source folder choices (avoids scanning whole card repeatedly).
 - Do Not Eject and Eject After This File controls.
 - Stop-after-file and Pause/Resume controls.
-- Minimum staging free-space guardrail before import.
+- Minimum Dump Folder free-space guardrail before import.
 
 ### 2) Reliability and resume behavior
 
-- Local staging-first architecture (cloud outage does not block card copy).
+- Dump Folder-first architecture (cloud outage does not block card copy).
 - Pending upload queue with retry schedule.
 - Incomplete-session recovery runs before new card work.
 - Reinsert-priority handling for files marked missing/incomplete.
-- Destination reconciliation: skips re-copy if destination already matches source stats.
+- Backup Folder reconciliation: skips re-copy if backup already matches source stats.
 - Optional SQLite state engine (beta), default OFF.
-- Staging-folder memory mode (default) to dedupe safely without DB.
+- Dump Folder memory mode (default) to dedupe safely without DB.
 
 ### 3) Cloud/mount robustness
 
@@ -61,13 +61,19 @@ It is built for high-confidence transfer workflows:
 - Cloud diagnostics in app (binary/remote/service/mount state + reason string).
 - Internet reconnect watcher: when network returns and pending uploads exist, DDump auto-triggers retry.
 
-### 4) Destination handling
+### 4) Dump and Backup Folders
 
-- Primary destination.
-- Additional destinations (comma-separated).
-- Fallback destination root.
-- Staging-only mode (disable destination transfer).
-- Post-transfer is copy-based (staging remains as backup).
+- Dump Folder: the first verified copy from the card. Recommended: a fast
+  folder on this Mac or a directly connected SSD.
+- Dump Folder fallback: local safety fallback used when a configured SSD or NAS
+  Dump Folder is not connected or writable.
+- Backup Folder: optional second copy after the Dump Folder is verified. This
+  can be Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, a
+  NAS folder, another local folder, or another SSD.
+- Extra Backup Folders (comma-separated).
+- Backup Folder fallback when the main backup location is unavailable.
+- Dump-only mode (disable Backup Folder transfer).
+- Post-transfer is copy-based (the Dump Folder remains as the safety copy).
 - Optional smart-mode video split to sibling Video path.
 - Works with any provider that exposes a normal local folder: Google Drive
   Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, NAS folders, or local
@@ -85,10 +91,10 @@ Strategies:
 - `smart`: infer date-ladder destination shape from a sample path.
 - `camera`: keep camera folder structure names.
 
-DDump keeps destination shoot folders flat by default. For example, files copied
+DDump keeps backup shoot folders flat by default. For example, files copied
 from `DCIM/104_2026` into a calendar bucket land directly in
 `Kaysville Shoot/...`, not inside another `DCIM/104_2026` folder. The original
-staging safety copy is still retained until Safe Cleanup.
+Dump Folder safety copy is still retained until Safe Cleanup.
 When a card contains multiple shoots, the 30-minute cluster gap splits them
 before calendar naming and upload. If no calendar event matches a cluster, DDump
 falls back to a time-cluster folder name instead of merging everything into
@@ -114,7 +120,7 @@ Smart mode is for date-ladder destination folders such as:
 .../Client Uploads/Photos/2026/2026.05/2026.05.31/Shoot Name
 ```
 
-Paste one real sample shoot folder in Settings -> Naming. DDump reuses the root before the date ladder, then automatically uploads to today's `YYYY/YYYY.MM/YYYY.MM.DD` folder on every run.
+Paste one real sample shoot folder in Settings -> Naming. DDump reuses the root before the date ladder, then automatically copies to today's `YYYY/YYYY.MM/YYYY.MM.DD` Backup Folder on every run.
 Select the lowest real folder that proves the structure, not only the broad
 parent. For example, choose a path like:
 
@@ -169,9 +175,9 @@ uses that answer to correct the destination folder.
 - Optional ntfy push events with per-event toggles.
 - Optional Slack completion/error summaries.
 - Main app checklist panel with progress states:
-  - Transfer to staging
+  - Copy to Dump Folder
   - Eject card
-  - Transfer to destination
+  - Copy to Backup Folder
   - All complete
 
 ### 8) App UI and settings
@@ -180,20 +186,18 @@ Tabs:
 
 - General
 - Naming
-- Detection
-- Notifications
-- Cloud
-- Calendar
+- Import
+- Alerts
 
 Includes:
 
 - Tooltips (`i` hints) for key settings.
-- Destination mode and destination folders under General.
+- Dump Folder, Dump Folder fallback, Backup Folder, and Backup Folder fallback under General.
 - One-click "Update now" plus optional automatic update checks under General.
 - Theme mode: light/dark/system.
 - Icon preset library with multiple stored icons.
 - Default icon selection for light mode and dark mode.
-- Calendar wizard with Google, Apple Calendar, and Calendar Link setup options.
+- Calendar naming setup in Naming, with Mac Calendar, Google Calendar, and Calendar Link options.
 
 ## Install
 
@@ -353,20 +357,20 @@ DDump verified the handoff into the local Drive folder; Google Drive Desktop
 still owns the final cloud sync. Direct rclone upload remains the stronger
 cloud-side verification path.
 
-First launch shows a short setup wizard for staging, destination, fallback,
+First launch shows a short setup wizard for Dump Folder, Backup Folder, fallback,
 auto-eject, scan window, offline shoot name, and ntfy topic. Every wizard page
 can be skipped. To rerun it later, open Settings -> General -> Restart setup
 wizard.
 
-For public calendar naming, use Settings -> Calendar -> Mac Calendar first.
+For public calendar naming, use Settings -> Naming -> Mac Calendar first.
 That uses local macOS Calendar permission and works with iCloud, Google,
 Exchange, and subscribed calendars already synced to the Mac. Google Calendar
 OAuth remains optional for users who specifically want direct Google sign-in.
 
-Destination shoot folders are flat by default:
+Backup shoot folders are flat by default:
 `REBUCKET_PRESERVE_SOURCE_FOLDERS=0` means DDump creates the shoot/calendar
 folder and places media files directly inside it instead of recreating camera
-folders like `DCIM/101_2026` under the destination.
+folders like `DCIM/101_2026` under the Backup Folder.
 
 ## Current Defaults Worth Noting
 
@@ -376,7 +380,7 @@ folders like `DCIM/101_2026` under the destination.
   but it ignores installer/update/app mounts unless they contain camera-card
   shape, such as camera hint folders or multiple media files.
 - Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.
-- SQLite memory is OFF by default (staging memory mode is default).
+- SQLite memory is OFF by default (Dump Folder memory mode is default).
 - Card eject grace defaults to 60 seconds.
 - Update checks and auto updates are OFF by default until a public release/update feed is configured.
 - Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.

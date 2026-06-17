@@ -3271,32 +3271,25 @@ struct ContentView: View {
       .padding(.top, 22)
       .padding(.bottom, 16)
       .background(Color.ddumpBG)
-      .frame(minWidth: 520, minHeight: 430)
+      .frame(minWidth: 360, minHeight: 360)
 
-      HStack(spacing: 12) {
-        Button {
-          showingSettings = true
-        } label: {
-          Label("Settings", systemImage: "gearshape")
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 12) {
+          footerSettingsButton
+          Spacer()
+          footerBackupButton
+          footerLogButton
         }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-        .keyboardShortcut(",", modifiers: .command)
-
-        Spacer()
-
-        Button {
-          state.openUploadDestination()
-        } label: {
-          Label("Destination", systemImage: "folder")
+        VStack(spacing: 8) {
+          footerSettingsButton
+            .frame(maxWidth: .infinity)
+          HStack(spacing: 8) {
+            footerBackupButton
+              .frame(maxWidth: .infinity)
+            footerLogButton
+              .frame(maxWidth: .infinity)
+          }
         }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-
-        Button {
-          openInFinder(DDumpPaths.logFile.path)
-        } label: {
-          Label("Log", systemImage: "doc.text")
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
       }
       .padding(.horizontal, 20)
       .padding(.vertical, 12)
@@ -3331,6 +3324,34 @@ struct ContentView: View {
         state.clearOnboardingRestartRequest()
       }
     }
+  }
+
+  private var footerSettingsButton: some View {
+    Button {
+      showingSettings = true
+    } label: {
+      Label("Settings", systemImage: "gearshape")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .keyboardShortcut(",", modifiers: .command)
+  }
+
+  private var footerBackupButton: some View {
+    Button {
+      state.openUploadDestination()
+    } label: {
+      Label("Backup Folder", systemImage: "folder")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+  }
+
+  private var footerLogButton: some View {
+    Button {
+      openInFinder(DDumpPaths.logFile.path)
+    } label: {
+      Label("Log", systemImage: "doc.text")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
   }
 }
 
@@ -3411,8 +3432,8 @@ struct FirstRunWizard: View {
 
   private var introPage: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("Plug in a camera card and DDump copies only new media into a safety staging folder. When the copy is verified, it can eject the card and place organized shoot folders wherever you already sync your work.")
-      wizardBullet("Keep a local safety copy before anything goes to the cloud.")
+      Text("Plug in a camera card and DDump copies only new media into your Dump Folder. When that copy is verified, it can eject the card and copy organized shoot folders to your Backup Folder.")
+      wizardBullet("Verify the Dump Folder copy before anything leaves the card.")
       wizardBullet("Name folders from capture times, camera info, or your Mac Calendar.")
       wizardBullet("Send finished folders to Google Drive, Dropbox, Box, OneDrive, iCloud Drive, pCloud, a local drive, or a NAS folder.")
       wizardBullet("Change these choices any time in Settings.")
@@ -3422,15 +3443,15 @@ struct FirstRunWizard: View {
 
   private var folderPage: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Choose where DDump keeps its verified safety copy and where finished folders should go next.")
+      Text("Choose the first verified copy and the optional backup copy.")
         .foregroundColor(.secondary)
-      labeledFolder("Safety copy folder", value: $stagingFolder, prompt: "Choose safety copy folder")
-      labeledFolder("Main destination", value: $primaryDestination, prompt: "Choose main destination")
-      Toggle("Use a backup destination if the main destination is unavailable", isOn: $fallbackEnabled)
+      labeledFolder("Dump Folder", value: $stagingFolder, prompt: "Choose Dump Folder")
+      labeledFolder("Backup Folder", value: $primaryDestination, prompt: "Choose Backup Folder")
+      Toggle("Use a fallback if the Backup Folder is unavailable", isOn: $fallbackEnabled)
       if fallbackEnabled {
-        labeledFolder("Backup destination", value: $fallbackDestination, prompt: "Choose backup destination")
+        labeledFolder("Backup fallback", value: $fallbackDestination, prompt: "Choose Backup Folder fallback")
       }
-      Text("The main destination can be on this Mac, an external SSD, a NAS, or a folder watched by your cloud app.")
+      Text("Recommended: keep the Dump Folder on this Mac or a connected SSD. The Backup Folder can be cloud, NAS, another SSD, or another local folder.")
         .font(.caption)
         .foregroundColor(.secondary)
     }
@@ -3537,10 +3558,8 @@ struct SettingsSheet: View {
   enum SettingsTab: String, CaseIterable {
     case general = "General"
     case naming = "Naming"
-    case detection = "Detection"
-    case notifications = "Notifications"
-    case cloud = "Cloud"
-    case calendar = "Calendar"
+    case detection = "Import"
+    case notifications = "Alerts"
 
     var icon: String {
       switch self {
@@ -3548,8 +3567,6 @@ struct SettingsSheet: View {
       case .naming: return "character.textbox"
       case .detection: return "camera.aperture"
       case .notifications: return "bell"
-      case .cloud: return "icloud"
-      case .calendar: return "calendar"
       }
     }
   }
@@ -3577,22 +3594,7 @@ struct SettingsSheet: View {
       .padding(.horizontal, 24)
       .padding(.top, 18)
 
-      LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 4)], spacing: 4) {
-        ForEach(SettingsTab.allCases, id: \.self) { t in
-          DDumpTabChip(icon: t.icon, title: t.rawValue, active: tab == t) {
-            tab = t
-          }
-        }
-      }
-      .padding(4)
-      .background(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .fill(Color.ddumpBGAlt)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .stroke(Color.ddumpLine1, lineWidth: 1)
-      )
+      SettingsTabBar(selected: $tab)
       .padding(.horizontal, 24)
       .padding(.top, 14)
       .padding(.bottom, 12)
@@ -3601,8 +3603,42 @@ struct SettingsSheet: View {
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
     }
-    .frame(minWidth: 520, idealWidth: 720, maxWidth: 820, minHeight: 460, idealHeight: 640, maxHeight: 720)
+    .frame(minWidth: 360, idealWidth: 680, maxWidth: 760, minHeight: 460, idealHeight: 660, maxHeight: 760)
     .background(Color.ddumpBG)
+  }
+}
+
+struct SettingsTabBar: View {
+  @Binding var selected: SettingsSheet.SettingsTab
+
+  var body: some View {
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 4) {
+        tabButtons
+      }
+      LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 2), spacing: 4) {
+        tabButtons
+      }
+    }
+    .padding(4)
+    .background(
+      RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .fill(Color.ddumpBGAlt)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .stroke(Color.ddumpLine1, lineWidth: 1)
+    )
+  }
+
+  @ViewBuilder
+  private var tabButtons: some View {
+    ForEach(SettingsSheet.SettingsTab.allCases, id: \.self) { t in
+      DDumpTabChip(icon: t.icon, title: t.rawValue, active: selected == t) {
+        selected = t
+      }
+      .frame(maxWidth: .infinity)
+    }
   }
 }
 
@@ -3610,54 +3646,15 @@ struct ControlBar: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    let columns = [GridItem(.adaptive(minimum: 120), spacing: 8)]
-
     VStack(alignment: .leading, spacing: 8) {
-      LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-        if state.paused {
-          Button {
-            state.resume()
-          } label: {
-            Label("Resume", systemImage: "play.fill")
-          }
-          .buttonStyle(DDumpSecondaryButtonStyle())
-          .keyboardShortcut("r", modifiers: .command)
-        } else {
-          Button {
-            state.pause()
-          } label: {
-            Label("Pause", systemImage: "pause.fill")
-          }
-          .buttonStyle(DDumpSecondaryButtonStyle())
-          .keyboardShortcut("p", modifiers: .command)
-          .disabled(!state.runActive)
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 8) {
+          controlButtons(fillWidth: false)
+          Spacer(minLength: 0)
         }
-
-        Button {
-          state.stop()
-        } label: {
-            Label("Stop after file", systemImage: "stop.fill")
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), alignment: .leading, spacing: 8) {
+          controlButtons(fillWidth: true)
         }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-        .keyboardShortcut(".", modifiers: .command)
-        .disabled(!state.runActive || state.stopRequested)
-
-        Button {
-          state.doNotEject()
-        } label: {
-          Label("Do not eject", systemImage: "pin.slash.fill")
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
-        .disabled(!state.runActive)
-
-        Button {
-          state.ejectNow()
-        } label: {
-          Label("Eject after file", systemImage: "eject.fill")
-        }
-        .buttonStyle(DDumpPrimaryButtonStyle())
-        .keyboardShortcut("e", modifiers: .command)
-        .disabled(!state.runActive || state.ejectQueued)
       }
 
       if state.ejectQueued {
@@ -3675,6 +3672,59 @@ struct ControlBar: View {
       }
     }
   }
+
+  @ViewBuilder
+  private func controlButtons(fillWidth: Bool) -> some View {
+    if state.paused {
+      Button {
+        state.resume()
+      } label: {
+        Label("Resume", systemImage: "play.fill")
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+      .keyboardShortcut("r", modifiers: .command)
+      .frame(maxWidth: fillWidth ? .infinity : nil)
+    } else {
+      Button {
+        state.pause()
+      } label: {
+        Label("Pause", systemImage: "pause.fill")
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+      .keyboardShortcut("p", modifiers: .command)
+      .disabled(!state.runActive)
+      .frame(maxWidth: fillWidth ? .infinity : nil)
+    }
+
+    Button {
+      state.stop()
+    } label: {
+      Label("Stop after file", systemImage: "stop.fill")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .keyboardShortcut(".", modifiers: .command)
+    .disabled(!state.runActive || state.stopRequested)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+
+    Button {
+      state.doNotEject()
+    } label: {
+      Label("Do not eject", systemImage: "pin.slash.fill")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .disabled(!state.runActive)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+
+    Button {
+      state.ejectNow()
+    } label: {
+      Label("Eject after file", systemImage: "eject.fill")
+    }
+    .buttonStyle(DDumpPrimaryButtonStyle())
+    .keyboardShortcut("e", modifiers: .command)
+    .disabled(!state.runActive || state.ejectQueued)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+  }
 }
 
 struct IdleView: View {
@@ -3691,7 +3741,7 @@ struct IdleView: View {
         Label("Detect photo files automatically — no DCIM required", systemImage: "magnifyingglass")
         Label("Copy locally, verify size, optional SHA-256", systemImage: "checkmark.shield")
         Label("Group by capture-time clusters", systemImage: "square.3.layers.3d")
-        Label("Copy to the destination folders you choose", systemImage: "folder.badge.plus")
+        Label("Copy to your Backup Folder when the dump is verified", systemImage: "folder.badge.plus")
         Label("Eject only when files are safe", systemImage: "eject")
       }
       .font(DDumpFont.ui(13))
@@ -3758,7 +3808,7 @@ struct DestinationSummaryPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
-        Text("Main destination")
+        Text("Backup Folder")
           .font(DDumpFont.ui(11, weight: .semibold))
           .textCase(.uppercase)
           .tracking(1.4)
@@ -3815,7 +3865,7 @@ struct HealthPanel: View {
       LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], alignment: .leading, spacing: 8) {
         Label("\(state.localFreeGB)GB free locally", systemImage: "internaldrive")
         Label("\(state.pendingUploadCount) pending upload\(state.pendingUploadCount == 1 ? "" : "s")", systemImage: "arrow.triangle.2.circlepath")
-        Label("\(state.stagingFolderCount) staging folder\(state.stagingFolderCount == 1 ? "" : "s")", systemImage: "tray.full")
+        Label("\(state.stagingFolderCount) dump folder\(state.stagingFolderCount == 1 ? "" : "s")", systemImage: "tray.full")
       }
       .font(DDumpFont.ui(12))
       .foregroundColor(.ddumpFG2)
@@ -4139,9 +4189,9 @@ struct RunChecklistPanel: View {
             .foregroundColor(.ddumpFG3)
         }
       }
-      row("1. Transfer to staging folder", step: step1State, linkTitle: "Open staging", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
+      row("1. Copy to Dump Folder", step: step1State, linkTitle: "Open Dump Folder", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
       row("2. Eject card", step: step2State)
-      row("3. Upload to destination", step: step3State, linkTitle: "Open destination", linkPath: state.uploadRootForUI, cloudDestination: true)
+      row("3. Copy to Backup Folder", step: step3State, linkTitle: "Open Backup Folder", linkPath: state.uploadRootForUI, cloudDestination: true)
       row("4. All complete!", step: step4State)
     }
     .padding(14)
@@ -4172,10 +4222,6 @@ struct SettingsView: View {
         DetectionSettings()
       case .notifications:
         NotificationsSettings()
-      case .cloud:
-        CloudSettings()
-      case .calendar:
-        CalendarSettings()
       }
     }
     .background(Color.ddumpBG)
@@ -4185,6 +4231,7 @@ struct SettingsView: View {
 struct GeneralSettings: View {
   @EnvironmentObject var state: AppState
   @State private var localStaging: String = ""
+  @State private var dumpFallbackRoot: String = ""
   @State private var enablePostMove: Bool = true
   @State private var uploadRoot: String = ""
   @State private var uploadRoots: String = ""
@@ -4198,11 +4245,46 @@ struct GeneralSettings: View {
   var body: some View {
     Form {
       Section {
-        Toggle("Copy finished folders to destinations", isOn: $enablePostMove)
+        TextField("Dump Folder", text: $localStaging, onCommit: {
+          state.set("DEST_ROOT", localStaging)
+        })
+        Text("This is the first verified copy from the card. Recommended: a fast folder on this Mac or a directly connected SSD, with enough free space for the full shoot.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+        TextField("Dump Folder fallback", text: $dumpFallbackRoot, onCommit: {
+          state.set("DUMP_FALLBACK_ROOT", dumpFallbackRoot)
+        })
+        Text("If the SSD or NAS you chose as the Dump Folder is not connected, DDump uses this local fallback instead of stopping silently.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+
+        HStack {
+          Button("Choose Dump Folder…") {
+            if let picked = pickFolder(prompt: "Choose Dump Folder") {
+              localStaging = picked
+              state.set("DEST_ROOT", picked)
+            }
+          }
+          Button("Choose fallback…") {
+            if let picked = pickFolder(prompt: "Choose Dump Folder fallback") {
+              dumpFallbackRoot = picked
+              state.set("DUMP_FALLBACK_ROOT", picked)
+            }
+          }
+        }
+      } header: {
+        Text("Dump Folder")
+      } footer: {
+        Text("DDump never treats the card as safe until this first copy is written and verified.")
+          .font(.caption).foregroundColor(.secondary)
+      }
+
+      Section {
+        Toggle("Copy finished folders to a Backup Folder", isOn: $enablePostMove)
           .ddumpOnChange(of: enablePostMove) { v in
             state.set("ENABLE_POST_EJECT_MOVE", v ? "1" : "0")
           }
-        Picker("Destination mode", selection: $destinationMode) {
+        Picker("Backup folder mode", selection: $destinationMode) {
           Text("One fixed folder").tag("fixed")
           Text("Smart year/month/day").tag("smart")
         }
@@ -4211,14 +4293,11 @@ struct GeneralSettings: View {
           state.set("FOLDER_NAMING_STRATEGY", v == "smart" ? "smart" : "sequential")
         }
         if destinationMode == "smart" {
-          Text("Smart mode uses the sample path in Naming to find the main destination folder, then automatically builds today's YYYY / YYYY.MM / YYYY.MM.DD destination every run.")
+          Text("Smart mode uses the sample path in Naming to find the Backup Folder, then automatically builds today's YYYY / YYYY.MM / YYYY.MM.DD folder every run.")
             .font(.caption)
             .foregroundColor(.secondary)
         }
-        TextField("Safety copy folder", text: $localStaging, onCommit: {
-          state.set("DEST_ROOT", localStaging)
-        })
-        TextField("Main destination", text: $uploadRoot, onCommit: {
+        TextField("Backup Folder", text: $uploadRoot, onCommit: {
           state.set("POST_MOVE_ROOT", uploadRoot)
         })
         if let warning = dateLadderRootWarning(uploadRoot) {
@@ -4226,39 +4305,33 @@ struct GeneralSettings: View {
             .font(.caption)
             .foregroundColor(.ddumpWarning)
         }
-        Text("The main destination can be a folder on this Mac, an external SSD, a NAS folder, or a folder watched by Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, or pCloud. DDump copies there after the safety copy is verified.")
+        Text("This is the second copy after the Dump Folder is verified. It can be Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, a NAS, another internal folder, or another SSD.")
           .font(.caption)
           .foregroundColor(.secondary)
-        TextField("Additional backup destinations (comma-separated)", text: $uploadRoots, onCommit: {
+        TextField("Extra Backup Folders (comma-separated)", text: $uploadRoots, onCommit: {
           state.set("POST_MOVE_ROOTS", uploadRoots)
         })
-        TextField("Emergency fallback if the main destination is unavailable", text: $fallbackRoot, onCommit: {
+        TextField("Backup Folder fallback", text: $fallbackRoot, onCommit: {
           state.set("POST_MOVE_FALLBACK_ROOT", fallbackRoot)
         })
         HStack {
-          Button("Browse safety…") {
-            if let picked = pickFolder(prompt: "Choose safety copy folder") {
-              localStaging = picked
-              state.set("DEST_ROOT", picked)
-            }
-          }
-          Button("Browse main…") {
-            if let picked = pickFolder(prompt: "Choose main destination") {
+          Button("Choose Backup Folder…") {
+            if let picked = pickFolder(prompt: "Choose Backup Folder") {
               uploadRoot = picked
               state.set("POST_MOVE_ROOT", picked)
             }
           }
-          Button("Browse backup…") {
-            if let picked = pickFolder(prompt: "Choose backup or fallback destination") {
+          Button("Choose fallback…") {
+            if let picked = pickFolder(prompt: "Choose Backup Folder fallback") {
               fallbackRoot = picked
               state.set("POST_MOVE_FALLBACK_ROOT", picked)
             }
           }
         }
       } header: {
-        Text("Destinations")
+        Text("Backup Folder")
       } footer: {
-        Text("Files go: card to safety copy first. After that verification passes, DDump copies organized folders to the main and backup destinations you choose.")
+        Text("Files go: card to Dump Folder first. After that verification passes, DDump copies organized folders to the Backup Folder and any extra backup folders you choose.")
           .font(.caption).foregroundColor(.secondary)
       }
 
@@ -4288,6 +4361,25 @@ struct GeneralSettings: View {
         Text("Use Restart setup wizard any time you want to walk through staging, destination, auto-eject, scan window, and notification choices again. Each wizard page can be skipped.")
           .font(.caption)
           .foregroundColor(.secondary)
+      }
+
+      Section("Google Drive helper") {
+        Text("Optional. Use this only if your Backup Folder is inside Google Drive and you want DDump to help connect or test that folder.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) {
+            cloudHelperButtons
+          }
+          LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
+            cloudHelperButtons
+          }
+        }
+        if !state.lastUtilityMessage.isEmpty {
+          Text(state.lastUtilityMessage)
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
       }
 
       Section("Manual tools") {
@@ -4366,6 +4458,7 @@ struct GeneralSettings: View {
     .ddumpFormSkin()
     .onAppear {
       localStaging = state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp")
+      dumpFallbackRoot = state.get("DUMP_FALLBACK_ROOT", default: "\(NSHomeDirectory())/Temp/DDump")
       enablePostMove = state.get("ENABLE_POST_EJECT_MOVE", default: "1") == "1"
       uploadRoot = state.get("POST_MOVE_ROOT")
       uploadRoots = state.get("POST_MOVE_ROOTS")
@@ -4376,6 +4469,41 @@ struct GeneralSettings: View {
       updateCheckFrequency = state.get("UPDATE_CHECK_FREQUENCY", default: "weekly")
       windowRestoreMode = state.get("WINDOW_RESTORE_MODE", default: "remember")
     }
+  }
+
+  @ViewBuilder
+  private var cloudHelperButtons: some View {
+    Button {
+      state.launchCloudSetupInBrowser()
+    } label: {
+      Label("Connect Drive", systemImage: "globe")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .frame(maxWidth: .infinity)
+
+    Button {
+      state.chooseCloudDestinationFolder()
+    } label: {
+      Label("Choose folder", systemImage: "folder.badge.plus")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .frame(maxWidth: .infinity)
+
+    Button {
+      state.testCloudUploadConnection(showProgress: true)
+    } label: {
+      Label("Test folder", systemImage: "checkmark.seal")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .frame(maxWidth: .infinity)
+
+    Button {
+      state.refreshCloudMountStatus(showProgress: true)
+    } label: {
+      Label("Check status", systemImage: "arrow.clockwise")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .frame(maxWidth: .infinity)
   }
 
   private func dateLadderRootWarning(_ path: String) -> String? {
@@ -4407,6 +4535,11 @@ struct NamingSettings: View {
   @State private var smartCameraMode: String = "smart"
   @State private var fileRenameEnabled: Bool = false
   @State private var fileNameTemplate: String = "{filename}"
+  @State private var calendarProvider: String = "apple"
+  @State private var calendarName: String = ""
+  @State private var calendarICSURL: String = ""
+  @State private var calendarPadding: String = "15"
+  @State private var calendarAmbiguityPromptsEnabled: Bool = true
 
   let strategies = ["template", "sequential", "custom", "calendar", "smart", "camera"]
   let smartCameraModes = ["smart", "brand", "model", "full"]
@@ -4595,6 +4728,90 @@ struct NamingSettings: View {
             state.set("SPLIT_PHOTO_VIDEO", v ? "1" : "0")
           }
       }
+
+      Section("Calendar naming") {
+        Text("Optional. DDump can use your Mac Calendar to name shoots without any internet account setup. This works with iCloud, Google, Exchange, and subscribed calendars already synced to the Mac Calendar app.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+
+        CalendarProviderRow(
+          icon: "calendar",
+          title: "Mac Calendar",
+          detail: "Recommended. Uses calendars already synced to this Mac after one macOS permission prompt.",
+          selected: calendarProvider == "apple",
+          status: calendarProvider == "apple" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : "",
+          primaryAction: {
+            calendarProvider = "apple"
+            state.connectAppleCalendar()
+          },
+          secondaryAction: nil
+        )
+
+        CalendarProviderRow(
+          icon: "g.circle",
+          title: "Google Calendar",
+          detail: "Optional direct Google sign-in. Only use this if Mac Calendar is not synced.",
+          selected: calendarProvider == "google",
+          status: calendarProvider == "google" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : ""
+        ) {
+          calendarProvider = "google"
+          state.set("CALENDAR_PROVIDER", "google")
+          state.connectGoogleCalendar()
+        } secondaryAction: {
+          state.checkGoogleCalendarConnection()
+        }
+
+        CalendarProviderRow(
+          icon: "link",
+          title: "Calendar Link",
+          detail: "Paste a private ICS or webcal link. Read-only and simple, but sync timing depends on the calendar provider.",
+          selected: calendarProvider == "ics",
+          status: calendarProvider == "ics" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : "",
+          primaryAction: {
+            calendarProvider = "ics"
+            state.set("CALENDAR_PROVIDER", "ics")
+            state.set("CALENDAR_AUTH_STATUS", calendarICSURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "not_authorized" : "pending")
+          },
+          secondaryAction: nil
+        )
+
+        if calendarProvider == "ics" {
+          TextField("Private ICS or webcal link", text: $calendarICSURL, onCommit: {
+            state.set("CALENDAR_ICS_URL", calendarICSURL)
+          })
+          Button {
+            state.validateCalendarLink(calendarICSURL)
+          } label: {
+            Label("Connect calendar link", systemImage: "checkmark.circle")
+          }
+          .buttonStyle(DDumpPrimaryButtonStyle())
+        }
+
+        TextField("Calendar name filter (optional)", text: $calendarName, onCommit: {
+          state.set("CALENDAR_NAME", calendarName)
+        })
+        HStack {
+          Text("Event window padding")
+          Spacer()
+          TextField("15", text: $calendarPadding)
+            .frame(width: 80)
+            .multilineTextAlignment(.trailing)
+            .onSubmit { state.set("CALENDAR_EVENT_PADDING_MIN", calendarPadding) }
+          Text("minutes")
+            .foregroundColor(.secondary)
+        }
+        Button {
+          state.refreshAppleCalendarCache()
+        } label: {
+          Label("Refresh Mac Calendar events", systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+        .disabled(calendarProvider != "apple")
+        Toggle("Ask about clusters outside calendar events", isOn: $calendarAmbiguityPromptsEnabled)
+          .ddumpOnChange(of: calendarAmbiguityPromptsEnabled) { v in
+            state.set("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", v ? "1" : "0")
+          }
+      }
     }
     .formStyle(.grouped)
     .ddumpFormSkin()
@@ -4614,6 +4831,11 @@ struct NamingSettings: View {
       smartCameraMode = state.get("SMART_CAMERA_LABEL_MODE", default: "smart")
       fileRenameEnabled = (state.get("FILE_RENAME_ENABLED", default: "0") == "1")
       fileNameTemplate = state.get("FILE_NAME_TEMPLATE", default: "{filename}")
+      calendarProvider = state.get("CALENDAR_PROVIDER", default: "apple")
+      calendarName = state.get("CALENDAR_NAME")
+      calendarICSURL = state.get("CALENDAR_ICS_URL")
+      calendarPadding = state.get("CALENDAR_EVENT_PADDING_MIN", default: "15")
+      calendarAmbiguityPromptsEnabled = (state.get("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", default: "1") == "1")
     }
   }
 
