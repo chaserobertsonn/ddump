@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.3}"
+APP_VERSION="${DDUMP_VERSION:-0.3.4}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -178,6 +178,31 @@ replace_key_if_exact() {
   fi
 }
 
+append_csv_key_values() {
+  local key="$1"
+  local raw_values="$2"
+  local current next changed
+  current="$(config_value "$key" "")"
+  changed=0
+  IFS=',' read -r -a _append_values <<<"$raw_values"
+  for next in "${_append_values[@]}"; do
+    next="$(printf '%s' "$next" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -n "$next" ]] || continue
+    if [[ ",${current}," != *",${next},"* ]]; then
+      if [[ -n "$current" ]]; then
+        current="${current},${next}"
+      else
+        current="$next"
+      fi
+      changed=1
+    fi
+  done
+  if [[ "$changed" == "1" ]]; then
+    set_config_key "$key" "\"${current}\""
+    echo "Updated ${key}: added ${raw_values}"
+  fi
+}
+
 set_config_key() {
   local key="$1"
   local value="$2"
@@ -321,6 +346,11 @@ add_missing_key 'PHOTO_FILE_EXTENSIONS' '"jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf
 add_missing_key 'VIDEO_FILE_EXTENSIONS' '"mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine"' "Extensions treated as video when SPLIT_PHOTO_VIDEO is enabled."
 replace_key_if_exact 'PHOTO_FILE_EXTENSIONS' 'jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr' 'jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,braw,mxf,crm,r3d,ari,arri,cine'
 replace_key_if_exact 'VIDEO_FILE_EXTENSIONS' 'mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr' 'mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine'
+add_missing_key 'CAMERA_CARD_HINT_DIRS' '"DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA"' "Directory names that make a volume look like a camera card."
+replace_key_if_exact 'CAMERA_CARD_HINT_DIRS' 'DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC' 'DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA'
+append_csv_key_values 'PHOTO_FILE_EXTENSIONS' 'dng,mp4,mov,m4v,srt,lrf'
+append_csv_key_values 'VIDEO_FILE_EXTENSIONS' 'mp4,mov,m4v'
+append_csv_key_values 'CAMERA_CARD_HINT_DIRS' 'DJI,DJI_*,PANORAMA'
 add_missing_key 'PHOTO_RECENCY_HOURS' '"24"'
 add_missing_key 'CANDIDATE_MODE' '"lookback"' "Import candidate scan mode: lookback keeps the scan limited to recent files."
 add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only files newer than this many hours are considered."

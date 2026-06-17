@@ -281,7 +281,7 @@ volume_has_camera_hint_dir() {
   local raw_list="${CAMERA_CARD_HINT_DIRS:-}"
   [[ -n "$raw_list" ]] || return 1
 
-  local item
+  local item hint_base
   IFS=',' read -r -a _hint_list <<<"$raw_list"
   for item in "${_hint_list[@]}"; do
     item="$(trim "$item")"
@@ -289,8 +289,35 @@ volume_has_camera_hint_dir() {
     if [[ -d "${vol_path}/${item}" ]]; then
       return 0
     fi
+    hint_base="$(
+      /usr/bin/find "$vol_path" -maxdepth 4 -type d -name "$item" -print -quit 2>/dev/null || true
+    )"
+    if [[ -n "$hint_base" ]]; then
+      return 0
+    fi
   done
   return 1
+}
+
+camera_card_media_sample_count_under() {
+  local root_path="$1"
+  local max_depth limit count
+  [[ -d "$root_path" ]] || { printf '0'; return; }
+  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-6}" "6")"
+  limit="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
+  [[ "$limit" -lt 1 ]] && limit=1
+
+  local find_args=()
+  local token
+  while IFS= read -r -d '' token; do
+    find_args+=("$token")
+  done < <(photo_find_name_args)
+
+  count="$(/usr/bin/find "$root_path" -maxdepth "$max_depth" -type f "${find_args[@]}" -print 2>/dev/null \
+    | /usr/bin/head -n "$limit" \
+    | /usr/bin/wc -l \
+    | /usr/bin/awk '{print $1}')"
+  printf '%s' "${count:-0}"
 }
 
 volume_has_installer_shape() {
@@ -310,7 +337,7 @@ volume_has_installer_shape() {
 volume_looks_like_camera_card() {
   local vol_path="$1"
   local mode="${CAMERA_CARD_DETECTION_MODE:-smart}"
-  local min_media media_count has_hint=0 has_installer=0
+  local min_media media_count dcim_media_count has_hint=0 has_installer=0
 
   if [[ "$mode" == "off" || "$mode" == "photos" ]]; then
     volume_has_photos "$vol_path"
@@ -328,9 +355,14 @@ volume_looks_like_camera_card() {
   [[ "$min_media" -lt 1 ]] && min_media=1
   media_count="$(camera_card_media_sample_count "$vol_path")"
   [[ "$media_count" =~ ^[0-9]+$ ]] || media_count=0
+  dcim_media_count="$(camera_card_media_sample_count_under "${vol_path}/DCIM")"
+  [[ "$dcim_media_count" =~ ^[0-9]+$ ]] || dcim_media_count=0
 
   if [[ "$has_installer" -eq 1 && "$has_hint" -ne 1 ]]; then
     return 1
+  fi
+  if [[ "$dcim_media_count" -ge "$min_media" ]]; then
+    return 0
   fi
   if [[ "$has_hint" -eq 1 && "$media_count" -ge 1 ]]; then
     return 0
@@ -475,13 +507,13 @@ MANIFEST_RETENTION_DAYS="0"
 USE_FAST_SEEN_INDEX="1"
 SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION="1"
 REQUIRE_PHOTOS_OR_TRUSTED="1"
-PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,braw,mxf,crm,r3d,ari,arri,cine"
+PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,srt,lrf,braw,mxf,crm,r3d,ari,arri,cine"
 VIDEO_FILE_EXTENSIONS="mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine"
 PHOTO_RECENCY_HOURS="24"
 CAMERA_CARD_DETECTION_MODE="smart"
 CAMERA_CARD_MIN_MEDIA_FILES="3"
 CAMERA_CARD_SCAN_MAX_DEPTH="10"
-CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"
+CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA"
 CAMERA_CARD_REJECT_INSTALLER_SHAPES="1"
 CLOUD_UPLOADS_ENABLED="0"
 ENABLE_POST_EJECT_MOVE="1"
@@ -529,6 +561,7 @@ KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 EJECT_NOW_FLAG="${CONTROL_DIR}/eject_now.flag"
 MANUAL_SHOOT_NAME_FILE="${CONTROL_DIR}/manual_shoot_name.txt"
 MANUAL_SELECTION_FILE="${DDUMP_MANUAL_SELECTION_FILE:-}"
+MANUAL_SELECTION_POLICY_FILE="${CONTROL_DIR}/manual_import_policy.txt"
 MANUAL_SELECTION_SAFETY_GB="${DDUMP_MANUAL_SELECTION_SAFETY_GB:-2}"
 FINDERSERVER_BIN="${HOME}/.local/bin/finderserver"
 FINDERSERVER_TIMER_CHECK_SECONDS="300"
@@ -2362,6 +2395,33 @@ manual_required_kb_for_candidates() {
   printf '%s' $(( (required_bytes + 1023) / 1024 ))
 }
 
+manual_import_policy() {
+  local raw
+  raw="$(/bin/cat "$MANUAL_SELECTION_POLICY_FILE" 2>/dev/null | /usr/bin/head -n 1 | /usr/bin/tr -d '\r' || true)"
+  case "$raw" in
+    trust|once) printf '%s' "$raw" ;;
+    *) printf 'once' ;;
+  esac
+}
+
+manual_selection_mentions_volume() {
+  local vol_path="$1"
+  [[ -n "$MANUAL_SELECTION_FILE" ]] || return 1
+  [[ -f "$MANUAL_SELECTION_FILE" ]] || return 1
+
+  local selected_path normalized_path
+  while IFS= read -r selected_path || [[ -n "$selected_path" ]]; do
+    selected_path="$(trim "$selected_path")"
+    [[ -n "$selected_path" ]] || continue
+    normalized_path="${selected_path%/}"
+    [[ -n "$normalized_path" ]] || continue
+    if [[ "$normalized_path" == "$vol_path" || "$normalized_path" == "${vol_path}/"* ]]; then
+      return 0
+    fi
+  done <"$MANUAL_SELECTION_FILE"
+  return 1
+}
+
 build_manual_candidates_for_volume() {
   local vol_name="$1"
   local vol_path="$2"
@@ -2383,14 +2443,22 @@ build_manual_candidates_for_volume() {
     fi
 
     if [[ -d "$normalized_path" ]]; then
-      /usr/bin/find "$normalized_path" -type f -print0 >>"$out_file" 2>/dev/null || true
-      had_candidates=0
+      local scan_file
+      scan_file="$(/usr/bin/mktemp "${STATE_DIR}/manual-scan.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+      find_candidates "$normalized_path" "$scan_file"
+      if [[ -s "$scan_file" ]]; then
+        /bin/cat "$scan_file" >>"$out_file"
+        had_candidates=0
+      fi
+      /bin/rm -f "$scan_file"
       continue
     fi
 
     if [[ -f "$normalized_path" ]]; then
-      /usr/bin/printf '%s\0' "$normalized_path" >>"$out_file"
-      had_candidates=0
+      if has_allowed_extension "$normalized_path" "$PHOTO_FILE_EXTENSIONS"; then
+        /usr/bin/printf '%s\0' "$normalized_path" >>"$out_file"
+        had_candidates=0
+      fi
       continue
     fi
   done <"$MANUAL_SELECTION_FILE"
@@ -5015,6 +5083,11 @@ for vol_path in /Volumes/*; do
   if volume_looks_like_camera_card "$vol_path"; then
     vol_has_photos=1
   fi
+  manual_selection_mentions_this_volume=0
+  if [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$vol_path"; then
+    manual_selection_mentions_this_volume=1
+    vol_has_photos=1
+  fi
 
   if [[ "$REQUIRE_PHOTOS_OR_TRUSTED" == "1" \
         && "$vol_has_photos" -ne 1 ]] \
@@ -5027,7 +5100,7 @@ for vol_path in /Volumes/*; do
       "$uuid" \
       "not_camera_shape" \
       "DDump saw ${vol_name}, but it was not trusted and did not look enough like a camera card." \
-      "Open DDump and use Manual select import if this is a real camera card, or add a trusted name prefix in Settings > Detection."
+      "Open DDump, set the scan window if needed, then use Manual import and choose the card itself. You can trust it once or forever."
     set_status_phase "idle" "Saw ${vol_name}, but it did not look like a camera card."
     continue
   fi
@@ -5048,7 +5121,16 @@ for vol_path in /Volumes/*; do
 
   trusted="0"
 
-  if is_trusted_name_prefix "$vol_name"; then
+  if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
+    trusted="1"
+    if [[ "$(manual_import_policy)" == "trust" && -n "$uuid" ]]; then
+      remember_uuid "$uuid"
+      set_card_policy_mode "$uuid" "remember"
+      log "Manual import trusted ${vol_name} forever (UUID: ${uuid})."
+    else
+      log "Manual import trusted ${vol_name} for this run only."
+    fi
+  elif is_trusted_name_prefix "$vol_name"; then
     trusted="1"
   elif is_uuid_trusted "$uuid"; then
     trusted="1"

@@ -46,6 +46,7 @@ enum DDumpPaths {
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
   static var controlDir: URL { appSupport.appendingPathComponent("state/control") }
   static var manualSelectionFile: URL { appSupport.appendingPathComponent("state/manual_selection.paths") }
+  static var manualSelectionPolicyFile: URL { controlDir.appendingPathComponent("manual_import_policy.txt") }
   static var manualShootNameFile: URL { controlDir.appendingPathComponent("manual_shoot_name.txt") }
   static var lockDir: URL { appSupport.appendingPathComponent("state/run.lock") }
   static var pauseFlag: URL { controlDir.appendingPathComponent("pause.flag") }
@@ -2925,7 +2926,7 @@ DDump will guide this in order:
     panel.canCreateDirectories = false
     panel.directoryURL = URL(fileURLWithPath: "/Volumes")
     panel.prompt = "Import Selected"
-    panel.message = "Pick files or folders from a mounted card."
+    panel.message = "Pick the card itself, or choose specific files/folders. DDump will use the current scan window."
     guard panel.runModal() == .OK else { return }
 
     let selected = panel.urls.map(\.path).filter { !$0.isEmpty }
@@ -2934,11 +2935,23 @@ DDump will guide this in order:
       return
     }
 
+    let trustAlert = NSAlert()
+    trustAlert.messageText = "Import this card"
+    trustAlert.informativeText = "Trust once imports this selection now. Trust forever lets DDump import this card automatically next time."
+    trustAlert.alertStyle = .informational
+    trustAlert.addButton(withTitle: "Trust Once")
+    trustAlert.addButton(withTitle: "Trust Forever")
+    trustAlert.addButton(withTitle: "Cancel")
+    let trustResponse = trustAlert.runModal()
+    if trustResponse == .alertThirdButtonReturn { return }
+    let manualPolicy = (trustResponse == .alertSecondButtonReturn) ? "trust" : "once"
+
     do {
       try FileManager.default.createDirectory(
         at: DDumpPaths.controlDir, withIntermediateDirectories: true)
       let payload = selected.joined(separator: "\n") + "\n"
       try payload.write(to: DDumpPaths.manualSelectionFile, atomically: true, encoding: .utf8)
+      try "\(manualPolicy)\n".write(to: DDumpPaths.manualSelectionPolicyFile, atomically: true, encoding: .utf8)
     } catch {
       lastUtilityMessage = "Could not save manual selection: \(error.localizedDescription)"
       return
@@ -2953,7 +2966,7 @@ DDump will guide this in order:
     task.environment = env
     do {
       try task.run()
-      lastUtilityMessage = "Manual import started for \(selected.count) selected item(s)."
+      lastUtilityMessage = "Manual import started. DDump will scan \(selected.count) selected item(s) using the current scan window."
     } catch {
       lastUtilityMessage = "Could not start manual import: \(error.localizedDescription)"
     }
@@ -3252,6 +3265,9 @@ struct ContentView: View {
           ProgressDetail()
             .padding(.top, 18)
         }
+
+        ScanWindowInlineControl()
+          .padding(.top, 14)
 
         DestinationSummaryPanel()
           .padding(.top, 18)
@@ -3605,6 +3621,73 @@ struct SettingsSheet: View {
     }
     .frame(minWidth: 360, idealWidth: 680, maxWidth: 760, minHeight: 460, idealHeight: 660, maxHeight: 760)
     .background(Color.ddumpBG)
+  }
+}
+
+struct ScanWindowInlineControl: View {
+  @EnvironmentObject var state: AppState
+  @State private var lookbackHours: String = "24"
+
+  var body: some View {
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 10) {
+        label
+        Spacer(minLength: 8)
+        field
+      }
+      VStack(alignment: .leading, spacing: 8) {
+        label
+        field
+      }
+    }
+    .padding(10)
+    .background(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .fill(Color.ddumpSurface)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(Color.ddumpLine1, lineWidth: 1)
+    )
+    .onAppear {
+      state.set("CANDIDATE_MODE", "lookback")
+      lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
+    }
+  }
+
+  private var label: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text("Scan window")
+        .font(DDumpFont.ui(12, weight: .semibold))
+        .foregroundColor(.ddumpFG1)
+      Text("DDump imports files changed within this many hours.")
+        .font(DDumpFont.ui(11))
+        .foregroundColor(.ddumpFG3)
+        .lineLimit(2)
+    }
+  }
+
+  private var field: some View {
+    HStack(spacing: 6) {
+      TextField("24", text: $lookbackHours)
+        .frame(width: 62)
+        .multilineTextAlignment(.trailing)
+        .textFieldStyle(.roundedBorder)
+        .onSubmit(save)
+      Text("hours")
+        .font(DDumpFont.ui(12))
+        .foregroundColor(.ddumpFG2)
+      Button("Save") { save() }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+    }
+  }
+
+  private func save() {
+    let cleaned = lookbackHours.trimmingCharacters(in: .whitespacesAndNewlines)
+    let numeric = Int(cleaned).map { max(1, min($0, 720)) } ?? 24
+    lookbackHours = "\(numeric)"
+    state.set("CANDIDATE_MODE", "lookback")
+    state.set("LOOKBACK_HOURS", lookbackHours)
   }
 }
 
