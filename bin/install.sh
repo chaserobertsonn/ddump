@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.2}"
+APP_VERSION="${DDUMP_VERSION:-0.3.3}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -297,6 +297,8 @@ add_missing_key 'GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE' '"1"' "Restart Google 
 add_missing_key 'GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS' '"5"' "Seconds to wait between force-quitting Google Drive Desktop and relaunching it."
 add_missing_key 'GOOGLE_DRIVE_DESKTOP_APP_NAME' '"Google Drive"' "macOS application name for Google Drive Desktop."
 add_missing_key 'GOOGLE_DRIVE_DESKTOP_APP_PATH' '"/Applications/Google Drive.app"' "Fallback app path for Google Drive Desktop."
+add_missing_key 'AUTO_LAUNCH_SYNC_APPS' '"1"' "Open Google Drive, Dropbox, Box, OneDrive, or pCloud when a Backup Folder needs that sync app."
+add_missing_key 'SYNC_APP_READY_WAIT_SECONDS' '"8"' "Seconds to wait for a launched sync app to make its folder available."
 replace_key_if_exact 'GDRIVE_MOUNT_RETRY_SECONDS' '5,15,60,180,360,600' '15,30,60,180'
 
 if [[ "$(config_value 'CLOUD_UPLOADS_ENABLED' '0')" == "1" ]] \

@@ -552,6 +552,8 @@ GOOGLE_DRIVE_DESKTOP_RESTART_ON_FAILURE="1"
 GOOGLE_DRIVE_DESKTOP_RESTART_DELAY_SECONDS="5"
 GOOGLE_DRIVE_DESKTOP_APP_NAME="Google Drive"
 GOOGLE_DRIVE_DESKTOP_APP_PATH="/Applications/Google Drive.app"
+AUTO_LAUNCH_SYNC_APPS="1"
+SYNC_APP_READY_WAIT_SECONDS="8"
 NTFY_TOPIC=""
 NTFY_NOTIFY_STAGING_STARTED="0"
 NTFY_NOTIFY_CARD_EJECTED="1"
@@ -1024,14 +1026,21 @@ effective_post_move_root() {
   local root fallback
   root="${POST_MOVE_ROOT:-}"
   fallback="${POST_MOVE_FALLBACK_ROOT:-}"
+  if [[ -n "$root" && ! -d "$root" ]]; then
+    ensure_sync_provider_path_available "$root" || true
+  fi
   if [[ -n "$fallback" ]]; then
     if [[ -z "$root" ]]; then
+      log "Backup Folder is empty; using fallback Backup Folder: ${fallback}"
       root="$fallback"
     elif path_uses_gdrive_mount "$root" && ! direct_cloud_upload_enabled_for_root "$root" && ! gdrive_mount_active; then
+      log "Backup Folder mount unavailable, using fallback: ${root} -> ${fallback}"
       root="$fallback"
     elif [[ ! -d "$root" ]]; then
+      log "Backup Folder unavailable, using fallback: ${root} -> ${fallback}"
       root="$fallback"
     elif [[ ! -w "$root" ]]; then
+      log "Backup Folder not writable, using fallback: ${root} -> ${fallback}"
       root="$fallback"
     fi
   fi
@@ -1140,6 +1149,57 @@ path_is_google_drive_desktop_path() {
     "$legacy_root"|"$legacy_root"/*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+sync_provider_app_for_path() {
+  local path="$1"
+  local expanded
+  expanded="$(expand_config_path "$path")"
+  case "$expanded" in
+    "$HOME"/Library/CloudStorage/GoogleDrive*|"$HOME"/GoogleDrive|"$HOME"/GoogleDrive/*) printf 'Google Drive' ;;
+    "$HOME"/Library/CloudStorage/Dropbox*|"$HOME"/Dropbox|"$HOME"/Dropbox/*) printf 'Dropbox' ;;
+    "$HOME"/Library/CloudStorage/OneDrive*|"$HOME"/OneDrive*|"$HOME"/OneDrive*/*) printf 'OneDrive' ;;
+    "$HOME"/Library/CloudStorage/Box*|"$HOME"/Box|"$HOME"/Box/*) printf 'Box' ;;
+    "$HOME"/pCloud\ Drive|"$HOME"/pCloud\ Drive/*|/Volumes/pCloud\ Drive|/Volumes/pCloud\ Drive/*) printf 'pCloud Drive' ;;
+    *) return 1 ;;
+  esac
+}
+
+launch_sync_provider_for_path() {
+  local path="$1"
+  local app_name
+  [[ "${AUTO_LAUNCH_SYNC_APPS:-1}" == "1" ]] || return 1
+  app_name="$(sync_provider_app_for_path "$path")" || return 1
+  if /usr/bin/open -a "$app_name" >/dev/null 2>&1; then
+    log "Launched ${app_name} for Backup Folder: ${path}"
+    return 0
+  fi
+  log "Could not launch ${app_name} for Backup Folder: ${path}"
+  return 1
+}
+
+wait_for_sync_provider_path() {
+  local path="$1"
+  local wait_seconds elapsed
+  wait_seconds="$(sanitize_positive_int "${SYNC_APP_READY_WAIT_SECONDS:-8}" "8")"
+  elapsed=0
+  while (( elapsed <= wait_seconds )); do
+    [[ -d "$path" ]] && return 0
+    /bin/sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+ensure_sync_provider_path_available() {
+  local path="$1"
+  [[ -n "$path" ]] || return 1
+  [[ -d "$path" ]] && return 0
+
+  if launch_sync_provider_for_path "$path"; then
+    wait_for_sync_provider_path "$path" && return 0
+  fi
+  return 1
 }
 
 google_drive_desktop_cloud_root() {
@@ -2080,6 +2140,16 @@ move_queued_paths_to_post_target() {
         move_last_detail="Google Drive Desktop folder unavailable after restart"
         log "Post-move blocked for ${vol_name}: ${move_last_detail}: ${root}"
         notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
+        ntfy_notify "integrity_warning" "DDump: Backup Folder unavailable" "${vol_name}: Backup Folder is unavailable: ${root}"
+        continue
+      fi
+
+      if [[ ! -d "$root" ]] && ! ensure_sync_provider_path_available "$root"; then
+        overall_failed=$((overall_failed + 1))
+        move_last_detail="Backup Folder unavailable"
+        log "Post-move blocked for ${vol_name}: ${move_last_detail}: ${root}"
+        notify "DDump" "${vol_name}: Backup Folder unavailable." warn "integrity_warning"
+        ntfy_notify "integrity_warning" "DDump: Backup Folder unavailable" "${vol_name}: Backup Folder is unavailable: ${root}"
         continue
       fi
 
@@ -3773,6 +3843,25 @@ compute_buckets_smart() {
   rm -f "$imported_list" "$cluster_out" "$cid_file"
 }
 
+detected_cluster_count_for_imported_list() {
+  local imported_list="$1"
+  local cluster_script="${APP_SUPPORT_DIR}/bin/ddump-cluster.sh"
+  [[ -s "$imported_list" ]] || { printf '0'; return 0; }
+  [[ -x "$cluster_script" ]] || { printf '1'; return 0; }
+
+  local cluster_out count
+  cluster_out="$(mktemp "${STATE_DIR}/cluster-count.${run_id}.XXXXXX")"
+  /bin/bash "$cluster_script" --gap-minutes "${CLUSTER_GAP_MINUTES:-30}" <"$imported_list" >"$cluster_out" || {
+    rm -f "$cluster_out"
+    printf '1'
+    return 0
+  }
+  count="$(/usr/bin/awk -F '\t' '$2 != "" && $2 != "unknown" { seen[$2]=1 } END { for (id in seen) n++; print n+0 }' "$cluster_out")"
+  rm -f "$cluster_out"
+  [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || count="1"
+  printf '%s' "$count"
+}
+
 file_capture_epoch() {
   local src_file="$1"
   local epoch=""
@@ -4309,6 +4398,10 @@ manual_shoot_name_override() {
   printf '%s' "$raw"
 }
 
+consume_manual_shoot_name_override() {
+  /bin/rm -f "$MANUAL_SHOOT_NAME_FILE" 2>/dev/null || true
+}
+
 compute_buckets_manual_override() {
   local bucket
   if ! bucket="$(manual_shoot_name_override)"; then
@@ -4359,9 +4452,23 @@ rebucket_imported_files() {
   bucket_tsv="$(mktemp "${STATE_DIR}/buckets.${run_id}.XXXXXX")"
 
   local primary_ok=1
-  if compute_buckets_manual_override <"$imported_list" >"$bucket_tsv"; then
-    log "Using manual shoot name override from ${MANUAL_SHOOT_NAME_FILE}."
+  local manual_bucket manual_cluster_count f
+  manual_bucket="$(manual_shoot_name_override || true)"
+  if [[ -n "$manual_bucket" ]]; then
+    manual_cluster_count="$(detected_cluster_count_for_imported_list "$imported_list")"
+    consume_manual_shoot_name_override
+  fi
+
+  if [[ -n "$manual_bucket" && "${manual_cluster_count:-1}" -le 1 ]]; then
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      printf '%s\t%s\n' "$f" "$manual_bucket"
+    done <"$imported_list" >"$bucket_tsv"
+    log "Using one-shot manual shoot name override: ${manual_bucket}."
   else
+    if [[ -n "$manual_bucket" ]]; then
+      log "Ignored one-shot manual shoot name '${manual_bucket}' because ${manual_cluster_count} capture-time clusters were detected."
+    fi
     case "$strategy" in
       sequential)
         compute_buckets_sequential "$dest_dir" <"$imported_list" >"$bucket_tsv"
@@ -4864,6 +4971,11 @@ fi
 processed_volume_count=0
 imported_file_count_total=0
 run_stopped=0
+no_candidate_volume_count=0
+no_candidate_volume_names=""
+upload_complete_volume_count=0
+upload_complete_file_count=0
+upload_complete_targets=""
 
 for vol_path in /Volumes/*; do
   [[ "$run_stopped" == "1" ]] && break
@@ -5281,6 +5393,12 @@ for vol_path in /Volumes/*; do
 
   if [[ "$has_candidates_this_volume" -ne 1 ]]; then
     /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_timestamp" "$vol_name" "$uuid" "0" "0" "0" "success" >>"$RUN_HISTORY_FILE"
+    no_candidate_volume_count=$((no_candidate_volume_count + 1))
+    if [[ -z "$no_candidate_volume_names" ]]; then
+      no_candidate_volume_names="$vol_name"
+    else
+      no_candidate_volume_names="${no_candidate_volume_names}, ${vol_name}"
+    fi
     if [[ "$manual_selection_for_volume" == "1" ]]; then
       log "No candidate files matched manual selection on ${vol_name}."
     elif [[ "$CANDIDATE_MODE" == "lookback" ]]; then
@@ -5396,7 +5514,13 @@ for vol_path in /Volumes/*; do
       fi
       /bin/rm -f "$pending_imports_file"
       notify "DDump" "✅ ${vol_name}: ${imported_this_volume} files uploaded to ${friendly_target_short}" done "upload_complete"
-      ntfy_notify "upload_complete" "DDump: upload complete" "${vol_name}: uploaded ${imported_this_volume} file(s) to ${friendly_target_short}."
+      upload_complete_volume_count=$((upload_complete_volume_count + 1))
+      upload_complete_file_count=$((upload_complete_file_count + imported_this_volume))
+      if [[ -z "$upload_complete_targets" ]]; then
+        upload_complete_targets="$friendly_target_short"
+      elif [[ "$upload_complete_targets" != *"$friendly_target_short"* ]]; then
+        upload_complete_targets="${upload_complete_targets}; ${friendly_target_short}"
+      fi
     else
       status="partial"
       if [[ "$rebucket_ok" == "1" ]]; then
@@ -5441,6 +5565,15 @@ fi
 
 summary_message="Run complete. volumes=${processed_volume_count}, imported=${imported_file_count_total}, skipped_duplicate=${summary_skipped_existing_total}, skipped_extension=${summary_skipped_extension_total}, copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}, upload_incomplete=${summary_upload_incomplete_total}, kept_mounted=${summary_kept_mounted_total}, post_move_blocked=${summary_post_move_blocked_total}, post_move_fail=${summary_post_move_fail_total}, errors=${summary_errors_total}"
 log "$summary_message"
+if [[ "$upload_complete_volume_count" -gt 0 && "$summary_errors_total" -eq 0 && "$run_stopped" != "1" ]]; then
+  ntfy_notify "upload_complete" "DDump: dump complete" "${upload_complete_volume_count} card(s), ${upload_complete_file_count} file(s) copied to Backup Folder. ${upload_complete_targets}"
+fi
+if [[ "$processed_volume_count" -gt 0 && "$no_candidate_volume_count" -gt 0 ]]; then
+  log "Volumes with no candidate files: ${no_candidate_volume_names}"
+  if [[ "$imported_file_count_total" -eq 0 ]]; then
+    ntfy_notify "integrity_warning" "DDump: no new files copied" "DDump checked ${processed_volume_count} card volume(s), but found no files in the scan window. Volumes: ${no_candidate_volume_names}."
+  fi
+fi
 if [[ "$summary_copy_fail_total" -gt 0 || "$summary_verify_fail_total" -gt 0 ]]; then
   ntfy_notify "integrity_warning" "DDump: integrity warning" "Run finished with copy/verify issues. copy_fail=${summary_copy_fail_total}, verify_fail=${summary_verify_fail_total}."
 fi

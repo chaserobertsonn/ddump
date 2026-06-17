@@ -4241,6 +4241,7 @@ struct GeneralSettings: View {
   @State private var autoUpdatesEnabled: Bool = false
   @State private var updateCheckFrequency: String = "weekly"
   @State private var windowRestoreMode: String = "remember"
+  @State private var autoLaunchSyncApps: Bool = true
 
   var body: some View {
     Form {
@@ -4306,6 +4307,13 @@ struct GeneralSettings: View {
             .foregroundColor(.ddumpWarning)
         }
         Text("This is the second copy after the Dump Folder is verified. It can be Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, a NAS, another internal folder, or another SSD.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+        Toggle("Open sync apps when needed", isOn: $autoLaunchSyncApps)
+          .ddumpOnChange(of: autoLaunchSyncApps) { v in
+            state.set("AUTO_LAUNCH_SYNC_APPS", v ? "1" : "0")
+          }
+        Text("If the Backup Folder lives in Google Drive, Dropbox, Box, OneDrive, or pCloud and the folder is missing, DDump can open that app and wait briefly before using a fallback or warning you.")
           .font(.caption)
           .foregroundColor(.secondary)
         TextField("Extra Backup Folders (comma-separated)", text: $uploadRoots, onCommit: {
@@ -4468,6 +4476,7 @@ struct GeneralSettings: View {
       autoUpdatesEnabled = state.get("AUTO_UPDATES_ENABLED", default: "0") == "1"
       updateCheckFrequency = state.get("UPDATE_CHECK_FREQUENCY", default: "weekly")
       windowRestoreMode = state.get("WINDOW_RESTORE_MODE", default: "remember")
+      autoLaunchSyncApps = state.get("AUTO_LAUNCH_SYNC_APPS", default: "1") == "1"
     }
   }
 
