@@ -412,6 +412,23 @@ trim() {
   printf '%s' "$s"
 }
 
+status_file_value_for_lock() {
+  local key="$1"
+  local file="${STATE_DIR}/run_status.env"
+  [[ -f "$file" ]] || return 1
+  /usr/bin/awk -F= -v k="$key" '
+    $1 == k {
+      v=$0
+      sub("^[^=]*=", "", v)
+      gsub(/^"|"$/, "", v)
+      print v
+      found = 1
+      exit
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$file"
+}
+
 acquire_run_lock() {
   if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
     /bin/echo "$$" >"$RUN_LOCK_PID_FILE"
@@ -423,6 +440,28 @@ acquire_run_lock() {
     existing_pid="$(/bin/cat "$RUN_LOCK_PID_FILE" 2>/dev/null || true)"
   fi
   if [[ "$existing_pid" =~ ^[0-9]+$ ]] && /bin/kill -0 "$existing_pid" >/dev/null 2>&1; then
+    local now lock_mtime lock_age locked_phase locked_path
+    now="$(/bin/date '+%s')"
+    lock_mtime="$(/usr/bin/stat -f '%m' "$LOCK_DIR" 2>/dev/null || echo 0)"
+    lock_age=$((now - lock_mtime))
+    locked_phase="$(status_file_value_for_lock "phase" 2>/dev/null || true)"
+    locked_path="$(status_file_value_for_lock "startup_path" 2>/dev/null || true)"
+    if [[ "$lock_age" -gt 21600 && "$locked_phase" == "paused" && -n "$locked_path" && ! -e "$locked_path" ]]; then
+      log "Stopping abandoned paused run (pid ${existing_pid}, age ${lock_age}s, missing source ${locked_path})."
+      /bin/kill -TERM "$existing_pid" >/dev/null 2>&1 || true
+      /bin/sleep 2
+      if /bin/kill -0 "$existing_pid" >/dev/null 2>&1; then
+        /bin/kill -KILL "$existing_pid" >/dev/null 2>&1 || true
+      fi
+      /bin/rm -f "$RUN_LOCK_PID_FILE" 2>/dev/null || true
+      /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
+      if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+        /bin/echo "$$" >"$RUN_LOCK_PID_FILE"
+        return 0
+      fi
+      log "Another run acquired the lock after abandoned-run cleanup; exiting."
+      exit 0
+    fi
     log "Another run is in progress (pid ${existing_pid}); exiting."
     exit 0
   fi
