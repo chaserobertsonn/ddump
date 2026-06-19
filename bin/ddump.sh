@@ -63,6 +63,12 @@ notify() {
   if ddump_ui_app_running; then
     queue_app_notification "$kind" "$event_key" "$title" "$msg" && return
   fi
+  local app_bundle="${HOME}/Applications/DDump.app"
+  if [[ -d "$app_bundle" ]]; then
+    queue_app_notification "$kind" "$event_key" "$title" "$msg"
+    /usr/bin/open -g -j "$app_bundle" >/dev/null 2>&1 || true
+    return
+  fi
   local notify_script="${APP_SUPPORT_DIR}/bin/ddump-notify.sh"
   if [[ -x "$notify_script" ]]; then
     DDUMP_NOTIFIER_TIMEOUT="${NOTIFICATION_TIMEOUT_SECONDS:-60}" \

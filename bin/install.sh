@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.11}"
+APP_VERSION="${DDUMP_VERSION:-0.3.12}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -497,8 +497,8 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Notification helper detection ==="
-echo "  DDump currently uses AppleScript notifications/dialogs."
-echo "  This avoids terminal-notifier action-button hangs when macOS notification permission is missing."
+echo "  DDump queues normal alerts through the Mac app when available."
+echo "  Action prompts can still use AppleScript dialogs when a direct user choice is required."
 if command -v exiftool >/dev/null 2>&1; then
   echo "  ✓ exiftool installed — EXIF capture time used for clustering"
 else

@@ -5,7 +5,7 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_VERSION="${DDUMP_VERSION:-0.3.11}"
+APP_VERSION="${DDUMP_VERSION:-0.3.12}"
 DIST_DIR="${PROJECT_DIR}/dist"
 ROOT_DIR="${DIST_DIR}/dmg-root"
 DMG_PATH="${DIST_DIR}/DDump-${APP_VERSION}.dmg"
