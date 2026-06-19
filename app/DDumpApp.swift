@@ -3237,6 +3237,27 @@ func openInFinder(_ path: String) {
   }
 }
 
+func titleCaseSettingLabel(_ value: String) -> String {
+  switch value {
+  case "smart": return "Smart"
+  case "brand": return "Brand"
+  case "model": return "Model"
+  case "full": return "Full"
+  case "template": return "Template"
+  case "sequential": return "Sequential"
+  case "custom": return "Custom"
+  case "calendar": return "Calendar"
+  case "camera": return "Camera"
+  case "lookback", "hours": return "Hours"
+  case "today", "calendar_day", "same_day": return "Today"
+  default:
+    return value
+      .replacingOccurrences(of: "_", with: " ")
+      .replacingOccurrences(of: "-", with: " ")
+      .capitalized
+  }
+}
+
 extension AppState {
   var currentBytesLabel: String {
     let kb = 1024.0
@@ -3256,10 +3277,26 @@ extension AppState {
 
 struct InfoHint: View {
   let text: String
+  @State private var showing = false
+
   var body: some View {
-    Image(systemName: "info.circle")
-      .foregroundColor(.secondary)
-      .help(text)
+    Button {
+      showing.toggle()
+    } label: {
+      Image(systemName: "info.circle")
+        .foregroundColor(.secondary)
+    }
+    .buttonStyle(.plain)
+    .help(text)
+    .popover(isPresented: $showing, arrowEdge: .top) {
+      Text(text)
+        .font(DDumpFont.ui(12))
+        .foregroundColor(.ddumpFG1)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 260, alignment: .leading)
+        .padding(12)
+        .background(Color.ddumpSurface)
+    }
   }
 }
 
@@ -3597,6 +3634,7 @@ struct FirstRunWizard: View {
   @State private var fallbackDestination = ""
   @State private var autoEject = true
   @State private var lookbackHours = "24"
+  @State private var scanMode = "today"
   @State private var ntfyTopic = ""
   @State private var defaultShootName = ""
 
@@ -3656,6 +3694,7 @@ struct FirstRunWizard: View {
       fallbackDestination = state.get("POST_MOVE_FALLBACK_ROOT")
       fallbackEnabled = !fallbackDestination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       autoEject = state.get("EJECT_ON_SUCCESS", default: "1") == "1"
+      scanMode = normalizedScanMode(state.get("CANDIDATE_MODE", default: "today"))
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       ntfyTopic = state.get("NTFY_TOPIC")
       defaultShootName = state.get("DEFAULT_SHOOT_NAME")
@@ -3693,15 +3732,26 @@ struct FirstRunWizard: View {
     VStack(alignment: .leading, spacing: 14) {
       Toggle("Auto-eject card after local copy is verified", isOn: $autoEject)
       HStack {
-        Text("Scan window")
+        Text("Scan mode")
+        Spacer()
+        Picker("", selection: $scanMode) {
+          Text("Today").tag("today")
+          Text("Hours").tag("lookback")
+        }
+        .labelsHidden()
+        .frame(width: 170)
+      }
+      HStack {
+        Text("Lookback")
         Spacer()
         TextField("24", text: $lookbackHours)
           .frame(width: 80)
           .multilineTextAlignment(.trailing)
         Text("hours")
       }
+      .disabled(scanMode != "lookback")
       TextField("Default offline shoot name (optional)", text: $defaultShootName)
-      Text("Use the scan window to decide how far back DDump should look for new files. The optional shoot name is used when no calendar event matches.")
+      Text("Today is safest for normal same-day imports. Hours is useful when you need to recover older files. DDump still skips files already copied into the Dump Folder.")
         .font(.caption)
         .foregroundColor(.secondary)
     }
@@ -3773,7 +3823,7 @@ struct FirstRunWizard: View {
     state.set("POST_MOVE_FALLBACK_ROOT", fallbackEnabled ? fallbackDestination : "")
     state.set("EJECT_ON_SUCCESS", autoEject ? "1" : "0")
     state.set("LOOKBACK_HOURS", lookbackHours)
-    state.set("CANDIDATE_MODE", "lookback")
+    state.set("CANDIDATE_MODE", normalizedScanMode(scanMode))
     state.set("NTFY_TOPIC", ntfyTopic)
     state.set("DEFAULT_SHOOT_NAME", defaultShootName)
   }
@@ -3792,6 +3842,11 @@ struct FirstRunWizard: View {
     } else {
       page += 1
     }
+  }
+
+  private func normalizedScanMode(_ value: String) -> String {
+    let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return (cleaned == "lookback" || cleaned == "hours") ? "lookback" : "today"
   }
 }
 
@@ -3857,6 +3912,9 @@ struct SettingsSheet: View {
 struct ScanWindowInlineControl: View {
   @EnvironmentObject var state: AppState
   @State private var lookbackHours: String = "24"
+  @State private var scanMode: String = "today"
+  @State private var savedMessage: String = ""
+  @FocusState private var hoursFocused: Bool
 
   var body: some View {
     ViewThatFits(in: .horizontal) {
@@ -3880,7 +3938,7 @@ struct ScanWindowInlineControl: View {
         .stroke(Color.ddumpLine1, lineWidth: 1)
     )
     .onAppear {
-      state.set("CANDIDATE_MODE", "lookback")
+      scanMode = normalizedScanMode(state.get("CANDIDATE_MODE", default: "today"))
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
     }
   }
@@ -3890,7 +3948,7 @@ struct ScanWindowInlineControl: View {
       Text("Scan window")
         .font(DDumpFont.ui(12, weight: .semibold))
         .foregroundColor(.ddumpFG1)
-      Text("DDump imports files changed within this many hours.")
+      Text(scanMode == "today" ? "DDump imports files changed today." : "DDump imports files changed within this many hours.")
         .font(DDumpFont.ui(11))
         .foregroundColor(.ddumpFG3)
         .lineLimit(2)
@@ -3898,17 +3956,34 @@ struct ScanWindowInlineControl: View {
   }
 
   private var field: some View {
-    HStack(spacing: 6) {
-      TextField("24", text: $lookbackHours)
-        .frame(width: 62)
-        .multilineTextAlignment(.trailing)
-        .textFieldStyle(.roundedBorder)
-        .onSubmit(save)
-      Text("hours")
-        .font(DDumpFont.ui(12))
-        .foregroundColor(.ddumpFG2)
+    HStack(spacing: 8) {
+      Picker("", selection: $scanMode) {
+        Text("Today").tag("today")
+        Text("Hours").tag("lookback")
+      }
+      .labelsHidden()
+      .pickerStyle(.segmented)
+      .frame(width: 150)
+      .ddumpOnChange(of: scanMode) { _ in save() }
+
+      if scanMode == "lookback" {
+        TextField("24", text: $lookbackHours)
+          .frame(width: 62)
+          .multilineTextAlignment(.trailing)
+          .textFieldStyle(.roundedBorder)
+          .focused($hoursFocused)
+          .onSubmit(save)
+        Text("hours")
+          .font(DDumpFont.ui(12))
+          .foregroundColor(.ddumpFG2)
+      }
       Button("Save") { save() }
         .buttonStyle(DDumpSecondaryButtonStyle())
+      if !savedMessage.isEmpty {
+        Text(savedMessage)
+          .font(DDumpFont.ui(11, weight: .medium))
+          .foregroundColor(.ddumpSuccess)
+      }
     }
   }
 
@@ -3916,8 +3991,19 @@ struct ScanWindowInlineControl: View {
     let cleaned = lookbackHours.trimmingCharacters(in: .whitespacesAndNewlines)
     let numeric = Int(cleaned).map { max(1, min($0, 720)) } ?? 24
     lookbackHours = "\(numeric)"
-    state.set("CANDIDATE_MODE", "lookback")
+    scanMode = normalizedScanMode(scanMode)
+    state.set("CANDIDATE_MODE", scanMode)
     state.set("LOOKBACK_HOURS", lookbackHours)
+    hoursFocused = false
+    savedMessage = "Saved"
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+      savedMessage = ""
+    }
+  }
+
+  private func normalizedScanMode(_ value: String) -> String {
+    let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return (cleaned == "lookback" || cleaned == "hours") ? "lookback" : "today"
   }
 }
 
@@ -4160,8 +4246,7 @@ struct SkippedVolumePanel: View {
     if let notice = state.skippedVolumeNotice {
       VStack(alignment: .leading, spacing: 10) {
         HStack(alignment: .top, spacing: 10) {
-          Image(systemName: "info.circle.fill")
-            .foregroundColor(.ddumpWarning)
+          InfoHint(text: "This card was detected, but DDump did not import it automatically. The text here explains whether the card was untrusted, outside the scan window, or did not match camera-card safety checks.")
           VStack(alignment: .leading, spacing: 4) {
             Text("DDump saw \(notice.volume), but did not import it.")
               .font(DDumpFont.ui(13, weight: .semibold))
@@ -4875,8 +4960,8 @@ struct GeneralSettings: View {
             state.set("ENABLE_POST_EJECT_MOVE", v ? "1" : "0")
           }
         Picker("Backup folder mode", selection: $destinationMode) {
-          Text("One fixed folder").tag("fixed")
-          Text("Smart year/month/day").tag("smart")
+          Text("One Fixed Folder").tag("fixed")
+          Text("Smart Year/Month/Day").tag("smart")
         }
         .pickerStyle(.segmented)
         .ddumpOnChange(of: destinationMode) { v in
@@ -4937,7 +5022,7 @@ struct GeneralSettings: View {
           Text("Window size")
           Spacer()
           Picker("", selection: $windowRestoreMode) {
-            Text("Remember last size").tag("remember")
+            Text("Remember Last Size").tag("remember")
             Text("Compact").tag("compact")
             Text("Large").tag("large")
           }
@@ -5061,7 +5146,7 @@ struct GeneralSettings: View {
           Text("Check frequency")
           Spacer()
           Picker("", selection: $updateCheckFrequency) {
-            Text("Upon start").tag("startup")
+            Text("Upon Start").tag("startup")
             Text("Weekly").tag("weekly")
             Text("Monthly").tag("monthly")
           }
@@ -5429,7 +5514,7 @@ struct NamingSettings: View {
           InfoHint(text: "Template: combine camera, calendar, date, and metadata tokens. Sequential: Shoot-1, Shoot-2. Calendar: event titles. Smart: infer from sample path. Camera: keep camera folder names.")
           Spacer()
           Picker("", selection: $strategy) {
-            ForEach(strategies, id: \.self) { Text($0).tag($0) }
+            ForEach(strategies, id: \.self) { Text(titleCaseSettingLabel($0)).tag($0) }
           }
           .labelsHidden()
           .frame(width: 220)
@@ -5441,7 +5526,7 @@ struct NamingSettings: View {
           InfoHint(text: "Used when the primary naming mode cannot decide a folder name.")
           Spacer()
           Picker("", selection: $fallback) {
-            ForEach(strategies.filter { $0 != "calendar" && $0 != "smart" }, id: \.self) { Text($0).tag($0) }
+            ForEach(strategies.filter { $0 != "calendar" && $0 != "smart" }, id: \.self) { Text(titleCaseSettingLabel($0)).tag($0) }
           }
           .labelsHidden()
           .frame(width: 220)
@@ -5468,7 +5553,7 @@ struct NamingSettings: View {
           InfoHint(text: "Smart keeps labels short and expands only when a shoot has multiple brands, models, or camera bodies. Brand uses Canon/Sony/DJI. Model uses simplified model. Full combines both.")
           Spacer()
           Picker("", selection: $smartCameraMode) {
-            ForEach(smartCameraModes, id: \.self) { Text($0).tag($0) }
+            ForEach(smartCameraModes, id: \.self) { Text(titleCaseSettingLabel($0)).tag($0) }
           }
           .labelsHidden()
           .frame(width: 180)
@@ -5771,6 +5856,7 @@ struct DetectionSettings: View {
   @State private var ejectGraceSeconds: String = "60"
   @State private var verifyHash: Bool = false
   @State private var lookbackHours: String = "24"
+  @State private var scanMode: String = "today"
   @State private var videoExtensions: String = ""
   @State private var promptSourceFoldersOnNewCard: Bool = false
   @State private var sqliteMemoryEnabled: Bool = false
@@ -5828,11 +5914,18 @@ struct DetectionSettings: View {
           .foregroundColor(.secondary)
 
         HStack(spacing: 6) {
-          Text("Candidate mode")
-          InfoHint(text: "Safety lock: DDump only scans files from the last N hours, never the full card.")
+          Text("Scan mode")
+          InfoHint(text: "Today imports files changed since local midnight. Hours imports files changed within the number of hours you enter.")
           Spacer()
-          Text("Only last N hours")
-            .foregroundColor(.secondary)
+          Picker("", selection: $scanMode) {
+            Text("Today").tag("today")
+            Text("Hours").tag("lookback")
+          }
+          .labelsHidden()
+          .frame(width: 190)
+          .ddumpOnChange(of: scanMode) { v in
+            state.set("CANDIDATE_MODE", normalizedScanMode(v))
+          }
         }
 
         HStack {
@@ -5844,6 +5937,7 @@ struct DetectionSettings: View {
             .multilineTextAlignment(.trailing)
             .onSubmit { state.set("LOOKBACK_HOURS", lookbackHours) }
         }
+        .disabled(scanMode != "lookback")
       }
 
       Section("Verification") {
@@ -5866,7 +5960,7 @@ struct DetectionSettings: View {
       ejectOnSuccess = (state.get("EJECT_ON_SUCCESS", default: "1") == "1")
       ejectGraceSeconds = state.get("EJECT_GRACE_SECONDS", default: "60")
       verifyHash = (state.get("VERIFY_COPY_HASH", default: "0") == "1")
-      state.set("CANDIDATE_MODE", "lookback")
+      scanMode = normalizedScanMode(state.get("CANDIDATE_MODE", default: "today"))
       lookbackHours = state.get("LOOKBACK_HOURS", default: "24")
       videoExtensions = state.get("VIDEO_FILE_EXTENSIONS", default: "mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,gpr,braw,mxf,crm,r3d,ari,arri,cine")
       promptSourceFoldersOnNewCard = (state.get("PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE", default: "0") == "1")
@@ -5882,6 +5976,11 @@ struct DetectionSettings: View {
       ntfyCardAlmostFull = (state.get("NTFY_NOTIFY_CARD_ALMOST_FULL", default: "1") == "1")
       ntfyIntegrityWarning = (state.get("NTFY_NOTIFY_INTEGRITY_WARNING", default: "1") == "1")
     }
+  }
+
+  private func normalizedScanMode(_ value: String) -> String {
+    let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return (cleaned == "lookback" || cleaned == "hours") ? "lookback" : "today"
   }
 }
 
@@ -6322,9 +6421,13 @@ struct CloudSettings: View {
 
           if !state.lastUtilityMessage.isEmpty {
             HStack(alignment: .top, spacing: 10) {
-              Image(systemName: done ? "checkmark.circle.fill" : "info.circle.fill")
-                .foregroundColor(done ? .ddumpSuccess : .ddumpPeach)
-                .font(.system(size: 14, weight: .semibold))
+              if done {
+                Image(systemName: "checkmark.circle.fill")
+                  .foregroundColor(.ddumpSuccess)
+                  .font(.system(size: 14, weight: .semibold))
+              } else {
+                InfoHint(text: "This message reports the current Google Drive helper status or the result of the last cloud setup action.")
+              }
               Text(state.lastUtilityMessage)
                 .font(DDumpFont.ui(12, weight: .medium))
                 .foregroundColor(.ddumpFG2)
@@ -6559,9 +6662,7 @@ struct CloudSettings: View {
 
           if !state.lastUtilityMessage.isEmpty {
             HStack(alignment: .top, spacing: 10) {
-              Image(systemName: "info.circle.fill")
-                .foregroundColor(.ddumpPeach)
-                .font(.system(size: 14, weight: .semibold))
+              InfoHint(text: "This message reports the current cloud helper status or the result of the last advanced cloud action.")
               Text(state.lastUtilityMessage)
                 .font(DDumpFont.ui(12, weight: .medium))
                 .foregroundColor(.ddumpFG2)
@@ -6644,8 +6745,7 @@ struct CloudSettings: View {
           )
 
           HStack(alignment: .top, spacing: 10) {
-          Image(systemName: "info.circle.fill")
-            .foregroundColor(.ddumpPeach)
+          InfoHint(text: "These steps are for installing DDump on another Mac and approving macOS folder permissions when needed.")
           VStack(alignment: .leading, spacing: 3) {
             Text("Friend install flow")
               .font(DDumpFont.ui(13, weight: .semibold))

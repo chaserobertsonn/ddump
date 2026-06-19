@@ -566,7 +566,7 @@ trap cleanup EXIT
 DEST_ROOT="$HOME/Temp"
 DUMP_FALLBACK_ROOT="$HOME/Temp/DDump"
 LOOKBACK_HOURS="24"
-CANDIDATE_MODE="lookback"
+CANDIDATE_MODE="today"
 SOURCE_SUBDIR="DCIM"
 TRUSTED_NAME_PREFIXES=""
 PROMPT_TO_REMEMBER_UNKNOWN="1"
@@ -3109,16 +3109,45 @@ activate_ddump_app_for_card() {
   fi
 }
 
+candidate_scan_mode() {
+  case "${CANDIDATE_MODE:-today}" in
+    lookback|hours) printf 'lookback' ;;
+    today|calendar_day|same_day|"") printf 'today' ;;
+    *)
+      log "Unknown CANDIDATE_MODE='${CANDIDATE_MODE}', using today."
+      printf 'today'
+      ;;
+  esac
+}
+
+candidate_cutoff_epoch() {
+  local hours="${1:-${LOOKBACK_HOURS:-24}}"
+  hours="$(sanitize_positive_int "$hours" "24")"
+  if [[ "$(candidate_scan_mode)" == "lookback" ]]; then
+    printf '%s' "$(( $(/bin/date '+%s') - (hours * 3600) ))"
+    return 0
+  fi
+  /bin/date -j -f "%Y-%m-%d %H:%M:%S" "$(/bin/date '+%Y-%m-%d') 00:00:00" '+%s' 2>/dev/null \
+    || printf '%s' "$(( $(/bin/date '+%s') - (24 * 3600) ))"
+}
+
+candidate_window_label() {
+  local hours="${1:-${LOOKBACK_HOURS:-24}}"
+  hours="$(sanitize_positive_int "$hours" "24")"
+  if [[ "$(candidate_scan_mode)" == "lookback" ]]; then
+    printf 'last %s hours' "$hours"
+  else
+    printf 'today'
+  fi
+}
+
 find_candidates() {
   local source_root="$1"
   local out_file="$2"
   local hours="${3:-${LOOKBACK_HOURS:-24}}"
   hours="$(sanitize_positive_int "$hours" "24")"
-  if [[ "${CANDIDATE_MODE:-lookback}" != "lookback" ]]; then
-    log "CANDIDATE_MODE='${CANDIDATE_MODE}' overridden to lookback for safety."
-  fi
   local cutoff scan_file src_file file_mtime
-  cutoff=$(( $(/bin/date '+%s') - (hours * 3600) ))
+  cutoff="$(candidate_cutoff_epoch "$hours")"
   scan_file="$(/usr/bin/mktemp "${STATE_DIR}/candidate-scan.XXXXXX")"
   : >"$scan_file"
 
@@ -3281,6 +3310,36 @@ staging_memory_has_candidate() {
   base_name="$(basename "$safe_rel_path")"
   hit="$(/usr/bin/find "$dest_dir" -type f -name "$base_name" -size "${file_size}c" -print -quit 2>/dev/null || true)"
   [[ -n "$hit" ]]
+}
+
+file_hash_matches() {
+  local source_file="$1"
+  local existing_file="$2"
+  [[ -f "$source_file" && -f "$existing_file" ]] || return 1
+  local source_hash existing_hash
+  source_hash="$(/usr/bin/shasum -a 256 "$source_file" 2>/dev/null | /usr/bin/awk '{print $1}')"
+  existing_hash="$(/usr/bin/shasum -a 256 "$existing_file" 2>/dev/null | /usr/bin/awk '{print $1}')"
+  [[ -n "$source_hash" && "$source_hash" == "$existing_hash" ]]
+}
+
+dump_memory_has_candidate() {
+  # Prevent a wide scan window from importing the same shoot into a new day.
+  # Match by same filename and size anywhere under the Dump Folder, then hash
+  # only the small set of same-name hits before declaring it a duplicate.
+  local rel_path="$1"
+  local file_size="$2"
+  local source_file="$3"
+  local root="${DEST_ROOT:-}"
+  [[ -d "$root" && -n "$rel_path" && -f "$source_file" ]] || return 1
+  local base_name hit
+  base_name="$(basename "${rel_path//:/_}")"
+  while IFS= read -r hit || [[ -n "$hit" ]]; do
+    [[ -f "$hit" ]] || continue
+    if file_hash_matches "$source_file" "$hit"; then
+      return 0
+    fi
+  done < <(/usr/bin/find "$root" -type f -name "$base_name" -size "${file_size}c" -print 2>/dev/null)
+  return 1
 }
 
 get_volume_uuid() {
@@ -3855,6 +3914,16 @@ db_file_has_local_copy() {
   db_available || return 1
   local count
   count="$(/usr/bin/sqlite3 -batch -noheader "$DB_FILE" "SELECT COUNT(*) FROM media_files WHERE source_uuid=$(sql_quote "$uuid") AND source_root_rel=$(sql_quote "$root_rel") AND rel_path=$(sql_quote "$rel_path") AND source_size=$file_size AND source_mtime=$file_mtime AND status IN ('copied','organized','upload_pending','uploaded');" 2>>"$LOG_FILE" || echo 0)"
+  [[ "${count:-0}" -gt 0 ]]
+}
+
+db_any_matching_local_copy() {
+  local rel_path="$1"
+  local file_size="$2"
+  db_available || return 1
+  local base_name count
+  base_name="$(basename "${rel_path//:/_}")"
+  count="$(/usr/bin/sqlite3 -batch -noheader "$DB_FILE" "SELECT COUNT(*) FROM media_files WHERE source_size=$file_size AND status IN ('copied','organized','upload_pending','uploaded','legacy_seen','skipped_duplicate') AND (rel_path=$(sql_quote "$rel_path") OR rel_path=$(sql_quote "$base_name") OR rel_path LIKE $(sql_quote "%/${base_name}"));" 2>>"$LOG_FILE" || echo 0)"
   [[ "${count:-0}" -gt 0 ]]
 }
 
@@ -5806,6 +5875,19 @@ for vol_path in /Volumes/*; do
         fi
       fi
 
+      if [[ "$force_recopy_for_uuid" != "1" ]] && dump_memory_has_candidate "$rel_path" "$file_size" "$src_file"; then
+        skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
+        record_missed_file "$vol_name" "skipped_dump_memory" "$src_file" "matched existing file in Dump Folder memory"
+        db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "skipped_duplicate" "" "" "already exists in Dump Folder"
+        processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+        current_status_processed="$processed_candidates_this_volume"
+        current_status_imported="$imported_this_volume"
+        current_status_skipped="$skipped_existing_this_volume"
+        current_status_failed="$failed_copy"
+        write_status
+        continue
+      fi
+
       if [[ "$force_recopy_for_uuid" != "1" ]] \
          && [[ "${DB_ENABLED:-0}" == "1" ]] \
          && [[ "$USE_FAST_SEEN_INDEX" == "1" && -n "$uuid" ]] \
@@ -5924,15 +6006,16 @@ for vol_path in /Volumes/*; do
           latest_candidate_count="$(count_candidates_in_file "$latest_candidates_file")"
           if [[ "$latest_candidate_count" =~ ^[0-9]+$ && "$latest_candidate_count" -gt 0 ]]; then
             log "No files in scan window on ${vol_name}; found ${latest_candidate_count} media file(s) around ${latest_label} (${latest_age_hours}h old). Asking user."
+            scan_window_label="$(candidate_window_label "$LOOKBACK_HOURS")"
             record_attention_notice \
               "$vol_name" \
               "$vol_path" \
               "$uuid" \
               "outside_scan_window" \
-              "DDump found media on ${vol_name}, but it was outside the ${LOOKBACK_HOURS} hour scan window." \
+              "DDump found media on ${vol_name}, but it was outside the ${scan_window_label} scan window." \
               "Newest set: ${latest_label} (${latest_age_hours}h ago), ${latest_candidate_count} file(s). Choose Import newest set or increase the scan window."
             set_status_phase "idle" "Found files outside the scan window on ${vol_name}."
-            latest_action="$(notify_ask "Import older shoot?" "DDump found ${latest_candidate_count} file(s) on ${vol_name} from around ${latest_label}, outside the ${LOOKBACK_HOURS} hour scan window. Import that newest set?" "Import newest set" "Leave mounted")"
+            latest_action="$(notify_ask "Import older shoot?" "DDump found ${latest_candidate_count} file(s) on ${vol_name} from around ${latest_label}, outside the ${scan_window_label} scan window. Import that newest set?" "Import newest set" "Leave mounted")"
             if [[ "$latest_action" == "Import newest set" ]]; then
               temp_candidates_file="$latest_candidates_file"
               has_candidates_this_volume=1
@@ -6005,6 +6088,16 @@ for vol_path in /Volumes/*; do
                     write_status
                     continue
                   fi
+                  if [[ "$force_recopy_for_uuid" != "1" ]] && dump_memory_has_candidate "$rel_path" "$file_size" "$src_file"; then
+                    skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
+                    record_missed_file "$vol_name" "skipped_dump_memory" "$src_file" "matched existing file in Dump Folder memory"
+                    db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "skipped_duplicate" "" "" "already exists in Dump Folder"
+                    processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                    current_status_processed="$processed_candidates_this_volume"
+                    current_status_skipped="$skipped_existing_this_volume"
+                    write_status
+                    continue
+                  fi
                   file_hash=""
                   if [[ "${HASH_BEFORE_COPY:-0}" == "1" || "${VERIFY_COPY_HASH:-0}" == "1" ]]; then
                     file_hash="$(/usr/bin/shasum -a 256 "$src_file" | /usr/bin/awk '{print $1}')"
@@ -6059,7 +6152,7 @@ for vol_path in /Volumes/*; do
                 /bin/rm -f "$temp_candidates_file"
               fi
             else
-              notify "DDump" "${vol_name}: no files inside the ${LOOKBACK_HOURS}h scan window. Card left mounted." warn "integrity_warning"
+              notify "DDump" "${vol_name}: no files inside the $(candidate_window_label "$LOOKBACK_HOURS") scan window. Card left mounted." warn "integrity_warning"
               ntfy_notify "integrity_warning" "DDump: files outside scan window" "${vol_name}: found ${latest_candidate_count} file(s) around ${latest_label}, but left the card mounted."
             fi
           fi
@@ -6079,10 +6172,10 @@ for vol_path in /Volumes/*; do
     fi
     if [[ "$manual_selection_for_volume" == "1" ]]; then
       log "No candidate files matched manual selection on ${vol_name}."
-    elif [[ "$CANDIDATE_MODE" == "lookback" ]]; then
+    elif [[ "$(candidate_scan_mode)" == "lookback" ]]; then
       log "No candidate files in last ${LOOKBACK_HOURS}h on ${vol_name} (selected folders)."
     else
-      log "No candidate files on ${vol_name} (selected folders)."
+      log "No candidate files from today on ${vol_name} (selected folders)."
     fi
     ejected_msg="card left mounted."
     log "No import candidates for ${vol_name}; leaving card mounted for manual review."
@@ -6091,7 +6184,7 @@ for vol_path in /Volumes/*; do
       "$vol_path" \
       "$uuid" \
       "no_candidates_in_scan_window" \
-      "DDump found a camera card, but no files matched the current ${LOOKBACK_HOURS} hour scan window." \
+      "DDump found a camera card, but no files matched the current $(candidate_window_label "$LOOKBACK_HOURS") scan window." \
       "The card was left mounted. Increase the scan window or use Manual import to choose the card."
     notify "DDump" "${vol_name}: no files in scan window; card left mounted." warn "integrity_warning"
     /bin/rm -f "$manual_candidates_file"

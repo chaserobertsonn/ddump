@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.12}"
+APP_VERSION="${DDUMP_VERSION:-0.3.13}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -468,7 +468,7 @@ if grep -q '^FOLDER_NAME_SEQUENTIAL_PREFIX="Dump "$' "$USER_CONFIG"; then
 fi
 
 if grep -q '^CANDIDATE_MODE="all"$' "$USER_CONFIG"; then
-  /usr/bin/sed -i '' 's/^CANDIDATE_MODE="all"$/CANDIDATE_MODE="lookback"/' "$USER_CONFIG"
+  /usr/bin/sed -i '' 's/^CANDIDATE_MODE="all"$/CANDIDATE_MODE="today"/' "$USER_CONFIG"
   echo "Updated CANDIDATE_MODE from \"all\" to \"lookback\" (recent-file import only)."
 fi
 
