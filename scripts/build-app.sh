@@ -5,7 +5,7 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_VERSION="${DDUMP_VERSION:-0.3.10}"
+APP_VERSION="${DDUMP_VERSION:-0.3.11}"
 MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_BUNDLE="${DIST_DIR}/DDump.app"

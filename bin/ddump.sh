@@ -16,10 +16,32 @@ mkdir -p "$STATE_DIR" "$LOG_DIR" "$REPORT_DIR"
 LOG_FILE="${LOG_DIR}/ddump.log"
 LOCK_DIR="${STATE_DIR}/run.lock"
 RUN_LOCK_PID_FILE="${LOCK_DIR}/pid"
+APP_NOTIFICATION_QUEUE="${STATE_DIR}/app_notifications.tsv"
 
 log() {
   local msg="$1"
   /bin/echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') ${msg}" | /usr/bin/tee -a "$LOG_FILE" >/dev/null
+}
+
+ddump_ui_app_running() {
+  /usr/bin/pgrep -x "DDump" >/dev/null 2>&1
+}
+
+queue_app_notification() {
+  local kind="$1"
+  local event_key="$2"
+  local title="$3"
+  local msg="$4"
+  local ts
+  ts="$(/bin/date '+%s')"
+  title="${title//$'\t'/ }"
+  title="${title//$'\n'/ }"
+  title="${title//$'\r'/ }"
+  msg="${msg//$'\t'/ }"
+  msg="${msg//$'\n'/ }"
+  msg="${msg//$'\r'/ }"
+  /bin/mkdir -p "$STATE_DIR"
+  /usr/bin/printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$kind" "$event_key" "$title" "$msg" >> "$APP_NOTIFICATION_QUEUE" 2>/dev/null
 }
 
 notify() {
@@ -37,6 +59,9 @@ notify() {
     fi
     /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || true
     return
+  fi
+  if ddump_ui_app_running; then
+    queue_app_notification "$kind" "$event_key" "$title" "$msg" && return
   fi
   local notify_script="${APP_SUPPORT_DIR}/bin/ddump-notify.sh"
   if [[ -x "$notify_script" ]]; then
@@ -5394,7 +5419,9 @@ retry_existing_dump_folder_backups() {
 set_status_phase "starting" "Checking incomplete sessions before new card import."
 seed_pending_from_db_incomplete
 recover_pending_imports
-retry_existing_dump_folder_backups
+if [[ "${DDUMP_RETRY_EXISTING_DUMPS:-0}" == "1" ]]; then
+  retry_existing_dump_folder_backups
+fi
 
 run_day_folder=""
 if [[ "$CREATE_DAILY_FOLDER" == "1" ]]; then

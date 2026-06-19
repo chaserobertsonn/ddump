@@ -14,6 +14,7 @@ import AppKit
 import Foundation
 import CoreText
 import EventKit
+import UserNotifications
 
 extension View {
   @ViewBuilder
@@ -41,6 +42,7 @@ enum DDumpPaths {
   static var reportsDir: URL { appSupport.appendingPathComponent("reports") }
   static var pendingDir: URL { appSupport.appendingPathComponent("state/pending_uploads") }
   static var lastSkippedVolumeFile: URL { appSupport.appendingPathComponent("state/last_skipped_volume.env") }
+  static var appNotificationQueue: URL { appSupport.appendingPathComponent("state/app_notifications.tsv") }
   static var iconLibraryDir: URL { appSupport.appendingPathComponent("icons") }
   static var iconPresetManifest: URL { iconLibraryDir.appendingPathComponent("presets.json") }
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
@@ -219,6 +221,7 @@ final class AppState: ObservableObject {
   }
 
   init() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     refreshStatus()
     refreshConfig()
     refreshHealth()
@@ -234,6 +237,7 @@ final class AppState: ObservableObject {
       if self.statusTick % 15 == 0 {
         self.refreshCloudMountStatus(showProgress: false)
       }
+      self.processQueuedAppNotifications()
     }
     // Passive cloud-use marker: do not remount on a timer. The idle watcher
     // only keeps rclone mounted while setup/upload work has recently touched it.
@@ -253,6 +257,40 @@ final class AppState: ObservableObject {
          self.get("CALENDAR_AUTH_STATUS", default: "") == "authorized" {
         self.refreshAppleCalendarCache(showDialog: false)
       }
+    }
+  }
+
+  private func processQueuedAppNotifications() {
+    let url = DDumpPaths.appNotificationQueue
+    guard FileManager.default.fileExists(atPath: url.path),
+          let text = try? String(contentsOf: url, encoding: .utf8),
+          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return
+    }
+    try? "".write(to: url, atomically: true, encoding: .utf8)
+
+    for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
+      let parts = rawLine.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+      guard parts.count >= 5 else { continue }
+      let kind = parts[1]
+      let title = parts[3].trimmingCharacters(in: .whitespacesAndNewlines)
+      let message = parts[4].trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !title.isEmpty || !message.isEmpty else { continue }
+
+      let content = UNMutableNotificationContent()
+      content.title = title.isEmpty ? "DDump" : title
+      content.body = message
+      if kind == "warn" {
+        content.sound = UNNotificationSound(named: UNNotificationSoundName("Basso"))
+      } else if kind == "done" {
+        content.sound = UNNotificationSound(named: UNNotificationSoundName("Glass"))
+      }
+      let request = UNNotificationRequest(
+        identifier: "ddump.\(UUID().uuidString)",
+        content: content,
+        trigger: nil
+      )
+      UNUserNotificationCenter.current().add(request)
     }
   }
 
@@ -1236,6 +1274,9 @@ client_secret=\(quotedClientSecret)
     let task = Process()
     task.launchPath = "/bin/bash"
     task.arguments = [DDumpPaths.scriptFile.path]
+    var env = ProcessInfo.processInfo.environment
+    env["DDUMP_RETRY_EXISTING_DUMPS"] = "1"
+    task.environment = env
     do {
       try task.run()
       lastUtilityMessage = "\(userMessagePrefix) started. DDump will back up existing Dump folders first, then check cards."
@@ -4750,6 +4791,28 @@ struct SettingsView: View {
   }
 }
 
+enum TroubleshootTopic: String, CaseIterable, Identifiable {
+  case calendar = "Calendar naming"
+  case cardImport = "Card did not import"
+  case backup = "Backup copy missing"
+  case dumpFolder = "Dump Folder missing"
+  case notifications = "Alerts not working"
+  case syncFolder = "Google Drive / sync folder"
+
+  var id: String { rawValue }
+
+  var icon: String {
+    switch self {
+    case .calendar: return "calendar"
+    case .cardImport: return "sdcard"
+    case .backup: return "externaldrive.badge.icloud"
+    case .dumpFolder: return "tray.full"
+    case .notifications: return "bell"
+    case .syncFolder: return "arrow.triangle.2.circlepath"
+    }
+  }
+}
+
 struct GeneralSettings: View {
   @EnvironmentObject var state: AppState
   @State private var localStaging: String = ""
@@ -4764,6 +4827,10 @@ struct GeneralSettings: View {
   @State private var updateCheckFrequency: String = "weekly"
   @State private var windowRestoreMode: String = "remember"
   @State private var autoLaunchSyncApps: Bool = true
+  @State private var showTroubleshooting: Bool = false
+  @State private var selectedTroubleTopic: TroubleshootTopic?
+  @State private var troubleshootTitle: String = ""
+  @State private var troubleshootLines: [String] = []
 
   var body: some View {
     Form {
@@ -4913,22 +4980,23 @@ struct GeneralSettings: View {
       }
 
       Section("Manual tools") {
-        VStack(spacing: 8) {
-          HStack(spacing: 8) {
-            troubleshootButton.frame(maxWidth: .infinity)
-            openDumpFolderButton.frame(maxWidth: .infinity)
-          }
-          HStack(spacing: 8) {
-            openBackupFolderButton.frame(maxWidth: .infinity)
-            openLogButton.frame(maxWidth: .infinity)
-          }
-          sendBugReportButton.frame(maxWidth: .infinity)
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+          troubleshootButton
+          openDumpFolderButton
+          openBackupFolderButton
+          openLogButton
+          sendBugReportButton
+            .gridCellColumns(2)
         }
         Text("Use these when a card did not import, a folder does not open, or you need to send a useful bug report.")
           .font(.caption)
           .foregroundColor(.secondary)
 
-        HStack {
+        if showTroubleshooting {
+          troubleshootPanel
+        }
+
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
           Button {
             state.startManualSelectionImport()
           } label: {
@@ -5033,10 +5101,14 @@ struct GeneralSettings: View {
   @ViewBuilder
   private var troubleshootButton: some View {
     Button {
-      state.runTroubleshooter()
+      showTroubleshooting.toggle()
+      if showTroubleshooting && selectedTroubleTopic == nil {
+        runTroubleshoot(.cardImport)
+      }
     } label: {
       settingsButtonLabel("Troubleshoot", systemImage: "wrench.and.screwdriver")
     }
+    .frame(maxWidth: .infinity)
     .buttonStyle(DDumpPrimaryButtonStyle())
   }
 
@@ -5047,6 +5119,7 @@ struct GeneralSettings: View {
     } label: {
       settingsButtonLabel("Open Dump Folder", systemImage: "tray.full")
     }
+    .frame(maxWidth: .infinity)
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
 
@@ -5057,6 +5130,7 @@ struct GeneralSettings: View {
     } label: {
       settingsButtonLabel("Open Backup Folder", systemImage: "folder")
     }
+    .frame(maxWidth: .infinity)
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
 
@@ -5067,6 +5141,7 @@ struct GeneralSettings: View {
     } label: {
       settingsButtonLabel("Open Log", systemImage: "doc.text")
     }
+    .frame(maxWidth: .infinity)
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
 
@@ -5077,12 +5152,189 @@ struct GeneralSettings: View {
     } label: {
       settingsButtonLabel("Send Bug Report", systemImage: "envelope")
     }
+    .frame(maxWidth: .infinity)
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
 
   private func settingsButtonLabel(_ title: String, systemImage: String) -> some View {
     Label(title, systemImage: systemImage)
       .frame(maxWidth: .infinity, alignment: .center)
+  }
+
+  private var troubleshootPanel: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("What needs help?")
+        .font(DDumpFont.ui(12, weight: .semibold))
+        .foregroundColor(.ddumpFG1)
+
+      LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+        ForEach(TroubleshootTopic.allCases) { topic in
+          if topic == selectedTroubleTopic {
+            Button {
+              runTroubleshoot(topic)
+            } label: {
+              Label(topic.rawValue, systemImage: topic.icon)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity)
+            .buttonStyle(DDumpPrimaryButtonStyle())
+          } else {
+            Button {
+              runTroubleshoot(topic)
+            } label: {
+              Label(topic.rawValue, systemImage: topic.icon)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity)
+            .buttonStyle(DDumpSecondaryButtonStyle())
+          }
+        }
+      }
+
+      if !troubleshootTitle.isEmpty {
+        VStack(alignment: .leading, spacing: 8) {
+          Text(troubleshootTitle)
+            .font(DDumpFont.ui(12, weight: .semibold))
+            .foregroundColor(.ddumpFG1)
+          ForEach(troubleshootLines.indices, id: \.self) { idx in
+            Text(troubleshootLines[idx])
+              .font(DDumpFont.ui(11))
+              .foregroundColor(idx == 0 ? .ddumpFG2 : .ddumpFG3)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+
+          ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+              troubleshootActions
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+              troubleshootActions
+            }
+          }
+        }
+        .padding(10)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.ddumpSurface2)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(Color.ddumpLine1, lineWidth: 1)
+        )
+      }
+    }
+    .padding(10)
+    .background(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .fill(Color.ddumpSurface)
+    )
+  }
+
+  @ViewBuilder
+  private var troubleshootActions: some View {
+    Button {
+      state.refreshAppleCalendarCache(showDialog: false)
+      runTroubleshoot(selectedTroubleTopic ?? .calendar)
+    } label: {
+      settingsButtonLabel("Recheck", systemImage: "arrow.clockwise")
+    }
+    .frame(maxWidth: .infinity)
+    .buttonStyle(DDumpSecondaryButtonStyle())
+
+    Button {
+      state.openNetworkVolumePrivacySettings()
+    } label: {
+      settingsButtonLabel("Privacy Settings", systemImage: "lock.shield")
+    }
+    .frame(maxWidth: .infinity)
+    .buttonStyle(DDumpSecondaryButtonStyle())
+
+    Button {
+      openInFinder(DDumpPaths.logFile.path)
+    } label: {
+      settingsButtonLabel("Open Log", systemImage: "doc.text")
+    }
+    .frame(maxWidth: .infinity)
+    .buttonStyle(DDumpSecondaryButtonStyle())
+  }
+
+  private func runTroubleshoot(_ topic: TroubleshootTopic) {
+    selectedTroubleTopic = topic
+    state.refreshHealth()
+    state.refreshSkippedVolumeNotice()
+
+    let fm = FileManager.default
+    let dump = state.dumpRootForUI
+    let dumpExists = fm.fileExists(atPath: expandConfiguredPath(dump))
+    let backup = state.todaysUploadDestinationForUI
+    let backupRoot = state.backupRootForUI
+    let backupRootExists = fm.fileExists(atPath: expandConfiguredPath(backupRoot))
+    let backupTodayExists = fm.fileExists(atPath: expandConfiguredPath(backup))
+    let calendarProvider = state.get("CALENDAR_PROVIDER", default: "apple")
+    let calendarStatus = state.get("CALENDAR_AUTH_STATUS", default: "not checked")
+    let calendarCacheReady = fm.fileExists(atPath: DDumpPaths.appleCalendarCache.path)
+    let ntfyTopic = state.get("NTFY_TOPIC").trimmingCharacters(in: .whitespacesAndNewlines)
+    let noticesOn = state.get("USE_NOTIFICATIONS", default: "1") == "1"
+    let driveRunning = NSWorkspace.shared.runningApplications.contains {
+      ($0.bundleIdentifier ?? "").contains("drivefs") ||
+      ($0.localizedName ?? "").localizedCaseInsensitiveContains("Google Drive")
+    }
+    let lastNotice = state.skippedVolumeNotice.map { "\($0.volume): \($0.detail)" } ?? "No recent skipped-card notice."
+
+    switch topic {
+    case .calendar:
+      troubleshootTitle = "Calendar naming"
+      troubleshootLines = [
+        calendarProvider == "apple"
+          ? "DDump is set to use the Mac Calendar app. That is the best public default because it works with Apple, Google, Exchange, and subscribed calendars after they sync to macOS."
+          : "DDump is set to use \(calendarProvider).",
+        "Permission: \(calendarStatus). Local event cache: \(calendarCacheReady ? "ready" : "missing").",
+        calendarCacheReady
+          ? "If a folder still says Shoot-1 or Cluster, check Naming settings: calendar naming must be selected, the shoot must be on your Mac Calendar, and the capture time must fall inside the event or the attach window."
+          : "Fix: open Privacy Settings, allow DDump calendar access if macOS asks, make sure the event appears in the Mac Calendar app, then click Recheck."
+      ]
+    case .cardImport:
+      troubleshootTitle = "Card did not import"
+      troubleshootLines = [
+        "Last card notice: \(lastNotice)",
+        "Fix: leave the card inserted, increase the scan window on the main screen, then click Retry Pending Uploads.",
+        "If the card is real camera media but detection missed it, use Manual select and choose the card volume itself, not the deepest DCIM folder."
+      ]
+    case .backup:
+      troubleshootTitle = "Backup copy missing"
+      troubleshootLines = [
+        "Backup root: \(backupRootExists ? "available" : "missing") — \(state.shortDisplayPath(backupRoot, keepLastComponents: 5)).",
+        "Today's backup folder: \(backupTodayExists ? "available" : "missing") — \(state.shortDisplayPath(backup, keepLastComponents: 5)).",
+        backupRootExists
+          ? "Fix: click Retry Pending Uploads. DDump will re-copy existing Dump Folder sessions into the Backup Folder without deleting the Dump Folder copy."
+          : "Fix: open the sync app or connect the SSD/NAS, then click Recheck. If this is Google Drive Desktop, confirm the Google Drive app is running and the folder appears in Finder."
+      ]
+    case .dumpFolder:
+      troubleshootTitle = "Dump Folder"
+      troubleshootLines = [
+        "Dump Folder: \(dumpExists ? "available" : "missing") — \(state.displayPath(dump)).",
+        dumpExists
+          ? "This first verified copy location is reachable. If importing still fails, check free disk space and card detection."
+          : "Fix: connect the SSD/NAS you use for the Dump Folder or choose a local fallback folder. DDump should never keep going silently when this location is missing."
+      ]
+    case .notifications:
+      troubleshootTitle = "Alerts"
+      troubleshootLines = [
+        "Mac alerts: \(noticesOn ? "enabled" : "off"). ntfy topic: \(ntfyTopic.isEmpty ? "not set" : ntfyTopic).",
+        ntfyTopic.isEmpty
+          ? "Fix: open Alerts settings, install the ntfy app on your phone, create or choose a topic, then paste that topic into DDump."
+          : "If phone alerts are missing, confirm the ntfy app is installed and subscribed to this exact topic. Use Open Log if the issue continues."
+      ]
+    case .syncFolder:
+      troubleshootTitle = "Google Drive / sync folder"
+      troubleshootLines = [
+        "Google Drive app: \(driveRunning ? "running" : "not running"). Backup root: \(backupRootExists ? "available" : "missing").",
+        "DDump can copy to any local folder, external SSD, NAS, or folder watched by Google Drive, Dropbox, Box, OneDrive, iCloud Drive, or pCloud.",
+        backupRootExists
+          ? "If Google Drive still shows syncing, DDump has copied to the local Drive folder; Google Drive Desktop is now responsible for cloud sync."
+          : "Fix: launch the sync app, wait for the folder to appear in Finder, then click Recheck or choose a reachable Backup Folder."
+      ]
+    }
   }
 
   private var appVersion: String {
