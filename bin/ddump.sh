@@ -1181,6 +1181,27 @@ build_post_move_target_dir_for_root() {
   printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
 }
 
+format_date_component_or_fallback() {
+  local ymd="$1"
+  local fmt="$2"
+  local fallback="$3"
+  /bin/date -j -f "%Y-%m-%d" "$ymd" +"$fmt" 2>/dev/null || /usr/bin/printf '%s' "$fallback"
+}
+
+build_post_move_target_dir_for_root_date() {
+  local root="$1"
+  local ymd="$2"
+  [[ -n "$root" && "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+  local yyyy mm dd year month day
+  yyyy="${ymd:0:4}"
+  mm="${ymd:5:2}"
+  dd="${ymd:8:2}"
+  year="$(format_date_component_or_fallback "$ymd" "$POST_MOVE_YEAR_FORMAT" "$yyyy")"
+  month="$(format_date_component_or_fallback "$ymd" "$POST_MOVE_MONTH_FORMAT" "${yyyy}.${mm}")"
+  day="$(format_date_component_or_fallback "$ymd" "$POST_MOVE_DAY_FORMAT" "${yyyy}.${mm}.${dd}")"
+  printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
+}
+
 build_video_post_move_target_dir() {
   local root
   if ! root="$(effective_video_post_move_root)"; then
@@ -1191,6 +1212,15 @@ build_video_post_move_target_dir() {
   month="$(/bin/date +"$POST_MOVE_MONTH_FORMAT")"
   day="$(/bin/date +"$POST_MOVE_DAY_FORMAT")"
   printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
+}
+
+build_video_post_move_target_dir_for_date() {
+  local ymd="$1"
+  local root
+  if ! root="$(effective_video_post_move_root)"; then
+    return 1
+  fi
+  build_post_move_target_dir_for_root_date "$root" "$ymd"
 }
 
 collect_post_move_roots() {
@@ -1957,6 +1987,36 @@ queue_path_unique() {
   fi
 }
 
+dump_folder_date_from_path() {
+  local base="$1"
+  base="$(basename "$base")"
+  if [[ "$base" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})-(d)?dump$ ]]; then
+    printf '%s-%s-%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
+
+is_raw_camera_folder_name() {
+  local name="$1"
+  name="$(printf '%s' "$name" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$name" in
+    dcim|misc|private|m4root|clip|xdroot|avchd|mp_root|canonmsc|panorama|dji|dji_*) return 0 ;;
+  esac
+  return 1
+}
+
+has_payload_files() {
+  local path="$1"
+  [[ -e "$path" ]] || return 1
+  if [[ -f "$path" ]]; then
+    case "$(basename "$path")" in .DS_Store|._*) return 1 ;; esac
+    return 0
+  fi
+  [[ -d "$path" ]] || return 1
+  [[ -n "$(/usr/bin/find "$path" -type f ! -name '.DS_Store' ! -name '._*' -print -quit 2>/dev/null)" ]]
+}
+
 path_content_stats() {
   # Prints "file_count<TAB>byte_count" for payload files. Finder metadata files
   # are intentionally ignored because DDump excludes them from post-move copies.
@@ -2140,6 +2200,7 @@ rclone_copy_bucket_split_photo_video_remote() {
 move_queued_paths_to_post_target() {
   local queue_file="$1"
   local vol_name="$2"
+  local target_date="${3:-}"
   move_last_status="none"
   move_last_detail=""
   move_last_target=""
@@ -2159,7 +2220,14 @@ move_queued_paths_to_post_target() {
   local split_video_enabled video_target_dir
   split_video_enabled=0
   video_target_dir=""
-  if [[ "${SPLIT_PHOTO_VIDEO:-0}" == "1" ]] && video_target_dir="$(build_video_post_move_target_dir)"; then
+  if [[ "${SPLIT_PHOTO_VIDEO:-0}" == "1" ]]; then
+    if [[ -n "$target_date" ]]; then
+      video_target_dir="$(build_video_post_move_target_dir_for_date "$target_date" 2>/dev/null || true)"
+    else
+      video_target_dir="$(build_video_post_move_target_dir 2>/dev/null || true)"
+    fi
+  fi
+  if [[ -n "$video_target_dir" ]]; then
     split_video_enabled=1
   fi
 
@@ -2186,7 +2254,11 @@ move_queued_paths_to_post_target() {
   while IFS= read -r root || [[ -n "$root" ]]; do
     [[ -n "$root" ]] || continue
     destination_count=$((destination_count + 1))
-    target_dir="$(build_post_move_target_dir_for_root "$root")"
+    if [[ -n "$target_date" ]]; then
+      target_dir="$(build_post_move_target_dir_for_root_date "$root" "$target_date")"
+    else
+      target_dir="$(build_post_move_target_dir_for_root "$root")"
+    fi
     display_target="$target_dir"
     direct_cloud=0
     remote_target_dir=""
@@ -2318,7 +2390,7 @@ move_queued_paths_to_post_target() {
       db_upsert_upload_job "$src_path" "$target_dir" "uploading" "0" "0" ""
       db_mark_media_status_by_local_prefix "$src_path" "upload_pending" ""
 
-      if [[ "$split_video_enabled" != "1" ]] && queue_entry_already_uploaded "$src_path" "$target_dir"; then
+      if queue_entry_already_uploaded "$src_path" "$target_dir"; then
         db_update_upload_job_status "$src_path" "uploaded" "0" "0" "already complete on destination"
         db_mark_media_status_by_local_prefix "$src_path" "uploaded" ""
         copied_count=$((copied_count + 1))
@@ -5251,11 +5323,78 @@ recover_pending_imports() {
   done
 }
 
+queue_existing_dump_folder_for_backup() {
+  local dump_dir="$1"
+  local queue_file="$2"
+  local queued=0
+  local item base
+
+  while IFS= read -r -d '' item; do
+    base="$(basename "$item")"
+    [[ "$base" == .* ]] && continue
+    if [[ -d "$item" ]] && is_raw_camera_folder_name "$base"; then
+      continue
+    fi
+    if has_payload_files "$item"; then
+      queue_path_unique "$queue_file" "$item"
+      queued=$((queued + 1))
+    fi
+  done < <(/usr/bin/find "$dump_dir" -mindepth 1 -maxdepth 1 \( -type d -o -type f \) -print0 2>/dev/null)
+
+  [[ "$queued" -gt 0 ]]
+}
+
+retry_existing_dump_folder_backups() {
+  [[ "${ENABLE_POST_EJECT_MOVE:-0}" == "1" ]] || return 0
+
+  local dump_root
+  dump_root="$(expand_config_path "${DEST_ROOT:-}")"
+  [[ -n "$dump_root" && -d "$dump_root" ]] || return 0
+
+  local dump_dir queue_file dump_date queue_count attempted_count success_count partial_count
+  attempted_count=0
+  success_count=0
+  partial_count=0
+
+  while IFS= read -r -d '' dump_dir; do
+    queue_file="$(/usr/bin/mktemp "${STATE_DIR}/retry-dump-queue.${run_id}.XXXXXX")"
+    if ! queue_existing_dump_folder_for_backup "$dump_dir" "$queue_file"; then
+      /bin/rm -f "$queue_file"
+      continue
+    fi
+
+    queue_count="$(/usr/bin/awk 'NF { count++ } END { print count + 0 }' "$queue_file" 2>/dev/null || echo 0)"
+    dump_date="$(dump_folder_date_from_path "$dump_dir" 2>/dev/null || /bin/date +"%Y-%m-%d")"
+    attempted_count=$((attempted_count + 1))
+    log "Retry pending uploads: backing up existing Dump Folder $(basename "$dump_dir") with ${queue_count} organized item(s)."
+    set_status_phase "uploading" "Backing up existing Dump Folder $(basename "$dump_dir")."
+
+    if move_queued_paths_to_post_target "$queue_file" "$(basename "$dump_dir") retry" "$dump_date" && [[ "$move_last_status" == "success" ]]; then
+      success_count=$((success_count + 1))
+      if [[ -n "$move_last_target" ]]; then
+        write_upload_receipt "$(basename "$dump_dir") retry" "success" "$move_last_target" "$queue_file"
+      fi
+    else
+      partial_count=$((partial_count + 1))
+      if [[ -n "$move_last_target" ]]; then
+        write_upload_receipt "$(basename "$dump_dir") retry" "partial" "$move_last_target" "$queue_file"
+      fi
+      log "Retry pending uploads incomplete for $(basename "$dump_dir"): ${move_last_detail:-backup copy failed}"
+    fi
+    /bin/rm -f "$queue_file"
+  done < <(/usr/bin/find "$dump_root" -maxdepth 1 -type d \( -name '*-ddump' -o -name '*-dump' \) -print0 2>/dev/null)
+
+  if [[ "$attempted_count" -gt 0 ]]; then
+    log "Retry pending uploads checked existing Dump Folders: attempted=${attempted_count}, complete=${success_count}, incomplete=${partial_count}"
+  fi
+}
+
 # ----- end folder-naming helpers ---------------------------------------------
 
 set_status_phase "starting" "Checking incomplete sessions before new card import."
 seed_pending_from_db_incomplete
 recover_pending_imports
+retry_existing_dump_folder_backups
 
 run_day_folder=""
 if [[ "$CREATE_DAILY_FOLDER" == "1" ]]; then

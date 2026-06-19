@@ -1238,7 +1238,7 @@ client_secret=\(quotedClientSecret)
     task.arguments = [DDumpPaths.scriptFile.path]
     do {
       try task.run()
-      lastUtilityMessage = "\(userMessagePrefix) started. DDump will upload pending folders first."
+      lastUtilityMessage = "\(userMessagePrefix) started. DDump will back up existing Dump folders first, then check cards."
       return true
     } catch {
       lastUtilityMessage = "Could not start retry: \(error.localizedDescription)"
