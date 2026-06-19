@@ -173,6 +173,16 @@ render_notification_template() {
   printf '%s' "$rendered"
 }
 
+notify_backup_folder_unavailable() {
+  local vol_name="$1"
+  local root="$2"
+  local detail="${3:-Backup Folder is unavailable}"
+  local message="${vol_name}: ${detail}: ${root}. Files remain in the Dump Folder; backup was not marked complete."
+  log "$message"
+  notify "DDump" "$message" warn "integrity_warning"
+  ntfy_notify "integrity_warning" "DDump: Backup Folder unavailable" "$message"
+}
+
 notification_dedupe_allows() {
   local event_key="$1"
   local fingerprint="$2"
@@ -1106,15 +1116,14 @@ infer_smart_root_from_sample_path() {
 }
 
 effective_post_move_root() {
-  if [[ "${FOLDER_NAMING_STRATEGY:-sequential}" == "smart" ]]; then
-    local smart_root
-    if smart_root="$(infer_smart_root_from_sample_path)"; then
-      printf '%s' "$smart_root"
-      return 0
-    fi
-  fi
   local root fallback
   root="${POST_MOVE_ROOT:-}"
+  if [[ -z "$root" && "${FOLDER_NAMING_STRATEGY:-sequential}" == "smart" ]]; then
+    local smart_root
+    if smart_root="$(infer_smart_root_from_sample_path)"; then
+      root="$smart_root"
+    fi
+  fi
   fallback="${POST_MOVE_FALLBACK_ROOT:-}"
   if [[ -n "$root" && ! -d "$root" ]]; then
     ensure_sync_provider_path_available "$root" || true
@@ -2220,39 +2229,34 @@ move_queued_paths_to_post_target() {
     else
       if ! ensure_gdrive_mount_for_post_move "$root"; then
         overall_failed=$((overall_failed + 1))
-        log "Post-move blocked for ${vol_name}: ${move_last_detail}"
-        notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
+        notify_backup_folder_unavailable "$vol_name" "$root" "${move_last_detail:-Backup Folder unavailable}"
         continue
       fi
 
       if ! path_uses_gdrive_mount "$root" && ! ensure_google_drive_desktop_ready_for_path "$root"; then
         overall_failed=$((overall_failed + 1))
         move_last_detail="Google Drive Desktop folder unavailable after restart"
-        log "Post-move blocked for ${vol_name}: ${move_last_detail}: ${root}"
-        notify "DDump" "${vol_name}: post-move blocked (${move_last_detail})."
-        ntfy_notify "integrity_warning" "DDump: Backup Folder unavailable" "${vol_name}: Backup Folder is unavailable: ${root}"
+        notify_backup_folder_unavailable "$vol_name" "$root" "$move_last_detail"
         continue
       fi
 
       if [[ ! -d "$root" ]] && ! ensure_sync_provider_path_available "$root"; then
         overall_failed=$((overall_failed + 1))
         move_last_detail="Backup Folder unavailable"
-        log "Post-move blocked for ${vol_name}: ${move_last_detail}: ${root}"
-        notify "DDump" "${vol_name}: Backup Folder unavailable." warn "integrity_warning"
-        ntfy_notify "integrity_warning" "DDump: Backup Folder unavailable" "${vol_name}: Backup Folder is unavailable: ${root}"
+        notify_backup_folder_unavailable "$vol_name" "$root" "$move_last_detail"
         continue
       fi
 
       if [[ ! -d "$root" ]]; then
         if ! /bin/mkdir -p "$root"; then
           overall_failed=$((overall_failed + 1))
-          log "Post-move blocked for ${vol_name}: cannot create destination root ${root}"
+          notify_backup_folder_unavailable "$vol_name" "$root" "Cannot create Backup Folder"
           continue
         fi
       fi
       if [[ ! -w "$root" ]]; then
         overall_failed=$((overall_failed + 1))
-        log "Post-move blocked for ${vol_name}: destination root not writable ${root}"
+        notify_backup_folder_unavailable "$vol_name" "$root" "Backup Folder is not writable"
         continue
       fi
 

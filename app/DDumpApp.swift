@@ -493,16 +493,37 @@ final class AppState: ObservableObject {
   }
 
   var uploadRootForUI: String {
+    let configuredRoot = get("POST_MOVE_ROOT", default: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !configuredRoot.isEmpty {
+      return expandConfiguredPath(configuredRoot)
+    }
     if get("FOLDER_NAMING_STRATEGY", default: "cluster") == "smart" {
       let sample = get("SMART_SAMPLE_PATH")
       let pattern = #"^(.+)/[0-9]{4}/[0-9]{4}\.[0-9]{2}/[0-9]{4}\.[0-9]{2}\.[0-9]{2}(/.*)?$"#
       if let regex = try? NSRegularExpression(pattern: pattern),
          let match = regex.firstMatch(in: sample, range: NSRange(sample.startIndex..., in: sample)),
          let range = Range(match.range(at: 1), in: sample) {
-        return String(sample[range])
+        return expandConfiguredPath(String(sample[range]))
       }
     }
-    return get("POST_MOVE_ROOT", default: "\(NSHomeDirectory())/Temp")
+    return "\(NSHomeDirectory())/Temp"
+  }
+
+  var backupRootForUI: String {
+    expandConfiguredPath(uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  var backupRootWarningForUI: String? {
+    guard get("ENABLE_POST_EJECT_MOVE", default: "1") == "1" else { return nil }
+    let root = backupRootForUI
+    guard !root.isEmpty else {
+      return "Backup Folder is not set. DDump will keep files only in the Dump Folder until you choose a Backup Folder."
+    }
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory), isDirectory.boolValue {
+      return nil
+    }
+    return "Backup Folder is unavailable: \(shortDisplayPath(root, keepLastComponents: 5)). DDump will not silently mark a backup complete until this folder is reachable."
   }
 
   var dumpRootForUI: String {
@@ -678,7 +699,7 @@ final class AppState: ObservableObject {
   }
 
   var todaysUploadDestinationForUI: String {
-    let root = uploadRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    let root = backupRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !root.isEmpty else { return root }
     let year = formattedDateFolder(get("POST_MOVE_YEAR_FORMAT", default: "%Y"), fallback: "yyyy")
     let month = formattedDateFolder(get("POST_MOVE_MONTH_FORMAT", default: "%Y.%m"), fallback: "yyyy.MM")
@@ -689,12 +710,64 @@ final class AppState: ObservableObject {
   func openUploadDestination(openTodayFolder: Bool = true) {
     let destination = (openTodayFolder ? todaysUploadDestinationForUI : uploadRootForUI)
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    let expandedDestination = expandConfiguredPath(destination)
+    let expandedRoot = backupRootForUI
     if get("GDRIVE_DIRECT_UPLOAD", default: "0") == "1",
-       let remoteDest = cloudRemotePath(for: destination) {
+       let remoteDest = cloudRemotePath(for: expandedDestination) {
       openCloudRemoteDestination(remoteDest)
       return
     }
-    openInFinder(destination)
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: expandedDestination, isDirectory: &isDirectory), isDirectory.boolValue {
+      openInFinder(expandedDestination)
+      return
+    }
+    if openTodayFolder,
+       FileManager.default.fileExists(atPath: expandedRoot, isDirectory: &isDirectory),
+       isDirectory.boolValue {
+      lastUtilityMessage = "Today's dated Backup Folder has not been created yet. Opened the Backup Folder root instead."
+      appendAppLog("today backup folder missing; opened backup root instead: today=\(expandedDestination) root=\(expandedRoot)")
+      openInFinder(expandedRoot)
+      return
+    }
+    let message = "Backup Folder is unavailable: \(expandedRoot.isEmpty ? expandedDestination : expandedRoot)"
+    lastUtilityMessage = message
+    appendAppLog(message)
+    sendIntegrityWarningPhoneAlert(title: "DDump: Backup Folder unavailable", message: message)
+    openInFinder(expandedRoot.isEmpty ? expandedDestination : expandedRoot)
+  }
+
+  private func sendIntegrityWarningPhoneAlert(title: String, message: String) {
+    guard get("NTFY_NOTIFY_INTEGRITY_WARNING", default: "1") == "1" else { return }
+    let topic = get("NTFY_TOPIC").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !topic.isEmpty,
+          let encodedTopic = topic.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+          let body = "\(title)\nintegrity_warning\n\(message)".data(using: .utf8) else {
+      return
+    }
+    DispatchQueue.global(qos: .utility).async {
+      let task = Process()
+      task.launchPath = "/usr/bin/curl"
+      task.arguments = [
+        "-fsS", "-m", "10",
+        "-H", "Title: \(title)",
+        "-H", "Tags: warning",
+        "--data-binary", "@-",
+        "https://ntfy.sh/\(encodedTopic)"
+      ]
+      let stdin = Pipe()
+      task.standardInput = stdin
+      task.standardOutput = Pipe()
+      task.standardError = Pipe()
+      do {
+        try task.run()
+        stdin.fileHandleForWriting.write(body)
+        stdin.fileHandleForWriting.closeFile()
+        task.waitUntilExit()
+      } catch {
+        // Phone alerts are best-effort; the visible warning remains the source of truth.
+      }
+    }
   }
 
   private func openCloudRemoteDestination(_ remoteDest: String) {
@@ -3112,7 +3185,7 @@ func formatETA(_ seconds: Int?) -> String {
 }
 
 func openInFinder(_ path: String) {
-  let expanded = NSString(string: path).expandingTildeInPath
+  let expanded = expandConfiguredPath(path)
   if FileManager.default.fileExists(atPath: expanded) {
     NSWorkspace.shared.open(URL(fileURLWithPath: expanded))
   } else {
@@ -3396,6 +3469,9 @@ struct ContentView: View {
 
           DestinationSummaryPanel()
             .padding(.top, 18)
+
+          BackupFolderWarningPanel()
+            .padding(.top, 14)
 
           RunChecklistPanel()
             .padding(.top, 20)
@@ -4093,6 +4169,46 @@ struct SkippedVolumePanel: View {
       .overlay(
         RoundedRectangle(cornerRadius: 10, style: .continuous)
           .stroke(Color.ddumpWarning.opacity(0.45), lineWidth: 1)
+      )
+    }
+  }
+}
+
+struct BackupFolderWarningPanel: View {
+  @EnvironmentObject var state: AppState
+
+  var body: some View {
+    if let warning = state.backupRootWarningForUI {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .foregroundColor(.ddumpWarning)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Backup Folder needs attention")
+            .font(DDumpFont.ui(13, weight: .semibold))
+            .foregroundColor(.ddumpFG1)
+          Text(warning)
+            .font(DDumpFont.ui(12))
+            .foregroundColor(.ddumpFG2)
+          Text("Files remain in the Dump Folder, but DDump will not call the backup complete until the Backup Folder works.")
+            .font(DDumpFont.ui(12))
+            .foregroundColor(.ddumpFG2)
+        }
+        Spacer(minLength: 8)
+        Button {
+          state.openUploadDestination(openTodayFolder: false)
+        } label: {
+          Label("Check folder", systemImage: "folder.badge.questionmark")
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+      .padding(12)
+      .background(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(Color.ddumpSurface)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(Color.ddumpWarning.opacity(0.55), lineWidth: 1)
       )
     }
   }
