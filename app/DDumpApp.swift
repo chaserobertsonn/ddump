@@ -3928,31 +3928,15 @@ struct MainActionFooter: View {
   @Binding var showingSettings: Bool
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: 8) {
-          settingsButton
-          Spacer(minLength: 8)
-          actionButtons(fillWidth: false)
-        }
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-          settingsButton.frame(maxWidth: .infinity)
-          actionButtons(fillWidth: true)
-        }
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 8) {
+        settingsButton
+        Spacer(minLength: 10)
+        actionButtons(fillWidth: false)
       }
-
-      if state.ejectQueued {
-        Label("Eject queued", systemImage: "eject.circle")
-          .foregroundColor(.ddumpWarning)
-          .font(DDumpFont.ui(12))
-      } else if state.keepMountedRequested {
-        Label("Will stay mounted", systemImage: "pin.slash.circle")
-          .foregroundColor(.ddumpWarning)
-          .font(DDumpFont.ui(12))
-      } else if state.stopRequested {
-        Label("Stop queued", systemImage: "stop.circle")
-          .foregroundColor(.ddumpWarning)
-          .font(DDumpFont.ui(12))
+      LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+        settingsButton.frame(maxWidth: .infinity)
+        actionButtons(fillWidth: true)
       }
     }
     .padding(.horizontal, 20)
@@ -4016,11 +4000,15 @@ struct MainActionFooter: View {
     Button {
       state.ejectNow()
     } label: {
-      Label("Eject", systemImage: "eject.fill")
+      if state.ejectQueued {
+        Text("Eject queued")
+      } else {
+        Label("Eject", systemImage: "eject.fill")
+      }
     }
     .buttonStyle(DDumpPrimaryButtonStyle())
     .keyboardShortcut("e", modifiers: .command)
-    .disabled(!state.runActive || state.ejectQueued)
+    .disabled(!state.runActive)
     .frame(maxWidth: fillWidth ? .infinity : nil)
   }
 }
@@ -4152,6 +4140,7 @@ struct DestinationSummaryPanel: View {
         )
       }
     }
+    .fixedSize(horizontal: false, vertical: true)
   }
 
   private func folderCard(
@@ -4178,14 +4167,22 @@ struct DestinationSummaryPanel: View {
         Button(buttonTitle, action: action)
           .buttonStyle(DDumpSecondaryButtonStyle())
       }
-      Label(path.isEmpty ? "Not set" : path, systemImage: systemImage)
-        .font(.system(size: 12, weight: .regular, design: .monospaced))
-        .foregroundColor(.ddumpFG1)
-        .lineLimit(2)
-        .textSelection(.enabled)
+      Spacer(minLength: 0)
+      HStack(spacing: 8) {
+        Image(systemName: systemImage)
+          .foregroundColor(.ddumpFG3)
+        Text(path.isEmpty ? "Not set" : path)
+          .font(.system(size: 12, weight: .regular, design: .monospaced))
+          .foregroundColor(.ddumpFG1)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .textSelection(.enabled)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      Spacer(minLength: 0)
     }
     .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: .infinity, minHeight: 118, maxHeight: 118, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .fill(Color.ddumpSurface)
@@ -4257,12 +4254,16 @@ struct HealthPanel: View {
 struct ProgressDetail: View {
   @EnvironmentObject var state: AppState
 
+  private var friendlyMessage: String {
+    humanReadableStatus(state.message)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text(state.volume.isEmpty ? "Card" : state.volume)
         .font(DDumpFont.ui(18, weight: .semibold))
         .foregroundColor(.ddumpFG1)
-      Text(state.message)
+      Text(friendlyMessage)
         .font(DDumpFont.ui(12))
         .foregroundColor(.ddumpFG2)
         .lineLimit(2)
@@ -4338,6 +4339,50 @@ struct ProgressDetail: View {
         ManualShootNameControl()
       }
     }
+  }
+
+  private func humanReadableStatus(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Waiting for a card." }
+
+    if trimmed.hasPrefix("Run complete.") {
+      let metrics = parseSummaryMetrics(trimmed)
+      let volumes = metrics["volumes"] ?? 0
+      let imported = metrics["imported"] ?? 0
+      let duplicates = metrics["skipped_duplicate"] ?? 0
+      let skippedExt = metrics["skipped_extension"] ?? 0
+      let copyFail = metrics["copy_fail"] ?? 0
+      let verifyFail = metrics["verify_fail"] ?? 0
+      let uploadIncomplete = metrics["upload_incomplete"] ?? 0
+      let errors = metrics["errors"] ?? 0
+      let cardWord = volumes == 1 ? "card" : "cards"
+      if errors > 0 || copyFail > 0 || verifyFail > 0 || uploadIncomplete > 0 {
+        return "Finished with attention needed. \(volumes) \(cardWord) checked, \(imported) imported, \(copyFail + verifyFail) copy or verify issues, \(uploadIncomplete) backup issues."
+      }
+      if imported > 0 {
+        return "Finished. \(volumes) \(cardWord) checked, \(imported) imported, \(duplicates) already copied, \(skippedExt) non-media skipped."
+      }
+      return "Finished. \(volumes) \(cardWord) checked. No new files matched the scan window."
+    }
+
+    return trimmed
+      .replacingOccurrences(of: "_", with: " ")
+      .replacingOccurrences(of: "  ", with: " ")
+  }
+
+  private func parseSummaryMetrics(_ text: String) -> [String: Int] {
+    var metrics: [String: Int] = [:]
+    let pattern = #"([a-z_]+)=([0-9]+)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return metrics }
+    let nsText = text as NSString
+    let range = NSRange(location: 0, length: nsText.length)
+    regex.enumerateMatches(in: text, range: range) { match, _, _ in
+      guard let match, match.numberOfRanges == 3 else { return }
+      let key = nsText.substring(with: match.range(at: 1))
+      let value = Int(nsText.substring(with: match.range(at: 2))) ?? 0
+      metrics[key] = value
+    }
+    return metrics
   }
 }
 
@@ -4752,13 +4797,16 @@ struct GeneralSettings: View {
       }
 
       Section("Manual tools") {
-        ViewThatFits(in: .horizontal) {
+        VStack(spacing: 8) {
           HStack(spacing: 8) {
-            supportButtons
+            troubleshootButton.frame(maxWidth: .infinity)
+            openDumpFolderButton.frame(maxWidth: .infinity)
           }
-          LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-            supportButtons
+          HStack(spacing: 8) {
+            openBackupFolderButton.frame(maxWidth: .infinity)
+            openLogButton.frame(maxWidth: .infinity)
           }
+          sendBugReportButton.frame(maxWidth: .infinity)
         }
         Text("Use these when a card did not import, a folder does not open, or you need to send a useful bug report.")
           .font(.caption)
@@ -4794,12 +4842,22 @@ struct GeneralSettings: View {
       }
 
       Section("Check updates") {
-        Button {
-          state.checkForUpdatesNow()
-        } label: {
-          Label("Update now", systemImage: "arrow.clockwise")
+        HStack(spacing: 10) {
+          Button {
+            state.checkForUpdatesNow()
+          } label: {
+            Label("Update now", systemImage: "arrow.clockwise")
+          }
+          .buttonStyle(DDumpPrimaryButtonStyle())
+
+          Spacer(minLength: 8)
+
+          Text("Version \(appVersion)")
+            .font(.system(size: 12, weight: .medium, design: .monospaced))
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .textSelection(.enabled)
         }
-        .buttonStyle(DDumpPrimaryButtonStyle())
 
         Toggle("Check for updates", isOn: $updateChecksEnabled)
           .ddumpOnChange(of: updateChecksEnabled) { v in
@@ -4854,41 +4912,57 @@ struct GeneralSettings: View {
   }
 
   @ViewBuilder
-  private var supportButtons: some View {
+  private var troubleshootButton: some View {
     Button {
       state.runTroubleshooter()
     } label: {
       Label("Troubleshoot", systemImage: "wrench.and.screwdriver")
     }
     .buttonStyle(DDumpPrimaryButtonStyle())
+  }
 
+  @ViewBuilder
+  private var openDumpFolderButton: some View {
     Button {
       openInFinder(state.dumpRootForUI)
     } label: {
       Label("Open Dump Folder", systemImage: "tray.full")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
+  }
 
+  @ViewBuilder
+  private var openBackupFolderButton: some View {
     Button {
       state.openUploadDestination()
     } label: {
       Label("Open Backup Folder", systemImage: "folder")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
+  }
 
+  @ViewBuilder
+  private var openLogButton: some View {
     Button {
       openInFinder(DDumpPaths.logFile.path)
     } label: {
       Label("Open Log", systemImage: "doc.text")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
+  }
 
+  @ViewBuilder
+  private var sendBugReportButton: some View {
     Button {
       state.openBugReportEmail()
     } label: {
       Label("Send Bug Report", systemImage: "envelope")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
+  }
+
+  private var appVersion: String {
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
   }
 
   @ViewBuilder

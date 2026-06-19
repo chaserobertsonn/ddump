@@ -571,6 +571,7 @@ CAMERA_CARD_MIN_MEDIA_FILES="3"
 CAMERA_CARD_SCAN_MAX_DEPTH="10"
 CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA"
 CAMERA_CARD_REJECT_INSTALLER_SHAPES="1"
+CAMERA_CARD_SOURCE_ROOT_MAX_DEPTH="2"
 CLOUD_UPLOADS_ENABLED="0"
 ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
@@ -3009,9 +3010,30 @@ find_candidates() {
   if [[ "${CANDIDATE_MODE:-lookback}" != "lookback" ]]; then
     log "CANDIDATE_MODE='${CANDIDATE_MODE}' overridden to lookback for safety."
   fi
-  /usr/bin/find "$source_root" -type f -print0 2>/dev/null \
-    | /usr/bin/perl -0ne 'BEGIN { $hours = shift @ARGV; $cutoff = time - ($hours * 3600) } chomp; print $_, "\0" if -f $_ && (stat($_))[9] >= $cutoff' "$hours" \
-    >"$out_file" || true
+  local cutoff scan_file src_file file_mtime
+  cutoff=$(( $(/bin/date '+%s') - (hours * 3600) ))
+  scan_file="$(/usr/bin/mktemp "${STATE_DIR}/candidate-scan.XXXXXX")"
+  : >"$scan_file"
+
+  while IFS= read -r -d '' src_file; do
+    is_ignored_source_file "$src_file" && continue
+    has_allowed_extension "$src_file" "$FILE_EXTENSIONS" || continue
+    file_mtime="$(/usr/bin/stat -f '%m' "$src_file" 2>/dev/null || /bin/echo 0)"
+    [[ "$file_mtime" =~ ^[0-9]+$ ]] || file_mtime=0
+    [[ "$file_mtime" -ge "$cutoff" ]] || continue
+    /usr/bin/printf '%s\t%s\n' "$file_mtime" "$src_file" >>"$scan_file"
+  done < <(/usr/bin/find "$source_root" -type f -print0 2>/dev/null)
+
+  if [[ -s "$scan_file" ]]; then
+    /usr/bin/sort -t '	' -k1,1nr -k2,2r "$scan_file" \
+      | while IFS=$'\t' read -r _mtime sorted_path || [[ -n "$sorted_path" ]]; do
+          [[ -n "$sorted_path" ]] || continue
+          /usr/bin/printf '%s\0' "$sorted_path"
+        done >"$out_file"
+  else
+    : >"$out_file"
+  fi
+  /bin/rm -f "$scan_file"
 }
 
 latest_allowed_file_epoch_under() {
@@ -3360,6 +3382,76 @@ load_source_roots_for_uuid() {
   return "$found_any"
 }
 
+source_root_has_media_files() {
+  local root_path="$1"
+  [[ -d "$root_path" ]] || return 1
+  /usr/bin/find "$root_path" -maxdepth 1 -type f -print0 2>/dev/null \
+    | while IFS= read -r -d '' f; do
+        is_ignored_source_file "$f" && continue
+        has_allowed_extension "$f" "$PHOTO_FILE_EXTENSIONS" || continue
+        /bin/echo "1"
+        break
+      done \
+    | /usr/bin/grep -q "1"
+}
+
+discover_current_media_source_roots() {
+  local vol_path="$1"
+  local out_file="$2"
+  local max_depth
+  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SOURCE_ROOT_MAX_DEPTH:-2}" "2")"
+  [[ "$max_depth" -lt 1 ]] && max_depth=1
+
+  local scan_file parent dir mtime name
+  scan_file="$(/usr/bin/mktemp "${STATE_DIR}/source-root-scan.XXXXXX")"
+  : >"$scan_file"
+
+  IFS=',' read -r -a _hint_dirs <<<"${CAMERA_CARD_HINT_DIRS:-DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA}"
+  for hint in "${_hint_dirs[@]}"; do
+    hint="$(trim "$hint")"
+    [[ -n "$hint" ]] || continue
+    if [[ "$hint" == *"*"* ]]; then
+      while IFS= read -r parent || [[ -n "$parent" ]]; do
+        [[ -d "$parent" ]] || continue
+        if source_root_has_media_files "$parent"; then
+          mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
+          name="$(/usr/bin/basename "$parent")"
+          /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$scan_file"
+        fi
+      done < <(/usr/bin/find "$vol_path" -maxdepth 2 -type d -name "$hint" 2>/dev/null)
+      continue
+    fi
+
+    parent="${vol_path}/${hint}"
+    [[ -d "$parent" ]] || continue
+    if source_root_has_media_files "$parent"; then
+      mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
+      name="$(/usr/bin/basename "$parent")"
+      /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$scan_file"
+    fi
+    while IFS= read -r dir || [[ -n "$dir" ]]; do
+      [[ -d "$dir" ]] || continue
+      [[ "$dir" == "$parent" ]] && continue
+      if source_root_has_media_files "$dir"; then
+        mtime="$(/usr/bin/stat -f '%m' "$dir" 2>/dev/null || /bin/echo 0)"
+        name="$(/usr/bin/basename "$dir")"
+        /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$dir" >>"$scan_file"
+      fi
+    done < <(/usr/bin/find "$parent" -maxdepth "$max_depth" -type d 2>/dev/null)
+  done
+
+  if [[ -s "$scan_file" ]]; then
+    /usr/bin/sort -t '	' -k1,1nr -k2,2r "$scan_file" \
+      | /usr/bin/awk -F'\t' '{ print $3 }' \
+      | while IFS= read -r dir || [[ -n "$dir" ]]; do
+          [[ -d "$dir" ]] || continue
+          queue_path_unique "$out_file" "$dir"
+        done
+  fi
+  /bin/rm -f "$scan_file"
+  [[ -s "$out_file" ]]
+}
+
 prompt_to_choose_source_roots() {
   local vol_name="$1"
   local vol_path="$2"
@@ -3459,8 +3551,12 @@ resolve_source_roots_for_volume() {
   : >"$out_file"
 
   if [[ "${PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE:-0}" != "1" ]]; then
-    queue_path_unique "$out_file" "$vol_path"
-    log "Scanning entire card for ${vol_name}; folder chooser is disabled."
+    if discover_current_media_source_roots "$vol_path" "$out_file"; then
+      log "Scanning current media folders for ${vol_name}: $(/usr/bin/tr '\n' ';' <"$out_file")"
+    else
+      queue_path_unique "$out_file" "$vol_path"
+      log "Scanning entire card for ${vol_name}; no focused media folders found."
+    fi
     return 0
   fi
 
@@ -3473,6 +3569,7 @@ resolve_source_roots_for_volume() {
   if [[ "$policy_mode" == "ask_every_time" ]]; then
     prompt_to_choose_source_roots "$vol_name" "$vol_path" "$uuid" "$out_file" "0" || true
   else
+    discover_current_media_source_roots "$vol_path" "$out_file" || true
     load_source_roots_for_uuid "$uuid" "$vol_path" "$out_file" || true
     if [[ ! -s "$out_file" ]]; then
       prompt_to_choose_source_roots "$vol_name" "$vol_path" "$uuid" "$out_file" "1" || true
@@ -5170,6 +5267,47 @@ upload_complete_volume_count=0
 upload_complete_file_count=0
 upload_complete_targets=""
 
+queued_volume_names=()
+for queued_vol_path in /Volumes/*; do
+  [[ -d "$queued_vol_path" ]] || continue
+  queued_vol_name="$(basename "$queued_vol_path")"
+  is_ignored_volume_name "$queued_vol_name" && continue
+  queued_uuid="$(get_volume_uuid "$queued_vol_path")"
+  if [[ -n "$queued_uuid" ]] && is_uuid_blocked "$queued_uuid"; then
+    continue
+  fi
+  if volume_looks_like_camera_card "$queued_vol_path" \
+    || is_trusted_name_prefix "$queued_vol_name" \
+    || is_uuid_trusted "$queued_uuid"; then
+    queued_volume_names+=("$queued_vol_name")
+  fi
+done
+
+next_queued_volume_after() {
+  local current_name="$1"
+  local seen_current=0
+  local queued_name
+  for queued_name in "${queued_volume_names[@]}"; do
+    if [[ "$seen_current" == "1" ]]; then
+      printf '%s' "$queued_name"
+      return 0
+    fi
+    if [[ "$queued_name" == "$current_name" ]]; then
+      seen_current=1
+    fi
+  done
+  return 1
+}
+
+queue_status_suffix_for_volume() {
+  local current_name="$1"
+  local next_name
+  next_name="$(next_queued_volume_after "$current_name" 2>/dev/null || true)"
+  if [[ -n "$next_name" ]]; then
+    printf ' Next: %s.' "$next_name"
+  fi
+}
+
 for vol_path in /Volumes/*; do
   [[ "$run_stopped" == "1" ]] && break
   [[ -d "$vol_path" ]] || continue
@@ -5180,7 +5318,8 @@ for vol_path in /Volumes/*; do
     continue
   fi
   current_status_volume="$vol_name"
-  set_status_phase "scanning" "Checking card ${vol_name}."
+  volume_queue_suffix="$(queue_status_suffix_for_volume "$vol_name")"
+  set_status_phase "scanning" "Checking ${vol_name}.${volume_queue_suffix}"
 
   uuid="$(get_volume_uuid "$vol_path")"
   if [[ "$IGNORE_NO_UUID_VOLUMES" == "1" && -z "$uuid" ]]; then
@@ -5419,7 +5558,7 @@ for vol_path in /Volumes/*; do
     current_status_imported="$imported_this_volume"
     current_status_skipped="$skipped_existing_this_volume"
     current_status_failed="$failed_copy"
-    set_status_phase "importing" "Importing from ${vol_name}."
+    set_status_phase "importing" "Importing ${vol_name}.${volume_queue_suffix}"
 
     while IFS= read -r -d '' src_file; do
       if ! wait_if_paused_or_stop_requested; then
@@ -5428,7 +5567,7 @@ for vol_path in /Volumes/*; do
         break
       fi
       if [[ "$current_status_phase" != "importing" ]]; then
-        set_status_phase "importing" "Importing from ${vol_name}."
+        set_status_phase "importing" "Importing ${vol_name}.${volume_queue_suffix}"
       fi
 
       if is_ignored_source_file "$src_file"; then
@@ -5642,7 +5781,7 @@ for vol_path in /Volumes/*; do
                 current_status_imported="$imported_this_volume"
                 current_status_skipped="$skipped_existing_this_volume"
                 current_status_failed="$failed_copy"
-                set_status_phase "importing" "Importing newest set from ${vol_name}."
+                set_status_phase "importing" "Importing newest set from ${vol_name}.${volume_queue_suffix}"
                 while IFS= read -r -d '' src_file; do
                   if ! wait_if_paused_or_stop_requested; then
                     run_stopped=1
