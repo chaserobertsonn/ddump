@@ -4816,25 +4816,28 @@ struct GeneralSettings: View {
           Button {
             state.startManualSelectionImport()
           } label: {
-            Label("Manual select import…", systemImage: "slider.horizontal.3")
+            settingsButtonLabel("Manual select…", systemImage: "slider.horizontal.3")
           }
           .buttonStyle(DDumpSecondaryButtonStyle())
           .disabled(state.runActive)
+          .frame(maxWidth: .infinity)
 
           Button {
             state.cleanupOldStagingFolders()
           } label: {
-            Label("Safe cleanup", systemImage: "trash")
+            settingsButtonLabel("Safe cleanup", systemImage: "trash")
           }
           .buttonStyle(DDumpSecondaryButtonStyle())
           .disabled(state.runActive)
+          .frame(maxWidth: .infinity)
 
           Button {
             openInFinder(DDumpPaths.reportsDir.path)
           } label: {
-            Label("Receipts", systemImage: "doc.plaintext")
+            settingsButtonLabel("Receipts", systemImage: "doc.plaintext")
           }
           .buttonStyle(DDumpSecondaryButtonStyle())
+          .frame(maxWidth: .infinity)
         }
         Text("These are kept out of the main screen because most users only need them occasionally.")
           .font(.caption)
@@ -4916,7 +4919,7 @@ struct GeneralSettings: View {
     Button {
       state.runTroubleshooter()
     } label: {
-      Label("Troubleshoot", systemImage: "wrench.and.screwdriver")
+      settingsButtonLabel("Troubleshoot", systemImage: "wrench.and.screwdriver")
     }
     .buttonStyle(DDumpPrimaryButtonStyle())
   }
@@ -4926,7 +4929,7 @@ struct GeneralSettings: View {
     Button {
       openInFinder(state.dumpRootForUI)
     } label: {
-      Label("Open Dump Folder", systemImage: "tray.full")
+      settingsButtonLabel("Open Dump Folder", systemImage: "tray.full")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
@@ -4936,7 +4939,7 @@ struct GeneralSettings: View {
     Button {
       state.openUploadDestination()
     } label: {
-      Label("Open Backup Folder", systemImage: "folder")
+      settingsButtonLabel("Open Backup Folder", systemImage: "folder")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
@@ -4946,7 +4949,7 @@ struct GeneralSettings: View {
     Button {
       openInFinder(DDumpPaths.logFile.path)
     } label: {
-      Label("Open Log", systemImage: "doc.text")
+      settingsButtonLabel("Open Log", systemImage: "doc.text")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
   }
@@ -4956,9 +4959,14 @@ struct GeneralSettings: View {
     Button {
       state.openBugReportEmail()
     } label: {
-      Label("Send Bug Report", systemImage: "envelope")
+      settingsButtonLabel("Send Bug Report", systemImage: "envelope")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
+  }
+
+  private func settingsButtonLabel(_ title: String, systemImage: String) -> some View {
+    Label(title, systemImage: systemImage)
+      .frame(maxWidth: .infinity, alignment: .center)
   }
 
   private var appVersion: String {
@@ -4970,7 +4978,7 @@ struct GeneralSettings: View {
     Button {
       state.launchCloudSetupInBrowser()
     } label: {
-      Label("Connect Drive", systemImage: "globe")
+      settingsButtonLabel("Connect Drive", systemImage: "globe")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
     .frame(maxWidth: .infinity)
@@ -4978,7 +4986,7 @@ struct GeneralSettings: View {
     Button {
       state.chooseCloudDestinationFolder()
     } label: {
-      Label("Choose folder", systemImage: "folder.badge.plus")
+      settingsButtonLabel("Choose folder", systemImage: "folder.badge.plus")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
     .frame(maxWidth: .infinity)
@@ -4986,7 +4994,7 @@ struct GeneralSettings: View {
     Button {
       state.testCloudUploadConnection(showProgress: true)
     } label: {
-      Label("Test folder", systemImage: "checkmark.seal")
+      settingsButtonLabel("Test folder", systemImage: "checkmark.seal")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
     .frame(maxWidth: .infinity)
@@ -4994,7 +5002,7 @@ struct GeneralSettings: View {
     Button {
       state.refreshCloudMountStatus(showProgress: true)
     } label: {
-      Label("Check status", systemImage: "arrow.clockwise")
+      settingsButtonLabel("Check status", systemImage: "arrow.clockwise")
     }
     .buttonStyle(DDumpSecondaryButtonStyle())
     .frame(maxWidth: .infinity)
