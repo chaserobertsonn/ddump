@@ -223,10 +223,10 @@
       <div class="download">
         <h2>Download + install</h2>
         <ol>
-          <li>Download <code>DDump-0.3.3.dmg</code> from the shared link or GitHub Releases.</li>
+          <li>Download the latest <code>DDump.dmg</code> from the shared link or GitHub Releases.</li>
           <li>Open the DMG, then double-click <code>Install DDump.command</code>.</li>
-          <li>Open <code>~/Applications/DDump.app</code>. If macOS asks, approve it in Privacy &amp; Security.</li>
-          <li>Open Settings before the first real card and choose your destination.</li>
+          <li>Open <code>~/Applications/DDump.app</code>. If macOS blocks it, approve DDump in System Settings &rarr; Privacy &amp; Security &rarr; Open Anyway.</li>
+          <li>Open Settings before the first real card and choose your Dump Folder and Backup Folder.</li>
         </ol>
       </div>
     </section>
@@ -235,11 +235,11 @@
       <div class="panel">
         <h2>First setup</h2>
         <ol>
-          <li><span class="step">General:</span> confirm staging is on a drive with plenty of free space.</li>
-          <li><span class="step">Destinations:</span> choose where finished imports should go.</li>
+          <li><span class="step">General:</span> choose a Dump Folder on this Mac or a fast connected SSD.</li>
+          <li><span class="step">Backup:</span> choose Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, NAS, or another local folder.</li>
           <li><span class="step">Naming:</span> use Smart, Calendar, Cluster, Sequential, or Custom names.</li>
-          <li><span class="step">Cloud:</span> leave off unless you want cloud uploads. Cloud setup is opt-in.</li>
-          <li><span class="step">Notifications:</span> choose macOS and/or ntfy alerts only for things you care about.</li>
+          <li><span class="step">Calendar:</span> Mac Calendar is the recommended public setup because it works offline with calendars already synced to the Mac.</li>
+          <li><span class="step">Notifications:</span> use Mac alerts or ntfy phone alerts for card ejected, backup complete, and integrity warnings.</li>
         </ol>
       </div>
 
@@ -257,11 +257,12 @@
       <div class="panel">
         <h2>What it handles</h2>
         <ul>
-          <li>Whole-card media detection, no DCIM-only requirement.</li>
+          <li>Whole-card media detection for Canon, Sony, Fuji, Panasonic, DJI, GoPro, and other camera-card shapes.</li>
           <li>Capture-time clustering for multiple shoots in one day.</li>
-          <li>Calendar naming with native Google Calendar OAuth.</li>
+          <li>Calendar naming with local Mac Calendar first, plus optional Google Calendar OAuth.</li>
           <li>Smart date folders like <code>2026/2026.06/2026.06.07</code>.</li>
           <li>Local staging receipts, pending upload recovery, and destination verification.</li>
+          <li>Settings &rarr; General &rarr; Troubleshoot checks card detection, folders, calendar access, and skipped-card reasons.</li>
         </ul>
       </div>
     </section>

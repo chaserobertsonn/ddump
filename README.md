@@ -46,20 +46,22 @@ It is built for high-confidence transfer workflows:
 - Optional SQLite state engine (beta), default OFF.
 - Dump Folder memory mode (default) to dedupe safely without DB.
 
-### 3) Cloud/mount robustness
+### 3) Backup-folder and cloud robustness
 
-- Packaged rclone mount helper LaunchAgent.
-- Cloud setup wizard only runs when cloud uploads are enabled.
-- Wizard installs/uses rclone, opens Google sign-in, creates the Drive remote, and builds a combined mount when shared drives are available.
-- Google Drive shared drives mount as top-level folders so both personal and team drives can be selected.
-- Uses macFUSE-backed `rclone mount` when macFUSE is installed; otherwise falls back to rclone `nfsmount`. macFUSE is recommended for Finder-stable Google Drive syncing.
-- DDump uses a passive app keepalive and an idle watcher: it does not remount every minute, and the cloud mount is unmounted after the idle timeout when DDump is closed and no transfer is running.
-- Mount preflight checks before transfer.
-- Mount retry backoff schedule (`15,30,60,180` by default).
-- Finder-server timer guard during uploads to avoid unmount mid-transfer.
-- Hard restart mount action in app.
-- Cloud diagnostics in app (binary/remote/service/mount state + reason string).
-- Internet reconnect watcher: when network returns and pending uploads exist, DDump auto-triggers retry.
+- Normal synced folders are the default: Google Drive Desktop, Dropbox, Box,
+  OneDrive, iCloud Drive, pCloud, NAS folders, local disks, or connected SSDs.
+- DDump copies into those local folders after the Dump Folder copy is verified;
+  the sync app handles the final upload.
+- If a Backup Folder is unavailable, DDump can launch common sync apps such as
+  Google Drive Desktop and record an in-app warning instead of failing silently.
+- Backup Folder fallback keeps a second destination available when the main
+  backup location is disconnected.
+- Internet reconnect watcher: when network returns and pending backup copies
+  exist, DDump auto-triggers retry.
+- Advanced direct-rclone upload is still available when cloud-side verification
+  is more important than sync-app speed.
+- The old managed rclone mount helper is disabled by default and only installed
+  when explicitly enabled for advanced testing.
 
 ### 4) Dump and Backup Folders
 
@@ -210,8 +212,16 @@ a macOS 13.0+ deployment target. macOS 15.x users should use DDump 0.3.1 or
 newer; DDump 0.3.0 was accidentally built on a newer SDK as a macOS 26-only
 binary.
 
-Early builds are unsigned. If macOS blocks launch, control-click the installer
-or app and choose Open.
+Early builds are unsigned until the Apple Developer ID release is ready. If
+macOS blocks launch, open System Settings -> Privacy & Security, scroll to the
+security message for DDump, choose Open Anyway, then launch DDump again. You can
+also control-click the installer or app and choose Open.
+
+If a card does not auto-import, open DDump manually and use Settings -> General
+-> Troubleshoot. The troubleshooter checks the card watcher, Dump Folder,
+Backup Folder, calendar access, and the most recent skipped-card reason. The
+same screen has Send Bug Report, which opens an email with recent logs and app
+version details already filled in.
 
 Developers can also run from this repository on macOS:
 
@@ -357,10 +367,15 @@ DDump verified the handoff into the local Drive folder; Google Drive Desktop
 still owns the final cloud sync. Direct rclone upload remains the stronger
 cloud-side verification path.
 
-First launch shows a short setup wizard for Dump Folder, Backup Folder, fallback,
-auto-eject, scan window, offline shoot name, and ntfy topic. Every wizard page
-can be skipped. To rerun it later, open Settings -> General -> Restart setup
-wizard.
+First launch shows a short setup wizard for Dump Folder, Backup Folder,
+fallback folders, auto-eject, scan window, offline shoot name, and phone alerts.
+Every wizard page can be skipped. To rerun it later, open Settings -> General
+-> Restart setup wizard.
+
+Phone alerts use ntfy, a small push-notification app for iPhone and Android.
+Install ntfy on your phone, choose a private topic name, then paste that same
+topic into DDump. DDump links directly to the iPhone app, Android app, and setup
+guide from both the wizard and Settings -> Alerts.
 
 For public calendar naming, use Settings -> Naming -> Mac Calendar first.
 That uses local macOS Calendar permission and works with iCloud, Google,
@@ -379,6 +394,13 @@ folders like `DCIM/101_2026` under the Backup Folder.
 - Unknown volumes use smart camera-card detection. DDump does not require `DCIM`,
   but it ignores installer/update/app mounts unless they contain camera-card
   shape, such as camera hint folders or multiple media files.
+- Camera-card detection accepts common structures such as Canon
+  `DCIM/100CANON`, Canon date folders like `DCIM/115_2026`, Sony
+  `DCIM/100MSDCF`, Fujifilm `DCIM/100_FUJI`, Panasonic `DCIM/100_PANA`, DJI
+  `DCIM/DJI_001`, GoPro `DCIM/100GOPRO`, and any DCIM subtree with supported
+  photo/video files.
+- If no files match the scan window, DDump leaves the card mounted and looks for
+  the newest older shoot so the user can choose whether to import it manually.
 - Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.
 - SQLite memory is OFF by default (Dump Folder memory mode is default).
 - Card eject grace defaults to 60 seconds.

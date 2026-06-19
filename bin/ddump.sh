@@ -35,9 +35,7 @@ notify() {
     if [[ "${ENABLE_NOTIFICATIONS:-0}" != "1" ]]; then
       return
     fi
-    /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
-      || /usr/bin/osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
-      || true
+    /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || true
     return
   fi
   local notify_script="${APP_SUPPORT_DIR}/bin/ddump-notify.sh"
@@ -47,9 +45,7 @@ notify() {
       DDUMP_NOTIFIER_APP_ID="com.ddump.app" \
       /bin/bash "$notify_script" "$kind" "$title" "$msg" >/dev/null 2>&1 || true
   else
-    /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
-      || /usr/bin/osascript -e "display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 \
-      || true
+    /usr/bin/osascript -e "tell application id \"com.ddump.app\" to display notification \"${msg//\"/\\\"}\" with title \"${title//\"/\\\"}\"" >/dev/null 2>&1 || true
   fi
 }
 
@@ -80,6 +76,16 @@ notify_ask() {
   else
     printf ''
   fi
+}
+
+record_attention_notice() {
+  local volume_name="$1"
+  local volume_path="$2"
+  local uuid="$3"
+  local reason="$4"
+  local detail="$5"
+  local hint="$6"
+  record_skipped_volume "$volume_name" "$volume_path" "$uuid" "$reason" "$detail" "$hint"
 }
 
 json_escape() {
@@ -299,6 +305,17 @@ volume_has_camera_hint_dir() {
   return 1
 }
 
+volume_has_dcim_media_tree() {
+  local vol_path="$1"
+  local min_media count
+  [[ -d "${vol_path}/DCIM" ]] || return 1
+  min_media="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
+  [[ "$min_media" -lt 1 ]] && min_media=1
+  count="$(camera_card_media_sample_count_under "${vol_path}/DCIM")"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  [[ "$count" -ge "$min_media" ]]
+}
+
 camera_card_media_sample_count_under() {
   local root_path="$1"
   local max_depth limit count
@@ -361,7 +378,7 @@ volume_looks_like_camera_card() {
   if [[ "$has_installer" -eq 1 && "$has_hint" -ne 1 ]]; then
     return 1
   fi
-  if [[ "$dcim_media_count" -ge "$min_media" ]]; then
+  if [[ "$dcim_media_count" -ge "$min_media" ]] || volume_has_dcim_media_tree "$vol_path"; then
     return 0
   fi
   if [[ "$has_hint" -eq 1 && "$media_count" -ge 1 ]]; then
@@ -514,7 +531,7 @@ TRUSTED_NAME_PREFIXES=""
 PROMPT_TO_REMEMBER_UNKNOWN="1"
 PROMPT_FOR_UNKNOWN_CARD_ACTION="1"
 SKIP_INTERNAL_VOLUMES="1"
-IGNORE_VOLUME_NAMES="Macintosh HD,Recovery"
+IGNORE_VOLUME_NAMES="Macintosh HD,Recovery,DDump,DDump *"
 IGNORE_NO_UUID_VOLUMES="1"
 PROMPT_FOR_SOURCE_FOLDERS_ON_NEW_DRIVE="0"
 OPEN_APP_ON_CARD_INSERT="1"
@@ -533,7 +550,7 @@ SUMMARY_DIALOG_TIMEOUT_SECONDS="20"
 VERIFY_COPIED_FILES="1"
 VERIFY_COPY_HASH="0"
 POST_MOVE_REQUIRE_READY="1"
-MIN_FREE_SPACE_GB="100"
+MIN_FREE_SPACE_GB="5"
 MISSED_REPORT_MAX_ROWS="5000"
 WRITE_DAILY_DIGEST="1"
 UPLOAD_RECEIPTS_ENABLED="1"
@@ -2522,7 +2539,7 @@ check_staging_space_ready() {
   local required_kb_override="${2:-}"
   local required_label_override="${3:-}"
   local min_gb
-  min_gb="$(sanitize_positive_int "${MIN_FREE_SPACE_GB:-100}" "100")"
+  min_gb="$(sanitize_positive_int "${MIN_FREE_SPACE_GB:-5}" "5")"
   local min_kb required_kb required_label free_kb
   free_kb="$(/bin/df -Pk "$dest_root" 2>/dev/null | /usr/bin/awk 'NR == 2 { print $4 }')"
   if ! [[ "$free_kb" =~ ^[0-9]+$ ]]; then
@@ -2987,14 +3004,83 @@ activate_ddump_app_for_card() {
 find_candidates() {
   local source_root="$1"
   local out_file="$2"
-  local hours
-  hours="$(sanitize_positive_int "${LOOKBACK_HOURS:-24}" "24")"
+  local hours="${3:-${LOOKBACK_HOURS:-24}}"
+  hours="$(sanitize_positive_int "$hours" "24")"
   if [[ "${CANDIDATE_MODE:-lookback}" != "lookback" ]]; then
     log "CANDIDATE_MODE='${CANDIDATE_MODE}' overridden to lookback for safety."
   fi
   /usr/bin/find "$source_root" -type f -print0 2>/dev/null \
     | /usr/bin/perl -0ne 'BEGIN { $hours = shift @ARGV; $cutoff = time - ($hours * 3600) } chomp; print $_, "\0" if -f $_ && (stat($_))[9] >= $cutoff' "$hours" \
     >"$out_file" || true
+}
+
+latest_allowed_file_epoch_under() {
+  local source_root="$1"
+  /usr/bin/find "$source_root" -type f -print0 2>/dev/null \
+    | while IFS= read -r -d '' f; do
+        is_ignored_source_file "$f" && continue
+        has_allowed_extension "$f" "$PHOTO_FILE_EXTENSIONS" || continue
+        /usr/bin/stat -f '%m' "$f" 2>/dev/null || true
+      done \
+    | /usr/bin/sort -nr \
+    | /usr/bin/head -n 1
+}
+
+latest_allowed_file_epoch_for_roots() {
+  local roots_file="$1"
+  local root latest best=0
+  while IFS= read -r root || [[ -n "$root" ]]; do
+    root="$(trim "$root")"
+    [[ -d "$root" ]] || continue
+    latest="$(latest_allowed_file_epoch_under "$root")"
+    if [[ "$latest" =~ ^[0-9]+$ && "$latest" -gt "$best" ]]; then
+      best="$latest"
+    fi
+  done <"$roots_file"
+  printf '%s' "$best"
+}
+
+build_candidates_around_epoch_for_roots() {
+  local roots_file="$1"
+  local epoch="$2"
+  local out_file="$3"
+  local window_hours="${4:-${LOOKBACK_HOURS:-24}}"
+  window_hours="$(sanitize_positive_int "$window_hours" "24")"
+  : >"$out_file"
+  [[ "$epoch" =~ ^[0-9]+$ && "$epoch" -gt 0 ]] || return 1
+  local start_epoch end_epoch root
+  start_epoch=$((epoch - (window_hours * 3600)))
+  end_epoch=$((epoch + 300))
+  while IFS= read -r root || [[ -n "$root" ]]; do
+    root="$(trim "$root")"
+    [[ -d "$root" ]] || continue
+    /usr/bin/find "$root" -type f -print0 2>/dev/null \
+      | /usr/bin/perl -0ne 'BEGIN { $start = shift @ARGV; $end = shift @ARGV } chomp; $m=(stat($_))[9]; print $_, "\0" if -f $_ && $m >= $start && $m <= $end' "$start_epoch" "$end_epoch" \
+      >>"$out_file" || true
+  done <"$roots_file"
+  [[ -s "$out_file" ]]
+}
+
+source_root_for_file_from_roots() {
+  local roots_file="$1"
+  local src_file="$2"
+  local fallback_root="$3"
+  local root best_root=""
+  while IFS= read -r root || [[ -n "$root" ]]; do
+    root="$(trim "$root")"
+    root="${root%/}"
+    [[ -d "$root" ]] || continue
+    if [[ "$src_file" == "$root" || "$src_file" == "${root}/"* ]]; then
+      if [[ -z "$best_root" || "${#root}" -gt "${#best_root}" ]]; then
+        best_root="$root"
+      fi
+    fi
+  done <"$roots_file"
+  if [[ -n "$best_root" ]]; then
+    printf '%s' "$best_root"
+  else
+    printf '%s' "${fallback_root%/}"
+  fi
 }
 
 has_allowed_extension() {
@@ -3128,7 +3214,7 @@ is_ignored_volume_name() {
   for item in "${_ignored_list[@]}"; do
     item="$(trim "$item")"
     [[ -n "$item" ]] || continue
-    if [[ "$vol_name" == "$item" ]]; then
+    if [[ "$vol_name" == "$item" || "$vol_name" == $item ]]; then
       return 0
     fi
   done
@@ -5513,6 +5599,162 @@ for vol_path in /Volumes/*; do
   done <"$source_roots_file"
 
   if [[ "$has_candidates_this_volume" -ne 1 ]]; then
+    if [[ "$manual_selection_for_volume" != "1" ]]; then
+      latest_media_epoch="$(latest_allowed_file_epoch_for_roots "$source_roots_file")"
+      if [[ "$latest_media_epoch" =~ ^[0-9]+$ && "$latest_media_epoch" -gt 0 ]]; then
+        latest_age_hours=$(( ( $(/bin/date '+%s') - latest_media_epoch + 3599 ) / 3600 ))
+        latest_label="$(/bin/date -r "$latest_media_epoch" '+%a %-I:%M %p' 2>/dev/null || /bin/date -r "$latest_media_epoch" '+%Y-%m-%d %H:%M' 2>/dev/null || printf 'recently')"
+        latest_candidates_file="$(/usr/bin/mktemp "${STATE_DIR}/latest-candidates.${vol_name//[^A-Za-z0-9._-]/_}.XXXXXX")"
+        if build_candidates_around_epoch_for_roots "$source_roots_file" "$latest_media_epoch" "$latest_candidates_file" "$LOOKBACK_HOURS"; then
+          latest_candidate_count="$(count_candidates_in_file "$latest_candidates_file")"
+          if [[ "$latest_candidate_count" =~ ^[0-9]+$ && "$latest_candidate_count" -gt 0 ]]; then
+            log "No files in scan window on ${vol_name}; found ${latest_candidate_count} media file(s) around ${latest_label} (${latest_age_hours}h old). Asking user."
+            record_attention_notice \
+              "$vol_name" \
+              "$vol_path" \
+              "$uuid" \
+              "outside_scan_window" \
+              "DDump found media on ${vol_name}, but it was outside the ${LOOKBACK_HOURS} hour scan window." \
+              "Newest set: ${latest_label} (${latest_age_hours}h ago), ${latest_candidate_count} file(s). Choose Import newest set or increase the scan window."
+            set_status_phase "idle" "Found files outside the scan window on ${vol_name}."
+            latest_action="$(notify_ask "Import older shoot?" "DDump found ${latest_candidate_count} file(s) on ${vol_name} from around ${latest_label}, outside the ${LOOKBACK_HOURS} hour scan window. Import that newest set?" "Import newest set" "Leave mounted")"
+            if [[ "$latest_action" == "Import newest set" ]]; then
+              temp_candidates_file="$latest_candidates_file"
+              has_candidates_this_volume=1
+              candidate_count_this_root="$(count_candidates_in_file "$temp_candidates_file")"
+              if [[ "$candidate_count_this_root" =~ ^[0-9]+$ ]]; then
+                total_candidates_this_volume="$candidate_count_this_root"
+              else
+                total_candidates_this_volume=0
+              fi
+              root_required_kb=""
+              if root_required_kb="$(manual_required_kb_for_candidates "$temp_candidates_file" 2>/dev/null)"; then
+                if ! check_staging_space_ready "$dest_dir" "$root_required_kb" "newest media set + ${MANUAL_SELECTION_SAFETY_GB:-2}GB safety"; then
+                  summary_errors_total=$((summary_errors_total + 1))
+                  /bin/rm -f "$temp_candidates_file"
+                  temp_candidates_file=""
+                  has_candidates_this_volume=0
+                fi
+              fi
+              if [[ "$has_candidates_this_volume" -eq 1 ]]; then
+                current_status_total="$total_candidates_this_volume"
+                current_status_processed="$processed_candidates_this_volume"
+                current_status_imported="$imported_this_volume"
+                current_status_skipped="$skipped_existing_this_volume"
+                current_status_failed="$failed_copy"
+                set_status_phase "importing" "Importing newest set from ${vol_name}."
+                while IFS= read -r -d '' src_file; do
+                  if ! wait_if_paused_or_stop_requested; then
+                    run_stopped=1
+                    set_status_phase "stopping" "Stop requested. Finishing current file and ending."
+                    break
+                  fi
+                  if is_ignored_source_file "$src_file"; then
+                    processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                    current_status_processed="$processed_candidates_this_volume"
+                    write_status
+                    continue
+                  fi
+                  if ! has_allowed_extension "$src_file" "$FILE_EXTENSIONS"; then
+                    skipped_extension_this_volume=$((skipped_extension_this_volume + 1))
+                    processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                    current_status_processed="$processed_candidates_this_volume"
+                    current_status_skipped="$skipped_existing_this_volume"
+                    write_status
+                    continue
+                  fi
+                  file_size="$(/usr/bin/stat -f '%z' "$src_file")"
+                  file_mtime="$(/usr/bin/stat -f '%m' "$src_file")"
+                  source_root="$(source_root_for_file_from_roots "$source_roots_file" "$src_file" "$vol_path")"
+                  rel_path="${src_file#"${source_root%/}/"}"
+                  if [[ "$rel_path" == "$src_file" ]]; then
+                    rel_path="${src_file#"${vol_path}/"}"
+                    source_root="$vol_path"
+                  fi
+                  safe_rel_path="${rel_path//:/_}"
+                  out_path="${dest_dir}/${safe_rel_path}"
+                  if [[ "$source_root" == "$vol_path" ]]; then
+                    source_root_rel="."
+                  else
+                    source_root_rel="${source_root#"${vol_path}/"}"
+                    source_root_rel="$(normalize_source_root_rel_path "$source_root_rel")"
+                  fi
+                  db_upsert_candidate_file "$uuid" "$vol_name" "$source_root_rel" "$rel_path" "$src_file" "$file_size" "$file_mtime"
+                  if [[ "$force_recopy_for_uuid" != "1" ]] \
+                     && [[ -n "$uuid" ]] \
+                     && db_file_has_local_copy "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime"; then
+                    skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
+                    processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                    current_status_processed="$processed_candidates_this_volume"
+                    current_status_skipped="$skipped_existing_this_volume"
+                    write_status
+                    continue
+                  fi
+                  file_hash=""
+                  if [[ "${HASH_BEFORE_COPY:-0}" == "1" || "${VERIFY_COPY_HASH:-0}" == "1" ]]; then
+                    file_hash="$(/usr/bin/shasum -a 256 "$src_file" | /usr/bin/awk '{print $1}')"
+                    fingerprint="${file_size}:${file_hash}"
+                  else
+                    fingerprint="quick:${uuid}:${source_root_rel}:${rel_path}:${file_size}:${file_mtime}"
+                  fi
+                  /bin/mkdir -p "$(dirname "$out_path")"
+                  if ! /usr/bin/ditto "$src_file" "$out_path"; then
+                    failed_copy=1
+                    summary_copy_fail_total=$((summary_copy_fail_total + 1))
+                    summary_errors_total=$((summary_errors_total + 1))
+                    log "Copy failed: ${src_file}"
+                    processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                    current_status_failed="$failed_copy"
+                    current_status_processed="$processed_candidates_this_volume"
+                    write_status
+                    continue
+                  fi
+                  if ! verify_copied_file "$src_file" "$out_path" "$file_size" "$file_hash"; then
+                    failed_copy=1
+                    summary_verify_fail_total=$((summary_verify_fail_total + 1))
+                    summary_errors_total=$((summary_errors_total + 1))
+                    /bin/rm -f "$out_path" 2>/dev/null || true
+                    log "Copy verify failed: ${src_file} -> ${out_path} (${COPY_VERIFY_FAILURE_REASON}) ${COPY_VERIFY_FAILURE_DETAIL}"
+                    processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                    current_status_failed="$failed_copy"
+                    current_status_processed="$processed_candidates_this_volume"
+                    write_status
+                    continue
+                  fi
+                  record_import "$fingerprint" "$src_file" "$out_path"
+                  db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "copied" "$out_path" "$fingerprint" ""
+                  record_pending_import "$pending_imports_file" "$dest_dir" "$out_path"
+                  /bin/echo "$out_path" >>"$imported_files_file"
+                  rel_to_dest="${out_path#"${dest_dir}/"}"
+                  top_component="${rel_to_dest%%/*}"
+                  if [[ "$top_component" == "$rel_to_dest" ]]; then
+                    queue_path_unique "$post_move_queue_file" "$out_path"
+                  else
+                    queue_path_unique "$post_move_queue_file" "${dest_dir}/${top_component}"
+                  fi
+                  imported_this_volume=$((imported_this_volume + 1))
+                  imported_bytes_this_volume=$((imported_bytes_this_volume + file_size))
+                  processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
+                  current_status_processed="$processed_candidates_this_volume"
+                  current_status_imported="$imported_this_volume"
+                  current_status_skipped="$skipped_existing_this_volume"
+                  current_status_failed="$failed_copy"
+                  write_status
+                done <"$temp_candidates_file"
+                /bin/rm -f "$temp_candidates_file"
+              fi
+            else
+              notify "DDump" "${vol_name}: no files inside the ${LOOKBACK_HOURS}h scan window. Card left mounted." warn "integrity_warning"
+              ntfy_notify "integrity_warning" "DDump: files outside scan window" "${vol_name}: found ${latest_candidate_count} file(s) around ${latest_label}, but left the card mounted."
+            fi
+          fi
+        fi
+        /bin/rm -f "$latest_candidates_file" 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  if [[ "$has_candidates_this_volume" -ne 1 ]]; then
     /usr/bin/printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_timestamp" "$vol_name" "$uuid" "0" "0" "0" "success" >>"$RUN_HISTORY_FILE"
     no_candidate_volume_count=$((no_candidate_volume_count + 1))
     if [[ -z "$no_candidate_volume_names" ]]; then
@@ -5528,28 +5770,15 @@ for vol_path in /Volumes/*; do
       log "No candidate files on ${vol_name} (selected folders)."
     fi
     ejected_msg="card left mounted."
-    if [[ "$EJECT_ON_SUCCESS" == "1" ]]; then
-      wait_for_min_eject_grace "$volume_started_epoch"
-      if keep_mounted_requested "$no_eject_hold_file"; then
-        ejected_msg="card kept mounted."
-        log "User requested no eject for ${vol_name}; leaving mounted."
-        summary_kept_mounted_total=$((summary_kept_mounted_total + 1))
-        if [[ -z "$summary_kept_mounted_volumes" ]]; then
-          summary_kept_mounted_volumes="$vol_name"
-        else
-          summary_kept_mounted_volumes="${summary_kept_mounted_volumes}, ${vol_name}"
-        fi
-      elif diskutil_eject_with_timeout "$vol_path" "$vol_name"; then
-        log "Ejected volume: ${vol_name}"
-        ejected_msg="card ejected."
-        ntfy_notify "card_ejected" "DDump: card ejected" "${vol_name}: card ejected after no-new-files check."
-      else
-        log "Failed to eject volume: ${vol_name}; leaving mounted."
-        ejected_msg="could not eject card."
-        summary_errors_total=$((summary_errors_total + 1))
-      fi
-    fi
-    notify "DDump" "${vol_name}: no new files, ${ejected_msg}" info "card_ejected"
+    log "No import candidates for ${vol_name}; leaving card mounted for manual review."
+    record_attention_notice \
+      "$vol_name" \
+      "$vol_path" \
+      "$uuid" \
+      "no_candidates_in_scan_window" \
+      "DDump found a camera card, but no files matched the current ${LOOKBACK_HOURS} hour scan window." \
+      "The card was left mounted. Increase the scan window or use Manual import to choose the card."
+    notify "DDump" "${vol_name}: no files in scan window; card left mounted." warn "integrity_warning"
     /bin/rm -f "$manual_candidates_file"
     /bin/rm -f "$post_move_queue_file"
     /bin/rm -f "$imported_files_file"

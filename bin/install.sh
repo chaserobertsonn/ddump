@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.5}"
+APP_VERSION="${DDUMP_VERSION:-0.3.6}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -280,7 +280,9 @@ add_missing_key 'DUMP_FALLBACK_ROOT' '"$HOME/Temp/DDump"' "Fallback dump folder 
 add_missing_key 'OPEN_APP_ON_CARD_INSERT' '"1"' "Bring DDump forward when a trusted card starts processing."
 add_missing_key 'PROMPT_FOR_UNKNOWN_CARD_ACTION' '"1"'
 add_missing_key 'SKIP_INTERNAL_VOLUMES' '"1"'
-add_missing_key 'IGNORE_VOLUME_NAMES' '"Macintosh HD,Recovery"'
+add_missing_key 'IGNORE_VOLUME_NAMES' '"Macintosh HD,Recovery,DDump,DDump *"'
+replace_key_if_exact 'IGNORE_VOLUME_NAMES' 'Macintosh HD,Recovery' 'Macintosh HD,Recovery,DDump,DDump *'
+append_csv_key_values 'IGNORE_VOLUME_NAMES' 'DDump,DDump *'
 add_missing_key 'IGNORE_NO_UUID_VOLUMES' '"1"'
 add_missing_key 'CAMERA_CARD_DETECTION_MODE' '"smart"' "Smart unknown-volume detection: skip installer/update volumes unless they look like camera cards."
 add_missing_key 'CAMERA_CARD_MIN_MEDIA_FILES' '"3"'
@@ -292,7 +294,8 @@ add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
 add_missing_key 'EJECT_TIMEOUT_SECONDS' '"20"' "Maximum seconds to wait for macOS card eject before continuing with upload."
 add_missing_key 'SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION' '"1"'
 add_missing_key 'USE_FAST_SEEN_INDEX' '"1"'
-add_missing_key 'MIN_FREE_SPACE_GB' '"100"' "Minimum local staging free space required before import; 0 disables."
+add_missing_key 'MIN_FREE_SPACE_GB' '"5"' "Minimum local staging free space required before import; 0 disables."
+replace_key_if_exact 'MIN_FREE_SPACE_GB' '100' '5'
 add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper command for starting/refreshing shared Finder mounts."
 add_missing_key 'FINDERSERVER_TIMER_CHECK_SECONDS' '"300"' "During upload, check timer this often."
 add_missing_key 'FINDERSERVER_TIMER_MIN_SECONDS' '"300"' "If timer is at/below this value, refresh it."
@@ -355,6 +358,7 @@ add_missing_key 'PHOTO_RECENCY_HOURS' '"24"'
 add_missing_key 'CANDIDATE_MODE' '"lookback"' "Import candidate scan mode: lookback keeps the scan limited to recent files."
 add_missing_key 'LOOKBACK_HOURS' '"24"' "When CANDIDATE_MODE=lookback, only files newer than this many hours are considered."
 add_missing_key 'USE_NOTIFICATIONS' '"1"' "Native macOS notifications instead of Terminal monitor."
+add_missing_key 'BUG_REPORT_EMAIL' '"donna@densleyfilmandphoto.com"' "Email address used by the Send Bug Report button."
 add_missing_key 'NOTIFICATION_TIMEOUT_SECONDS' '"60"'
 add_missing_key 'FOLDER_NAMING_STRATEGY' '"sequential"' "How to name shoot folders: template | smart | calendar | sequential | custom | camera."
 add_missing_key 'FOLDER_NAMING_FALLBACK' '"cluster"'

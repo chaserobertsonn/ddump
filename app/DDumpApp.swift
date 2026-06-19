@@ -383,6 +383,11 @@ final class AppState: ObservableObject {
     self.skippedVolumeNotice = notice.isRecent ? notice : nil
   }
 
+  func dismissSkippedVolumeNotice() {
+    skippedVolumeNotice = nil
+    try? FileManager.default.removeItem(at: DDumpPaths.lastSkippedVolumeFile)
+  }
+
   func refreshConfig() {
     let parsed = readShellEnv(at: DDumpPaths.configFile)
     DispatchQueue.main.async {
@@ -498,6 +503,39 @@ final class AppState: ObservableObject {
       }
     }
     return get("POST_MOVE_ROOT", default: "\(NSHomeDirectory())/Temp")
+  }
+
+  var dumpRootForUI: String {
+    expandConfiguredPath(get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp/DDump"))
+  }
+
+  func displayPath(_ path: String) -> String {
+    let expanded = expandConfiguredPath(path)
+    let home = NSHomeDirectory()
+    if expanded == home { return "~" }
+    if expanded.hasPrefix(home + "/") {
+      return "~/" + expanded.dropFirst(home.count + 1)
+    }
+    return expanded
+  }
+
+  func shortDisplayPath(_ path: String, keepLastComponents: Int = 4) -> String {
+    let display = displayPath(path)
+    let prefix: String
+    let body: String
+    if display.hasPrefix("~/") {
+      prefix = "~/"
+      body = String(display.dropFirst(2))
+    } else if display.hasPrefix("/") {
+      prefix = "/"
+      body = String(display.dropFirst())
+    } else {
+      prefix = ""
+      body = display
+    }
+    let parts = body.split(separator: "/").map(String.init)
+    guard parts.count > keepLastComponents else { return display }
+    return prefix + "…" + "/" + parts.suffix(keepLastComponents).joined(separator: "/")
   }
 
   var gdriveMountEnabledForUI: Bool {
@@ -1349,6 +1387,92 @@ client_secret=\(quotedClientSecret)
   func checkForUpdatesNow() {
     lastUtilityMessage = "Checking for DDump updates…"
     checkForUpdatesIfNeeded(force: true)
+  }
+
+  func runTroubleshooter() {
+    refreshHealth()
+    refreshSkippedVolumeNotice()
+    let backup = todaysUploadDestinationForUI.trimmingCharacters(in: .whitespacesAndNewlines)
+    let backupExists = backup.isEmpty ? false : FileManager.default.fileExists(atPath: expandConfiguredPath(backup))
+    let dump = dumpRootForUI
+    let dumpExists = FileManager.default.fileExists(atPath: expandConfiguredPath(dump))
+    let calendarMode = get("CALENDAR_SOURCE", default: "apple")
+    let calendarStatus = get("CALENDAR_AUTH_STATUS", default: "not checked")
+    let calendarCacheExists = FileManager.default.fileExists(atPath: DDumpPaths.appleCalendarCache.path)
+    let calendarSummary = "\(calendarStatus), cache \(calendarCacheExists ? "ready" : "missing")"
+    let notice = skippedVolumeNotice.map { "\($0.volume): \($0.reason)" } ?? "none"
+    let text = """
+    Quick checks:
+    Dump Folder: \(dumpExists ? "available" : "missing") — \(displayPath(dump))
+    Backup Folder: \(backupExists ? "available" : "missing") — \(shortDisplayPath(backup, keepLastComponents: 5))
+    Calendar: \(calendarMode) — \(calendarSummary)
+    Last card notice: \(notice)
+
+    If a card did not import, leave it inserted, increase the scan window, or use Manual import and choose the card itself.
+    """
+    lastUtilityMessage = "Troubleshooter ran. Check the dialog for current status."
+    let alert = NSAlert()
+    alert.alertStyle = .informational
+    alert.messageText = "DDump Troubleshooter"
+    alert.informativeText = text
+    alert.addButton(withTitle: "Open log")
+    alert.addButton(withTitle: "Privacy Settings")
+    alert.addButton(withTitle: "Done")
+    let result = alert.runModal()
+    if result == .alertFirstButtonReturn {
+      openInFinder(DDumpPaths.logFile.path)
+    } else if result == .alertSecondButtonReturn {
+      openNetworkVolumePrivacySettings()
+    }
+  }
+
+  func openBugReportEmail() {
+    let recipient = get("BUG_REPORT_EMAIL", default: "donna@densleyfilmandphoto.com")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !recipient.isEmpty else {
+      lastUtilityMessage = "Bug report email is not configured."
+      return
+    }
+    let logTail = recentLogTail(maxLines: 180)
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    let subject = "DDump bug report \(version)"
+    let body = """
+    What happened?
+
+
+    What were you doing right before it happened?
+
+
+    DDump version: \(version)
+    macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
+    Computer: \(Host.current().localizedName ?? "unknown")
+    Dump Folder: \(displayPath(dumpRootForUI))
+    Backup Folder: \(shortDisplayPath(todaysUploadDestinationForUI, keepLastComponents: 5))
+
+    Recent DDump log:
+    \(logTail)
+    """
+    var components = URLComponents()
+    components.scheme = "mailto"
+    components.path = recipient
+    components.queryItems = [
+      URLQueryItem(name: "subject", value: subject),
+      URLQueryItem(name: "body", value: body)
+    ]
+    guard let url = components.url else {
+      lastUtilityMessage = "Could not prepare bug report email."
+      return
+    }
+    NSWorkspace.shared.open(url)
+    lastUtilityMessage = "Prepared bug report email."
+  }
+
+  private func recentLogTail(maxLines: Int) -> String {
+    guard let text = try? String(contentsOf: DDumpPaths.logFile, encoding: .utf8) else {
+      return "No log file found."
+    }
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+    return lines.suffix(maxLines).joined(separator: "\n")
   }
 
   private func normalizedVersion(_ raw: String) -> String {
@@ -3220,101 +3344,76 @@ struct ContentView: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      VStack(alignment: .leading, spacing: 0) {
-        HStack(spacing: 16) {
-          Image(nsImage: appIconImage())
-            .resizable()
-            .frame(width: 56, height: 56)
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-          VStack(alignment: .leading, spacing: 4) {
-            Text("DDump")
-              .font(DDumpFont.display(22, weight: .semibold))
-              .foregroundColor(.ddumpFG1)
-            HStack(spacing: 10) {
-              DDumpStatusPill(text: "\(phaseLabel)\(state.volume.isEmpty ? "" : " · \(state.volume)")", color: phaseColor)
-              Text("\(state.total) files · \(state.currentBytesLabel)")
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          HStack(spacing: 16) {
+            Image(nsImage: appIconImage())
+              .resizable()
+              .frame(width: 56, height: 56)
+              .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            VStack(alignment: .leading, spacing: 4) {
+              Text("DDump")
+                .font(DDumpFont.display(22, weight: .semibold))
+                .foregroundColor(.ddumpFG1)
+              HStack(spacing: 10) {
+                DDumpStatusPill(text: "\(phaseLabel)\(state.volume.isEmpty ? "" : " · \(state.volume)")", color: phaseColor)
+                Text("\(state.total) files · \(state.currentBytesLabel)")
+                  .font(.system(size: 12, weight: .regular, design: .monospaced))
+                  .foregroundColor(.ddumpFG3)
+              }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 4) {
+              Text("Free locally")
+                .font(DDumpFont.ui(11, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(1.4)
                 .foregroundColor(.ddumpFG3)
+              Text("\(state.localFreeGB) GB")
+                .font(.system(size: 18, weight: .medium, design: .monospaced))
+                .foregroundColor(.ddumpFG1)
             }
           }
-          Spacer()
-          VStack(alignment: .trailing, spacing: 4) {
-            Text("Free locally")
-              .font(DDumpFont.ui(11, weight: .semibold))
-              .textCase(.uppercase)
-              .tracking(1.4)
-              .foregroundColor(.ddumpFG3)
-            Text("\(state.localFreeGB) GB")
-              .font(.system(size: 18, weight: .medium, design: .monospaced))
-              .foregroundColor(.ddumpFG1)
+          .padding(.bottom, 18)
+          .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.ddumpLine1).frame(height: 1)
           }
-        }
-        .padding(.bottom, 18)
-        .overlay(alignment: .bottom) {
-          Rectangle().fill(Color.ddumpLine1).frame(height: 1)
-        }
 
-        if !state.runActive && state.total == 0 {
-          IdleView()
-            .padding(.top, 18)
-          if state.skippedVolumeNotice != nil {
-            SkippedVolumePanel()
-              .padding(.top, 14)
+          if !state.runActive && state.total == 0 {
+            IdleView()
+              .padding(.top, 18)
+            if state.skippedVolumeNotice != nil {
+              SkippedVolumePanel()
+                .padding(.top, 14)
+            }
+          } else {
+            ProgressDetail()
+              .padding(.top, 18)
           }
-        } else {
-          ProgressDetail()
+
+          ScanWindowInlineControl()
+            .padding(.top, 14)
+
+          DestinationSummaryPanel()
+            .padding(.top, 18)
+
+          RunChecklistPanel()
+            .padding(.top, 20)
+
+          HealthPanel()
             .padding(.top, 18)
         }
-
-        ScanWindowInlineControl()
-          .padding(.top, 14)
-
-        DestinationSummaryPanel()
-          .padding(.top, 18)
-
-        RunChecklistPanel()
-          .padding(.top, 20)
-
-        HealthPanel()
-          .padding(.top, 18)
-
-        ControlBar()
-          .padding(.top, 14)
-
-        Spacer()
+        .padding(.horizontal, 28)
+        .padding(.top, 22)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
       }
-      .padding(.horizontal, 28)
-      .padding(.top, 22)
-      .padding(.bottom, 16)
       .background(Color.ddumpBG)
-      .frame(minWidth: 360, minHeight: 360)
 
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: 12) {
-          footerSettingsButton
-          Spacer()
-          footerBackupButton
-          footerLogButton
-        }
-        VStack(spacing: 8) {
-          footerSettingsButton
-            .frame(maxWidth: .infinity)
-          HStack(spacing: 8) {
-            footerBackupButton
-              .frame(maxWidth: .infinity)
-            footerLogButton
-              .frame(maxWidth: .infinity)
-          }
-        }
-      }
-      .padding(.horizontal, 20)
-      .padding(.vertical, 12)
-      .background(
-        LinearGradient(colors: [Color.clear, Color.black.opacity(0.22)], startPoint: .top, endPoint: .bottom)
-      )
-      .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
+      MainActionFooter(showingSettings: $showingSettings)
     }
     .background(Color.ddumpBG)
+    .frame(minWidth: 320, minHeight: 360)
     .sheet(isPresented: $showingSettings) {
       SettingsSheet(isPresented: $showingSettings)
         .environmentObject(state)
@@ -3499,8 +3598,22 @@ struct FirstRunWizard: View {
         .foregroundColor(.secondary)
       HStack {
         TextField("Private ntfy topic", text: $ntfyTopic)
-        Button("Get ntfy") {
-          if let url = URL(string: "https://ntfy.sh/app") {
+      }
+      HStack(spacing: 8) {
+        Button("iPhone app") {
+          if let url = URL(string: "https://apps.apple.com/us/app/ntfy/id1625396347") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+        Button("Android app") {
+          if let url = URL(string: "https://play.google.com/store/apps/details?id=io.heckel.ntfy") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+        Button("Setup guide") {
+          if let url = URL(string: "https://ntfy.sh/docs/subscribe/phone/") {
             NSWorkspace.shared.open(url)
           }
         }
@@ -3619,7 +3732,7 @@ struct SettingsSheet: View {
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
     }
-    .frame(minWidth: 360, idealWidth: 680, maxWidth: 760, minHeight: 460, idealHeight: 660, maxHeight: 760)
+    .frame(minWidth: 320, idealWidth: 560, maxWidth: 620, minHeight: 420, idealHeight: 640, maxHeight: 720)
     .background(Color.ddumpBG)
   }
 }
@@ -3810,6 +3923,108 @@ struct ControlBar: View {
   }
 }
 
+struct MainActionFooter: View {
+  @EnvironmentObject var state: AppState
+  @Binding var showingSettings: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 8) {
+          settingsButton
+          Spacer(minLength: 8)
+          actionButtons(fillWidth: false)
+        }
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+          settingsButton.frame(maxWidth: .infinity)
+          actionButtons(fillWidth: true)
+        }
+      }
+
+      if state.ejectQueued {
+        Label("Eject queued", systemImage: "eject.circle")
+          .foregroundColor(.ddumpWarning)
+          .font(DDumpFont.ui(12))
+      } else if state.keepMountedRequested {
+        Label("Will stay mounted", systemImage: "pin.slash.circle")
+          .foregroundColor(.ddumpWarning)
+          .font(DDumpFont.ui(12))
+      } else if state.stopRequested {
+        Label("Stop queued", systemImage: "stop.circle")
+          .foregroundColor(.ddumpWarning)
+          .font(DDumpFont.ui(12))
+      }
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 10)
+    .background(Color.ddumpBG.opacity(0.98))
+    .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
+  }
+
+  private var settingsButton: some View {
+    Button {
+      showingSettings = true
+    } label: {
+      Label("Settings", systemImage: "gearshape")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .keyboardShortcut(",", modifiers: .command)
+  }
+
+  @ViewBuilder
+  private func actionButtons(fillWidth: Bool) -> some View {
+    if state.paused {
+      Button {
+        state.resume()
+      } label: {
+        Label("Resume", systemImage: "play.fill")
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+      .keyboardShortcut("r", modifiers: .command)
+      .frame(maxWidth: fillWidth ? .infinity : nil)
+    } else {
+      Button {
+        state.pause()
+      } label: {
+        Label("Pause", systemImage: "pause.fill")
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+      .keyboardShortcut("p", modifiers: .command)
+      .disabled(!state.runActive)
+      .frame(maxWidth: fillWidth ? .infinity : nil)
+    }
+
+    Button {
+      state.stop()
+    } label: {
+      Label("Stop", systemImage: "stop.fill")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .keyboardShortcut(".", modifiers: .command)
+    .disabled(!state.runActive || state.stopRequested)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+
+    Button {
+      state.doNotEject()
+    } label: {
+      Label("Do not eject", systemImage: "pin.slash.fill")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .disabled(!state.runActive)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+
+    Button {
+      state.ejectNow()
+    } label: {
+      Label("Eject", systemImage: "eject.fill")
+    }
+    .buttonStyle(DDumpPrimaryButtonStyle())
+    .keyboardShortcut("e", modifiers: .command)
+    .disabled(!state.runActive || state.ejectQueued)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+  }
+}
+
 struct IdleView: View {
   @EnvironmentObject var state: AppState
 
@@ -3853,6 +4068,16 @@ struct SkippedVolumePanel: View {
               .font(DDumpFont.ui(12))
               .foregroundColor(.ddumpFG2)
           }
+          Spacer(minLength: 8)
+          Button {
+            state.dismissSkippedVolumeNotice()
+          } label: {
+            Image(systemName: "xmark")
+              .font(DDumpFont.ui(11, weight: .semibold))
+          }
+          .buttonStyle(.plain)
+          .foregroundColor(.ddumpFG3)
+          .help("Dismiss")
         }
 
         HStack(spacing: 8) {
@@ -3889,25 +4114,78 @@ struct DestinationSummaryPanel: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack {
-        Text("Backup Folder")
-          .font(DDumpFont.ui(11, weight: .semibold))
-          .textCase(.uppercase)
-          .tracking(1.4)
-          .foregroundColor(.ddumpFG3)
-        Spacer()
-        Text("Naming: \(state.get("FOLDER_NAMING_STRATEGY", default: "sequential"))")
-          .font(.system(size: 11, weight: .regular, design: .monospaced))
-          .foregroundColor(.ddumpFG3)
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 12) {
+        folderCard(
+          title: "Dump Folder",
+          subtitle: "First verified copy",
+          path: state.shortDisplayPath(state.dumpRootForUI, keepLastComponents: 3),
+          buttonTitle: "Open",
+          systemImage: "tray.and.arrow.down",
+          action: { openInFinder(state.dumpRootForUI) }
+        )
+        folderCard(
+          title: "Backup Folder",
+          subtitle: "After the dump is verified",
+          path: state.shortDisplayPath(state.todaysUploadDestinationForUI, keepLastComponents: 4),
+          buttonTitle: "Open",
+          systemImage: "folder.badge.plus",
+          action: { state.openUploadDestination() }
+        )
       }
-      Text(state.uploadRootForUI.isEmpty ? "Not set" : state.uploadRootForUI)
+      VStack(spacing: 10) {
+        folderCard(
+          title: "Dump Folder",
+          subtitle: "First verified copy",
+          path: state.shortDisplayPath(state.dumpRootForUI, keepLastComponents: 3),
+          buttonTitle: "Open",
+          systemImage: "tray.and.arrow.down",
+          action: { openInFinder(state.dumpRootForUI) }
+        )
+        folderCard(
+          title: "Backup Folder",
+          subtitle: "After the dump is verified",
+          path: state.shortDisplayPath(state.todaysUploadDestinationForUI, keepLastComponents: 4),
+          buttonTitle: "Open",
+          systemImage: "folder.badge.plus",
+          action: { state.openUploadDestination() }
+        )
+      }
+    }
+  }
+
+  private func folderCard(
+    title: String,
+    subtitle: String,
+    path: String,
+    buttonTitle: String,
+    systemImage: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(DDumpFont.ui(11, weight: .semibold))
+            .textCase(.uppercase)
+            .tracking(1.2)
+            .foregroundColor(.ddumpFG3)
+          Text(subtitle)
+            .font(DDumpFont.ui(11))
+            .foregroundColor(.ddumpFG3)
+        }
+        Spacer()
+        Button(buttonTitle, action: action)
+          .buttonStyle(DDumpSecondaryButtonStyle())
+      }
+      Label(path.isEmpty ? "Not set" : path, systemImage: systemImage)
         .font(.system(size: 12, weight: .regular, design: .monospaced))
         .foregroundColor(.ddumpFG1)
+        .lineLimit(2)
         .textSelection(.enabled)
-        .lineLimit(3)
     }
     .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .fill(Color.ddumpSurface)
@@ -4474,6 +4752,18 @@ struct GeneralSettings: View {
       }
 
       Section("Manual tools") {
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) {
+            supportButtons
+          }
+          LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+            supportButtons
+          }
+        }
+        Text("Use these when a card did not import, a folder does not open, or you need to send a useful bug report.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+
         HStack {
           Button {
             state.startManualSelectionImport()
@@ -4561,6 +4851,44 @@ struct GeneralSettings: View {
       windowRestoreMode = state.get("WINDOW_RESTORE_MODE", default: "remember")
       autoLaunchSyncApps = state.get("AUTO_LAUNCH_SYNC_APPS", default: "1") == "1"
     }
+  }
+
+  @ViewBuilder
+  private var supportButtons: some View {
+    Button {
+      state.runTroubleshooter()
+    } label: {
+      Label("Troubleshoot", systemImage: "wrench.and.screwdriver")
+    }
+    .buttonStyle(DDumpPrimaryButtonStyle())
+
+    Button {
+      openInFinder(state.dumpRootForUI)
+    } label: {
+      Label("Open Dump Folder", systemImage: "tray.full")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+
+    Button {
+      state.openUploadDestination()
+    } label: {
+      Label("Open Backup Folder", systemImage: "folder")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+
+    Button {
+      openInFinder(DDumpPaths.logFile.path)
+    } label: {
+      Label("Open Log", systemImage: "doc.text")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+
+    Button {
+      state.openBugReportEmail()
+    } label: {
+      Label("Send Bug Report", systemImage: "envelope")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
   }
 
   @ViewBuilder
@@ -5160,14 +5488,20 @@ struct NotificationsSettings: View {
             .font(.caption)
             .foregroundColor(.secondary)
           HStack(spacing: 8) {
-            Button("Get ntfy app") {
-              if let url = URL(string: "https://ntfy.sh/app") {
+            Button("iPhone app") {
+              if let url = URL(string: "https://apps.apple.com/us/app/ntfy/id1625396347") {
                 NSWorkspace.shared.open(url)
               }
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
-            Button("Open ntfy.sh") {
-              if let url = URL(string: "https://ntfy.sh") {
+            Button("Android app") {
+              if let url = URL(string: "https://play.google.com/store/apps/details?id=io.heckel.ntfy") {
+                NSWorkspace.shared.open(url)
+              }
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+            Button("Setup guide") {
+              if let url = URL(string: "https://ntfy.sh/docs/subscribe/phone/") {
                 NSWorkspace.shared.open(url)
               }
             }
