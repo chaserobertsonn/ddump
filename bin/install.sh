@@ -389,6 +389,7 @@ add_missing_key 'CALENDAR_EVENT_PADDING_MIN' '"15"'
 add_missing_key 'CALENDAR_AMBIGUITY_PROMPTS_ENABLED' '"1"' "Ask about capture-time clusters outside scheduled calendar events."
 add_missing_key 'POST_MOVE_ROOTS' '""' "Optional comma-separated list of additional final destinations."
 add_missing_key 'POST_MOVE_FALLBACK_ROOT' '""' "Fallback destination when primary root is unavailable."
+add_missing_key 'POST_MOVE_DATE_MODE' '"smart"' "Backup Folder layout: smart creates YYYY/YYYY.MM/YYYY.MM.DD under the chosen root; fixed copies directly into the chosen root."
 add_missing_key 'VERIFY_COPY_HASH' '"0"' "Optional post-copy SHA-256 verification. Off by default for speed; size verification remains on."
 add_missing_key 'UPLOAD_RECEIPTS_ENABLED' '"1"' "Write a small receipt file after each upload attempt."
 add_missing_key 'DB_ENABLED' '"0"' "Use SQLite database memory for runs, files, and upload jobs (beta)."

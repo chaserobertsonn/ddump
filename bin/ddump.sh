@@ -618,6 +618,7 @@ ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
 POST_MOVE_ROOTS=""
 POST_MOVE_FALLBACK_ROOT=""
+POST_MOVE_DATE_MODE="smart"
 POST_MOVE_YEAR_FORMAT="%Y"
 POST_MOVE_MONTH_FORMAT="%Y.%m"
 POST_MOVE_DAY_FORMAT="%Y.%m.%d"
@@ -1205,6 +1206,10 @@ build_post_move_target_dir() {
 build_post_move_target_dir_for_root() {
   local root="$1"
   [[ -n "$root" ]] || return 1
+  if [[ "${POST_MOVE_DATE_MODE:-smart}" == "fixed" ]]; then
+    printf '%s' "$root"
+    return 0
+  fi
   local year month day
   year="$(/bin/date +"$POST_MOVE_YEAR_FORMAT")"
   month="$(/bin/date +"$POST_MOVE_MONTH_FORMAT")"
@@ -1223,6 +1228,10 @@ build_post_move_target_dir_for_root_date() {
   local root="$1"
   local ymd="$2"
   [[ -n "$root" && "$ymd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+  if [[ "${POST_MOVE_DATE_MODE:-smart}" == "fixed" ]]; then
+    printf '%s' "$root"
+    return 0
+  fi
   local yyyy mm dd year month day
   yyyy="${ymd:0:4}"
   mm="${ymd:5:2}"

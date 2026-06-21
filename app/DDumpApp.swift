@@ -535,7 +535,7 @@ final class AppState: ObservableObject {
     if !configuredRoot.isEmpty {
       return expandConfiguredPath(configuredRoot)
     }
-    if get("FOLDER_NAMING_STRATEGY", default: "cluster") == "smart" {
+    if get("POST_MOVE_DATE_MODE", default: "smart") == "smart" {
       let sample = get("SMART_SAMPLE_PATH")
       let pattern = #"^(.+)/[0-9]{4}/[0-9]{4}\.[0-9]{2}/[0-9]{4}\.[0-9]{2}\.[0-9]{2}(/.*)?$"#
       if let regex = try? NSRegularExpression(pattern: pattern),
@@ -739,6 +739,9 @@ final class AppState: ObservableObject {
   var todaysUploadDestinationForUI: String {
     let root = backupRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !root.isEmpty else { return root }
+    if get("POST_MOVE_DATE_MODE", default: "smart") == "fixed" {
+      return root
+    }
     let year = formattedDateFolder(get("POST_MOVE_YEAR_FORMAT", default: "%Y"), fallback: "yyyy")
     let month = formattedDateFolder(get("POST_MOVE_MONTH_FORMAT", default: "%Y.%m"), fallback: "yyyy.MM")
     let day = formattedDateFolder(get("POST_MOVE_DAY_FORMAT", default: "%Y.%m.%d"), fallback: "yyyy.MM.dd")
@@ -4965,10 +4968,10 @@ struct GeneralSettings: View {
         }
         .pickerStyle(.segmented)
         .ddumpOnChange(of: destinationMode) { v in
-          state.set("FOLDER_NAMING_STRATEGY", v == "smart" ? "smart" : "sequential")
+          state.set("POST_MOVE_DATE_MODE", v == "smart" ? "smart" : "fixed")
         }
         if destinationMode == "smart" {
-          Text("Smart mode uses the sample path in Naming to find the Backup Folder, then automatically builds today's YYYY / YYYY.MM / YYYY.MM.DD folder every run.")
+          Text("DDump keeps the Backup Folder you chose, then creates today's YYYY / YYYY.MM / YYYY.MM.DD folders inside it.")
             .font(.caption)
             .foregroundColor(.secondary)
         }
@@ -5174,7 +5177,7 @@ struct GeneralSettings: View {
       uploadRoot = state.get("POST_MOVE_ROOT")
       uploadRoots = state.get("POST_MOVE_ROOTS")
       fallbackRoot = state.get("POST_MOVE_FALLBACK_ROOT")
-      destinationMode = state.get("FOLDER_NAMING_STRATEGY", default: "sequential") == "smart" ? "smart" : "fixed"
+      destinationMode = state.get("POST_MOVE_DATE_MODE", default: "smart") == "fixed" ? "fixed" : "smart"
       updateChecksEnabled = state.get("UPDATE_CHECKS_ENABLED", default: "0") == "1"
       autoUpdatesEnabled = state.get("AUTO_UPDATES_ENABLED", default: "0") == "1"
       updateCheckFrequency = state.get("UPDATE_CHECK_FREQUENCY", default: "weekly")
