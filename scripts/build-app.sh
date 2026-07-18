@@ -54,6 +54,10 @@ if [[ -f "${PROJECT_DIR}/app/Assets/AppIcon.icns" ]]; then
   cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/DefaultAppIcon.icns"
 fi
 
+if [[ -f "${PROJECT_DIR}/app/PrivacyInfo.xcprivacy" ]]; then
+  cp "${PROJECT_DIR}/app/PrivacyInfo.xcprivacy" "${APP_BUNDLE}/Contents/Resources/PrivacyInfo.xcprivacy"
+fi
+
 if [[ -d "${PROJECT_DIR}/app/Assets/Fonts" ]]; then
   mkdir -p "${APP_BUNDLE}/Contents/Resources/Fonts"
   cp "${PROJECT_DIR}/app/Assets/Fonts"/*.otf "${APP_BUNDLE}/Contents/Resources/Fonts/" 2>/dev/null || true

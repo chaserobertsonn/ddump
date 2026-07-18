@@ -372,15 +372,15 @@ fallback folders, auto-eject, scan window, offline shoot name, and phone alerts.
 Every wizard page can be skipped. To rerun it later, open Settings -> General
 -> Restart setup wizard.
 
-Phone alerts use ntfy, a small push-notification app for iPhone and Android.
+Phone alerts use ntfy, a small push-notification app for iPhone.
 Install ntfy on your phone, choose a private topic name, then paste that same
-topic into DDump. DDump links directly to the iPhone app, Android app, and setup
-guide from both the wizard and Settings -> Alerts.
+topic into DDump. DDump links directly to the iPhone app and setup guide from
+both the wizard and Settings -> Alerts.
 
 For public calendar naming, use Settings -> Naming -> Mac Calendar first.
 That uses local macOS Calendar permission and works with iCloud, Google,
 Exchange, and subscribed calendars already synced to the Mac. Google Calendar
-OAuth remains optional for users who specifically want direct Google sign-in.
+OAuth remains optional for users who specifically want direct Google Calendar authorization.
 
 Backup shoot folders are flat by default:
 `REBUCKET_PRESERVE_SOURCE_FOLDERS=0` means DDump creates the shoot/calendar

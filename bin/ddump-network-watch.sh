@@ -44,7 +44,7 @@ sanitize_positive_int() {
 }
 
 network_online() {
-  /usr/sbin/scutil -r 1.1.1.1 2>/dev/null | /usr/bin/grep -q "Reachable"
+  /usr/sbin/scutil -r www.apple.com 2>/dev/null | /usr/bin/grep -q "Reachable"
 }
 
 pending_uploads_exist() {

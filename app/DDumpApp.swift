@@ -1056,10 +1056,10 @@ exit "$?"
           self.lastUtilityMessage = "Google Calendar connected. DDump can read events for shoot naming."
         case "browser_opening":
           self.set("CALENDAR_AUTH_STATUS", "pending")
-          self.lastUtilityMessage = "Google sign-in opened in the browser. Finish sign-in, then click Check connection."
+          self.lastUtilityMessage = "Google Calendar authorization opened in the browser. Finish sign-in, then click Check connection."
         case "timeout":
           self.set("CALENDAR_AUTH_STATUS", "pending")
-          self.lastUtilityMessage = "Google sign-in did not finish. If Google says Access blocked, add this Google account as an OAuth test user or publish the consent screen, then reconnect."
+          self.lastUtilityMessage = "Google Calendar authorization did not finish. If Google says Access blocked, add this Google account as an OAuth test user or publish the consent screen, then reconnect."
         case "missing_helper":
           self.set("CALENDAR_AUTH_STATUS", "missing_helper")
           self.lastUtilityMessage = "Google Calendar helper is missing. Reinstall DDump, then try again."
@@ -1404,7 +1404,7 @@ client_secret=\(quotedClientSecret)
   private func copyAuthURLForBrowser(_ url: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(url, forType: .string)
-    lastUtilityMessage = "Google sign-in link copied. Paste it into the Chrome profile where you are already logged in."
+    lastUtilityMessage = "Google Drive connection link copied. Paste it into the Chrome profile where you are already logged in."
     appendAppLog("cloud setup auth link copied for browser handoff")
   }
 
@@ -2123,7 +2123,7 @@ else
   echo "mount_active=0"
 fi
 
-if /usr/sbin/scutil -r 1.1.1.1 2>/dev/null | /usr/bin/grep -q "Reachable"; then
+if /usr/sbin/scutil -r www.apple.com 2>/dev/null | /usr/bin/grep -q "Reachable"; then
   echo "network_online=1"
 else
   echo "network_online=0"
@@ -2325,7 +2325,7 @@ emit_success "$candidate"
           if !installedPath.isEmpty {
             self.set("RCLONE_BIN", installedPath)
           }
-          self.lastUtilityMessage = "Cloud helper installed. Opening Google sign-in…"
+          self.lastUtilityMessage = "Cloud helper installed. Opening Google Drive connection…"
           self.appendAppLog("cloud setup install success: \(installMessage.isEmpty ? installedPath : installMessage)")
           self.refreshCloudMountStatus(showProgress: false)
           DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -2378,15 +2378,15 @@ emit_success "$candidate"
 
   func launchCloudSetupInBrowser() {
     if cloudSetupBrowserRunning {
-      lastUtilityMessage = "Google sign-in is already open. Finish it in the browser, or cancel and try again."
+      lastUtilityMessage = "Google Drive connection is already open. Finish it in the browser, or cancel and try again."
       appendAppLog("cloud setup button: connect clicked while sign-in already running")
       return
     }
     let configuredBin = rcloneBinForUI
     let configuredRemote = gdriveRemoteForUI
     cloudSetupBrowserRunning = true
-    lastUtilityMessage = "Opening Google sign-in in your browser…"
-    setCloudAction(true, "Opening Google sign-in…")
+    lastUtilityMessage = "Opening Google Drive connection in your browser…"
+    setCloudAction(true, "Opening Google Drive connection…")
     appendAppLog("cloud setup button: connect Google Drive")
     DispatchQueue.global(qos: .utility).async {
       let task = Process()
@@ -2484,7 +2484,7 @@ fi
 "$rclone" config create "$target_name" drive scope drive config_is_local true
 create_status=$?
 if [ "$create_status" -ne 0 ]; then
-  echo "setup_error=Google sign-in did not finish."
+  echo "setup_error=Google Drive connection did not finish."
   exit "$create_status"
 fi
 remotes="$("$rclone" listremotes 2>/dev/null || true)"
@@ -2504,7 +2504,7 @@ if [ "$count" = "1" ]; then
   echo "setup_status=connected"
   exit 0
 fi
-echo "setup_error=Google sign-in finished, but DDump could not identify the connected account."
+echo "setup_error=Google Drive connection finished, but DDump could not identify the connected account."
 exit 4
 """]
       let pipe = Pipe()
@@ -2534,7 +2534,7 @@ exit 4
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
           self.cloudSetupBrowserRunning = false
-          self.lastUtilityMessage = "Could not open Google sign-in: \(error.localizedDescription)"
+          self.lastUtilityMessage = "Could not open Google Drive connection: \(error.localizedDescription)"
           self.appendAppLog("cloud setup connect failed to start: \(error.localizedDescription)")
         }
         return
@@ -2545,7 +2545,7 @@ exit 4
           self.cloudSetupBrowserRunning = true
           self.cloudActionInProgress = false
           self.cloudActionMessage = ""
-          self.lastUtilityMessage = "Google sign-in is open. Finish sign-in in the browser; DDump will continue automatically."
+          self.lastUtilityMessage = "Google Drive connection is open. Finish sign-in in the browser; DDump will continue automatically."
           self.appendAppLog("cloud setup connect running: waiting for browser sign-in")
         }
       }
@@ -2585,7 +2585,7 @@ exit 4
               }
             }
           } else if finished.terminationStatus != 0 {
-            let reason = self.plainCloudFailure(parsed["setup_error"] ?? "Google sign-in did not finish.")
+            let reason = self.plainCloudFailure(parsed["setup_error"] ?? "Google Drive connection did not finish.")
             self.lastUtilityMessage = reason
             self.appendAppLog("cloud setup connect failed: \(reason)")
             self.showUtilityDialog(
@@ -2593,7 +2593,7 @@ exit 4
               text: "\(reason)\nClick Connect Google Drive to try again."
             )
           } else {
-            self.lastUtilityMessage = "Google sign-in finished, but DDump could not identify the connected account."
+            self.lastUtilityMessage = "Google Drive connection finished, but DDump could not identify the connected account."
             self.appendAppLog("cloud setup connect failed: no selected remote")
           }
         }
@@ -2604,7 +2604,7 @@ exit 4
   func stopCloudSetupInBrowser(showMessage: Bool = true) {
     guard let task = cloudSetupProcess else {
       if showMessage {
-        lastUtilityMessage = "Google sign-in is not running."
+        lastUtilityMessage = "Google Drive connection is not running."
       }
       cloudSetupBrowserRunning = false
       appendAppLog("cloud setup cancel requested: no sign-in process running")
@@ -2621,7 +2621,7 @@ exit 4
     cloudSetupProcess = nil
     cloudSetupBrowserRunning = false
     if showMessage {
-      lastUtilityMessage = "Cancelled Google sign-in."
+      lastUtilityMessage = "Cancelled Google Drive connection."
     }
     appendAppLog("cloud setup cancel requested")
   }
@@ -3129,7 +3129,7 @@ echo "remote_dest=$remote_dest"
 DDump will guide this in order:
 
 1) Install the cloud helper
-2) Sign in to Google Drive
+2) Connect Google Drive
 3) Choose the upload folder
 4) Test the connection
 """
@@ -3764,7 +3764,7 @@ struct FirstRunWizard: View {
     VStack(alignment: .leading, spacing: 14) {
       Text("Optional phone alerts")
         .font(DDumpFont.ui(17, weight: .semibold))
-      Text("DDump can send phone alerts through ntfy, a lightweight push-notification app for iPhone and Android. Leave this blank if Mac notifications are enough.")
+      Text("DDump can send phone alerts through ntfy, a lightweight push-notification app for iPhone. Leave this blank if Mac notifications are enough.")
         .foregroundColor(.secondary)
       HStack {
         TextField("Private ntfy topic", text: $ntfyTopic)
@@ -3776,12 +3776,7 @@ struct FirstRunWizard: View {
           }
         }
         .buttonStyle(DDumpSecondaryButtonStyle())
-        Button("Android app") {
-          if let url = URL(string: "https://play.google.com/store/apps/details?id=io.heckel.ntfy") {
-            NSWorkspace.shared.open(url)
-          }
-        }
-        .buttonStyle(DDumpSecondaryButtonStyle())
+
         Button("Setup guide") {
           if let url = URL(string: "https://ntfy.sh/docs/subscribe/phone/") {
             NSWorkspace.shared.open(url)
@@ -5708,7 +5703,7 @@ struct NamingSettings: View {
         CalendarProviderRow(
           icon: "g.circle",
           title: "Google Calendar",
-          detail: "Optional direct Google sign-in. Only use this if Mac Calendar is not synced.",
+          detail: "Optional direct Google Calendar authorization. Only use this if Mac Calendar is not synced.",
           selected: calendarProvider == "google",
           status: calendarProvider == "google" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : ""
         ) {
@@ -6046,12 +6041,7 @@ struct NotificationsSettings: View {
               }
             }
             .buttonStyle(DDumpSecondaryButtonStyle())
-            Button("Android app") {
-              if let url = URL(string: "https://play.google.com/store/apps/details?id=io.heckel.ntfy") {
-                NSWorkspace.shared.open(url)
-              }
-            }
-            .buttonStyle(DDumpSecondaryButtonStyle())
+
             Button("Setup guide") {
               if let url = URL(string: "https://ntfy.sh/docs/subscribe/phone/") {
                 NSWorkspace.shared.open(url)
@@ -6300,7 +6290,7 @@ struct CloudSettings: View {
             if cloudOff { return "Cloud uploads are turned off." }
             if needsInstall { return "Install the cloud helper." }
             if needsConnect {
-              return state.cloudSetupBrowserRunning ? "Finish Google sign-in in the browser." : "Connect Google Drive."
+              return state.cloudSetupBrowserRunning ? "Finish Google Drive connection in the browser." : "Connect Google Drive."
             }
             if needsDestination { return "Choose the upload folder." }
             if needsTest { return "Test the upload connection." }
@@ -6309,7 +6299,7 @@ struct CloudSettings: View {
           let detailText: String = {
             if cloudOff { return "Turn cloud uploads on to start the guided setup." }
             if needsInstall { return "DDump installs the small helper it needs to talk to Google Drive." }
-            if needsConnect { return "DDump opens Google sign-in directly. You do not need to create or name anything manually." }
+            if needsConnect { return "DDump opens Google Drive connection directly. You do not need to create or name anything manually." }
             if needsDestination { return "Pick the Google Drive Desktop folder where finished dumps should land." }
             if needsTest { return "DDump writes and removes a tiny test file to prove the upload folder works." }
             return "DDump is ready to copy finished dumps to Google Drive while keeping staging as backup."
@@ -6370,7 +6360,7 @@ struct CloudSettings: View {
                   state.launchCloudSetupInBrowser()
                 }
               } label: {
-                Label(state.cloudSetupBrowserRunning ? "Check Google sign-in" : "Connect Google Drive", systemImage: "globe")
+                Label(state.cloudSetupBrowserRunning ? "Check Google Drive connection" : "Connect Google Drive", systemImage: "globe")
               }
               .buttonStyle(DDumpPrimaryButtonStyle())
               if state.cloudSetupBrowserRunning {
@@ -6813,7 +6803,7 @@ struct CloudSetupGuideSheet: View {
 
       VStack(alignment: .leading, spacing: 8) {
         Text("1. Install the cloud helper")
-        Text("2. Sign in to Google Drive")
+        Text("2. Connect Google Drive")
         Text("3. Choose the Google Drive upload folder")
         Text("4. Let DDump test the upload folder")
       }
@@ -6911,7 +6901,7 @@ struct CalendarSettings: View {
         CalendarProviderRow(
           icon: "g.circle",
           title: "Google Calendar",
-          detail: "Optional direct Google sign-in. Useful if the Mac Calendar app is not synced, but public distribution may require Google OAuth verification.",
+          detail: "Optional direct Google Calendar authorization. Useful if the Mac Calendar app is not synced, but public distribution may require Google OAuth verification.",
           selected: provider == "google",
           status: provider == "google" ? state.get("CALENDAR_AUTH_STATUS", default: "not_authorized") : ""
         ) {
