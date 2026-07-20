@@ -1214,7 +1214,7 @@ build_post_move_target_dir_for_root() {
   year="$(/bin/date +"$POST_MOVE_YEAR_FORMAT")"
   month="$(/bin/date +"$POST_MOVE_MONTH_FORMAT")"
   day="$(/bin/date +"$POST_MOVE_DAY_FORMAT")"
-  printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
+  build_existing_date_ladder "$root" "$year" "$month" "$day"
 }
 
 format_date_component_or_fallback() {
@@ -1239,7 +1239,56 @@ build_post_move_target_dir_for_root_date() {
   year="$(format_date_component_or_fallback "$ymd" "$POST_MOVE_YEAR_FORMAT" "$yyyy")"
   month="$(format_date_component_or_fallback "$ymd" "$POST_MOVE_MONTH_FORMAT" "${yyyy}.${mm}")"
   day="$(format_date_component_or_fallback "$ymd" "$POST_MOVE_DAY_FORMAT" "${yyyy}.${mm}.${dd}")"
-  printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
+  build_existing_date_ladder "$root" "$year" "$month" "$day"
+}
+
+find_existing_child_dir() {
+  local parent="$1"
+  local desired="$2"
+  [[ -d "$parent" && -n "$desired" ]] || return 1
+  if [[ -d "$parent/$desired" ]]; then
+    printf '%s/%s' "$parent" "$desired"
+    return 0
+  fi
+  /usr/bin/find "$parent" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null \
+    | /usr/bin/awk -v desired="$desired" '
+      function lower(s) { return tolower(s) }
+      {
+        path=$0
+        name=$0
+        sub(/^.*\//, "", name)
+        base=name
+        sub(/ \([0-9]+\)$/, "", base)
+        if (lower(base) == lower(desired)) {
+          print path
+          exit
+        }
+      }
+    '
+}
+
+resolve_or_join_child_dir() {
+  local parent="$1"
+  local desired="$2"
+  local existing
+  existing="$(find_existing_child_dir "$parent" "$desired" || true)"
+  if [[ -n "$existing" ]]; then
+    printf '%s' "$existing"
+  else
+    printf '%s/%s' "$parent" "$desired"
+  fi
+}
+
+build_existing_date_ladder() {
+  local root="$1"
+  local year="$2"
+  local month="$3"
+  local day="$4"
+  local year_dir month_dir day_dir
+  year_dir="$(resolve_or_join_child_dir "$root" "$year")"
+  month_dir="$(resolve_or_join_child_dir "$year_dir" "$month")"
+  day_dir="$(resolve_or_join_child_dir "$month_dir" "$day")"
+  printf '%s' "$day_dir"
 }
 
 build_video_post_move_target_dir() {
@@ -1251,7 +1300,7 @@ build_video_post_move_target_dir() {
   year="$(/bin/date +"$POST_MOVE_YEAR_FORMAT")"
   month="$(/bin/date +"$POST_MOVE_MONTH_FORMAT")"
   day="$(/bin/date +"$POST_MOVE_DAY_FORMAT")"
-  printf '%s/%s/%s/%s' "$root" "$year" "$month" "$day"
+  build_existing_date_ladder "$root" "$year" "$month" "$day"
 }
 
 build_video_post_move_target_dir_for_date() {

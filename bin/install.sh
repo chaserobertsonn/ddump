@@ -23,6 +23,12 @@ APP_BUNDLE="${HOME}/Applications/DDump.app"
 PREBUILT_APP_BUNDLE="${PROJECT_DIR}/app/DDump.app"
 MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 
+if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
+SWIFTC="$(xcrun --find swiftc 2>/dev/null || command -v swiftc || true)"
+MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${LAUNCH_AGENT_DIR}/${LABEL}.plist"
 OLD_MOUNT_PLIST_PATH="${LAUNCH_AGENT_DIR}/${OLD_MOUNT_LABEL}.plist"
@@ -56,7 +62,7 @@ if [[ -d "$PREBUILT_APP_BUNDLE" ]]; then
   /usr/bin/touch "$APP_BUNDLE"
   echo "Installed Mac app: ${APP_BUNDLE}"
 elif [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
-  if command -v swiftc >/dev/null 2>&1; then
+  if [[ -n "$SWIFTC" ]]; then
     mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
     cat >"${APP_BUNDLE}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -109,9 +115,14 @@ PLIST
     build_slice() {
       local arch="$1"
       local out="$2"
+      local sdk_args=()
+      if [[ -n "$MACOS_SDK" ]]; then
+        sdk_args=(-sdk "$MACOS_SDK")
+      fi
       CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/ddump-clang-cache}" \
-        swiftc -parse-as-library \
-          -target "${arch}-apple-macos${MACOS_DEPLOYMENT_TARGET}" \
+        "$SWIFTC" -parse-as-library \
+          "${sdk_args[@]}" \
+          -target "${arch}-apple-macosx${MACOS_DEPLOYMENT_TARGET}" \
           -o "$out" \
           "${PROJECT_DIR}/app/DDumpApp.swift"
     }
@@ -388,6 +399,7 @@ add_missing_key 'GOOGLE_CALENDAR_CLIENT_ID' '"570098546449-737pvkselaqtncp2e6kdm
 add_missing_key 'GOOGLE_CALENDAR_CLIENT_SECRET' '""' "Google Calendar desktop OAuth client secret. Desktop secrets are bundled/public identifiers, not user passwords."
 add_missing_key 'CALENDAR_ICS_URL' '""' "Private ICS/webcal URL when CALENDAR_PROVIDER=ics."
 add_missing_key 'CALENDAR_NAME' '""'
+add_missing_key 'CALENDAR_IDS' '""' "Comma-separated Mac Calendar identifiers selected for shoot naming."
 add_missing_key 'CALENDAR_EVENT_PADDING_MIN' '"15"'
 add_missing_key 'CALENDAR_AMBIGUITY_PROMPTS_ENABLED' '"1"' "Ask about capture-time clusters outside scheduled calendar events."
 add_missing_key 'POST_MOVE_ROOTS' '""' "Optional comma-separated list of additional final destinations."

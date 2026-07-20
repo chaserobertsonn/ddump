@@ -10,10 +10,16 @@ MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_BUNDLE="${DIST_DIR}/DDump.app"
 
-if ! command -v swiftc >/dev/null 2>&1; then
+if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
+
+SWIFTC="$(xcrun --find swiftc 2>/dev/null || command -v swiftc || true)"
+if [[ -z "$SWIFTC" ]]; then
   echo "swiftc is required to build DDump.app." >&2
   exit 1
 fi
+MACOS_SDK="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
@@ -77,9 +83,14 @@ mkdir -p "$BUILD_TMP"
 build_slice() {
   local arch="$1"
   local out="$2"
+  local sdk_args=()
+  if [[ -n "$MACOS_SDK" ]]; then
+    sdk_args=(-sdk "$MACOS_SDK")
+  fi
   CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/ddump-clang-cache}" \
-    swiftc -parse-as-library \
-      -target "${arch}-apple-macos${MACOS_DEPLOYMENT_TARGET}" \
+    "$SWIFTC" -parse-as-library \
+      "${sdk_args[@]}" \
+      -target "${arch}-apple-macosx${MACOS_DEPLOYMENT_TARGET}" \
       -o "$out" \
       "${PROJECT_DIR}/app/DDumpApp.swift"
 }

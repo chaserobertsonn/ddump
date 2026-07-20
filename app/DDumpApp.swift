@@ -164,6 +164,16 @@ struct SkippedVolumeNotice {
   }
 }
 
+struct CalendarChoice: Identifiable, Hashable {
+  let id: String
+  let title: String
+  let source: String
+
+  var displayName: String {
+    source.isEmpty ? title : "\(title) — \(source)"
+  }
+}
+
 final class AppState: ObservableObject {
   @Published var phase: String = "idle"
   @Published var message: String = "Waiting for a card…"
@@ -209,6 +219,7 @@ final class AppState: ObservableObject {
   @Published var cloudSetupBrowserRunning: Bool = false
   @Published var onboardingRestartRequested: Bool = false
   @Published var skippedVolumeNotice: SkippedVolumeNotice?
+  @Published var appleCalendars: [CalendarChoice] = []
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
@@ -253,6 +264,9 @@ final class AppState: ObservableObject {
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
       guard let self else { return }
+      if self.get("CALENDAR_PROVIDER", default: "apple") == "apple" {
+        self.refreshAvailableAppleCalendars()
+      }
       if self.get("CALENDAR_PROVIDER", default: "apple") == "apple",
          self.get("CALENDAR_AUTH_STATUS", default: "") == "authorized" {
         self.refreshAppleCalendarCache(showDialog: false)
@@ -736,6 +750,24 @@ final class AppState: ObservableObject {
     return formatter.string(from: Date())
   }
 
+  func existingChildDirectory(parent: String, named desired: String) -> String {
+    let fm = FileManager.default
+    if fm.fileExists(atPath: "\(parent)/\(desired)") {
+      return "\(parent)/\(desired)"
+    }
+    guard let entries = try? fm.contentsOfDirectory(atPath: parent) else {
+      return "\(parent)/\(desired)"
+    }
+    let desiredLower = desired.lowercased()
+    if let match = entries.sorted().first(where: { entry in
+      let base = entry.replacingOccurrences(of: #" \([0-9]+\)$"#, with: "", options: .regularExpression)
+      return base.lowercased() == desiredLower
+    }) {
+      return "\(parent)/\(match)"
+    }
+    return "\(parent)/\(desired)"
+  }
+
   var todaysUploadDestinationForUI: String {
     let root = backupRootForUI.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !root.isEmpty else { return root }
@@ -745,7 +777,9 @@ final class AppState: ObservableObject {
     let year = formattedDateFolder(get("POST_MOVE_YEAR_FORMAT", default: "%Y"), fallback: "yyyy")
     let month = formattedDateFolder(get("POST_MOVE_MONTH_FORMAT", default: "%Y.%m"), fallback: "yyyy.MM")
     let day = formattedDateFolder(get("POST_MOVE_DAY_FORMAT", default: "%Y.%m.%d"), fallback: "yyyy.MM.dd")
-    return "\(root)/\(year)/\(month)/\(day)"
+    let yearDir = existingChildDirectory(parent: root, named: year)
+    let monthDir = existingChildDirectory(parent: yearDir, named: month)
+    return existingChildDirectory(parent: monthDir, named: day)
   }
 
   func openUploadDestination(openTodayFolder: Bool = true) {
@@ -904,6 +938,7 @@ printf 'url=%s\\n' "$link"
           self.set("CALENDAR_PROVIDER", "apple")
           self.set("CALENDAR_AUTH_STATUS", "authorized")
           self.lastUtilityMessage = "Mac Calendar connected. Refreshing local shoot events..."
+          self.refreshAvailableAppleCalendars()
           self.refreshAppleCalendarCache(showDialog: false)
         } else {
           self.set("CALENDAR_AUTH_STATUS", "not_authorized")
@@ -920,11 +955,48 @@ printf 'url=%s\\n' "$link"
     }
   }
 
+  func refreshAvailableAppleCalendars() {
+    let store = EKEventStore()
+    let update: () -> Void = {
+      let choices = store.calendars(for: .event)
+        .sorted {
+          if $0.source.title == $1.source.title { return $0.title < $1.title }
+          return $0.source.title < $1.source.title
+        }
+        .map { calendar in
+          CalendarChoice(
+            id: calendar.calendarIdentifier,
+            title: calendar.title,
+            source: calendar.source.title
+          )
+        }
+      DispatchQueue.main.async {
+        self.appleCalendars = choices
+      }
+    }
+
+    let complete: (Bool, Error?) -> Void = { granted, _ in
+      if granted { update() }
+    }
+
+    if #available(macOS 14.0, *) {
+      store.requestFullAccessToEvents(completion: complete)
+    } else {
+      store.requestAccess(to: .event, completion: complete)
+    }
+  }
+
   func refreshAppleCalendarCache(showDialog: Bool = true) {
     let store = EKEventStore()
     let calendarFilter = get("CALENDAR_NAME", default: "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
+    let selectedCalendarIDs = Set(
+      get("CALENDAR_IDS", default: "")
+        .split(separator: ",")
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    )
     lastUtilityMessage = "Refreshing Mac Calendar events..."
 
     let refresh: () -> Void = {
@@ -933,7 +1005,10 @@ printf 'url=%s\\n' "$link"
       let start = calendar.date(byAdding: .day, value: -14, to: now) ?? now
       let end = calendar.date(byAdding: .day, value: 90, to: now) ?? now
       let calendars = store.calendars(for: .event).filter { cal in
-        calendarFilter.isEmpty || cal.title.lowercased().contains(calendarFilter)
+        if !selectedCalendarIDs.isEmpty {
+          return selectedCalendarIDs.contains(cal.calendarIdentifier)
+        }
+        return calendarFilter.isEmpty || cal.title.lowercased().contains(calendarFilter)
       }
       let predicate = store.predicateForEvents(withStart: start, end: end, calendars: calendars.isEmpty ? nil : calendars)
       let events = store.events(matching: predicate)
@@ -946,7 +1021,7 @@ printf 'url=%s\\n' "$link"
         "# refreshed_at=\(formatter.string(from: now))",
         "# range_start=\(formatter.string(from: start))",
         "# range_end=\(formatter.string(from: end))",
-        "# columns: start_epoch<TAB>end_epoch<TAB>yyyy-mm-dd<TAB>calendar<TAB>title"
+        "# columns: start_epoch<TAB>end_epoch<TAB>yyyy-mm-dd<TAB>calendar<TAB>title<TAB>calendar_id"
       ]
       for event in events {
         let title = event.title?
@@ -963,7 +1038,7 @@ printf 'url=%s\\n' "$link"
         let startEpoch = Int(event.startDate.timeIntervalSince1970)
         let endEpoch = Int(event.endDate.timeIntervalSince1970)
         guard endEpoch >= startEpoch else { continue }
-        lines.append("\(startEpoch)\t\(endEpoch)\t\(day)\t\(calTitle)\t\(title)")
+        lines.append("\(startEpoch)\t\(endEpoch)\t\(day)\t\(calTitle)\t\(title)\t\(event.calendar.calendarIdentifier)")
       }
 
       do {
@@ -5490,6 +5565,7 @@ struct NamingSettings: View {
   @State private var fileNameTemplate: String = "{filename}"
   @State private var calendarProvider: String = "apple"
   @State private var calendarName: String = ""
+  @State private var calendarID: String = ""
   @State private var calendarICSURL: String = ""
   @State private var calendarPadding: String = "15"
   @State private var calendarAmbiguityPromptsEnabled: Bool = true
@@ -5740,9 +5816,32 @@ struct NamingSettings: View {
           .buttonStyle(DDumpPrimaryButtonStyle())
         }
 
-        TextField("Calendar name filter (optional)", text: $calendarName, onCommit: {
-          state.set("CALENDAR_NAME", calendarName)
-        })
+        if calendarProvider == "apple" {
+          HStack {
+            Text("Calendar to use")
+            Spacer()
+            Picker("", selection: $calendarID) {
+              Text("All calendars").tag("")
+              ForEach(state.appleCalendars) { calendar in
+                Text(calendar.displayName).tag(calendar.id)
+              }
+            }
+            .labelsHidden()
+            .frame(width: 280)
+          }
+          .ddumpOnChange(of: calendarID) { v in
+            state.set("CALENDAR_IDS", v)
+            state.set("CALENDAR_NAME", "")
+            state.refreshAppleCalendarCache(showDialog: false)
+          }
+          Text("Choose the shoot calendar DDump should trust for folder names. This prevents shared work schedules or privacy-masked calendars from naming folders Busy.")
+            .font(.caption)
+            .foregroundColor(.secondary)
+        } else {
+          TextField("Calendar name filter (optional)", text: $calendarName, onCommit: {
+            state.set("CALENDAR_NAME", calendarName)
+          })
+        }
         HStack {
           Text("Event window padding")
           Spacer()
@@ -5786,9 +5885,13 @@ struct NamingSettings: View {
       fileNameTemplate = state.get("FILE_NAME_TEMPLATE", default: "{filename}")
       calendarProvider = state.get("CALENDAR_PROVIDER", default: "apple")
       calendarName = state.get("CALENDAR_NAME")
+      calendarID = state.get("CALENDAR_IDS")
       calendarICSURL = state.get("CALENDAR_ICS_URL")
       calendarPadding = state.get("CALENDAR_EVENT_PADDING_MIN", default: "15")
       calendarAmbiguityPromptsEnabled = (state.get("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", default: "1") == "1")
+      if calendarProvider == "apple" {
+        state.refreshAvailableAppleCalendars()
+      }
     }
   }
 
@@ -6874,6 +6977,7 @@ struct CalendarSettings: View {
   @EnvironmentObject var state: AppState
   @State private var provider: String = "none"
   @State private var calendarName: String = ""
+  @State private var calendarID: String = ""
   @State private var icsURL: String = ""
   @State private var padding: String = "15"
   @State private var ambiguityPromptsEnabled: Bool = true
@@ -6945,9 +7049,32 @@ struct CalendarSettings: View {
       }
 
       Section("Calendar matching") {
-        TextField("Calendar name filter (optional)", text: $calendarName, onCommit: {
-          state.set("CALENDAR_NAME", calendarName)
-        })
+        if provider == "apple" {
+          HStack {
+            Text("Calendar to use")
+            Spacer()
+            Picker("", selection: $calendarID) {
+              Text("All calendars").tag("")
+              ForEach(state.appleCalendars) { calendar in
+                Text(calendar.displayName).tag(calendar.id)
+              }
+            }
+            .labelsHidden()
+            .frame(width: 300)
+          }
+          .ddumpOnChange(of: calendarID) { v in
+            state.set("CALENDAR_IDS", v)
+            state.set("CALENDAR_NAME", "")
+            state.refreshAppleCalendarCache(showDialog: false)
+          }
+          Text("Pick the calendar that contains real shoot names. Shared schedules may expose private events as Busy, so they should not be used for naming.")
+            .font(.caption)
+            .foregroundColor(.secondary)
+        } else {
+          TextField("Calendar name filter (optional)", text: $calendarName, onCommit: {
+            state.set("CALENDAR_NAME", calendarName)
+          })
+        }
         HStack {
           Text("Event window padding (minutes each side)")
           Spacer()
@@ -7003,9 +7130,13 @@ struct CalendarSettings: View {
     .onAppear {
       provider = state.get("CALENDAR_PROVIDER", default: "none")
       calendarName = state.get("CALENDAR_NAME")
+      calendarID = state.get("CALENDAR_IDS")
       icsURL = state.get("CALENDAR_ICS_URL")
       padding = state.get("CALENDAR_EVENT_PADDING_MIN", default: "15")
       ambiguityPromptsEnabled = state.get("CALENDAR_AMBIGUITY_PROMPTS_ENABLED", default: "1") == "1"
+      if provider == "apple" {
+        state.refreshAvailableAppleCalendars()
+      }
     }
   }
 

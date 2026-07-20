@@ -33,6 +33,7 @@ fi
 
 DATE=""
 CAL_NAME="${DDUMP_CALENDAR_NAME:-}"
+CAL_IDS="${DDUMP_CALENDAR_IDS:-${CALENDAR_IDS:-}}"
 DAY_WINDOW_HRS="${DDUMP_CALENDAR_DAY_WINDOW:-1}"
 PROVIDER="${DDUMP_CALENDAR_PROVIDER:-${CALENDAR_PROVIDER:-google}}"
 CLIENT_ID="${GOOGLE_CALENDAR_CLIENT_ID:-570098546449-737pvkselaqtncp2e6kdmhkf55eemche.apps.googleusercontent.com}"
@@ -64,13 +65,23 @@ emit_apple_cache_events() {
     return 4
   }
 
-  /usr/bin/awk -F '\t' -v date="$DATE" -v cal_filter="$CAL_NAME" '
+  /usr/bin/awk -F '\t' -v date="$DATE" -v cal_filter="$CAL_NAME" -v cal_ids="$CAL_IDS" '
     BEGIN { filter = tolower(cal_filter) }
+    BEGIN {
+      split(cal_ids, raw_ids, ",")
+      for (i in raw_ids) {
+        id = raw_ids[i]
+        gsub(/^ +| +$/, "", id)
+        if (id != "") selected[id] = 1
+      }
+    }
     /^#/ || NF < 5 { next }
     {
       cal = $4
       title = $5
-      if (filter != "" && index(tolower(cal), filter) == 0) next
+      cal_id = (NF >= 6 ? $6 : "")
+      if (cal_ids != "" && !(cal_id in selected)) next
+      if (cal_ids == "" && filter != "" && index(tolower(cal), filter) == 0) next
       if ($3 == date) print $1 "\t" $2 "\t" title
     }
   ' "$cache_file"
