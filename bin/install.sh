@@ -304,6 +304,11 @@ add_missing_key 'CAMERA_CARD_SCAN_MAX_DEPTH' '"10"'
 replace_key_if_exact 'CAMERA_CARD_SCAN_MAX_DEPTH' '6' '10'
 add_missing_key 'CAMERA_CARD_HINT_DIRS' '"DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"'
 add_missing_key 'CAMERA_CARD_REJECT_INSTALLER_SHAPES' '"1"'
+add_missing_key 'CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY' '"1"' "Wait for cameras and drones to finish exposing media before classifying the volume."
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS' '"2"'
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_MIN_WAIT_SECONDS' '"4"'
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS' '"30"'
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_REQUIRED_PASSES' '"2"'
 add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
 add_missing_key 'EJECT_TIMEOUT_SECONDS' '"20"' "Maximum seconds to wait for macOS card eject before continuing with upload."
 add_missing_key 'SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION' '"1"'

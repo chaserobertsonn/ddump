@@ -378,6 +378,68 @@ camera_card_media_sample_count_under() {
   printf '%s' "${count:-0}"
 }
 
+camera_card_inventory_signature() {
+  # A camera or drone can mount before macOS has finished exposing its files.
+  # Hash the current eligible-media inventory so callers can wait for it to stop
+  # changing before deciding that the device is not a camera card.
+  local vol_path="$1"
+  local max_depth
+  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-10}" "10")"
+
+  local find_args=()
+  local token
+  while IFS= read -r -d '' token; do
+    find_args+=("$token")
+  done < <(photo_find_name_args)
+
+  /usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f "${find_args[@]}" \
+    -exec /usr/bin/stat -f '%N\t%z\t%m' {} + 2>/dev/null \
+    | /usr/bin/sort \
+    | /usr/bin/shasum -a 256 \
+    | /usr/bin/awk '{print $1}'
+}
+
+wait_for_camera_card_inventory() {
+  local vol_name="$1"
+  local vol_path="$2"
+  [[ "${CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY:-1}" == "1" ]] || return 0
+
+  local interval_seconds min_wait_seconds max_wait_seconds required_passes
+  interval_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS:-2}" "2")"
+  min_wait_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_MIN_WAIT_SECONDS:-4}" "4")"
+  max_wait_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS:-30}" "30")"
+  required_passes="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_REQUIRED_PASSES:-2}" "2")"
+  [[ "$max_wait_seconds" -lt "$min_wait_seconds" ]] && max_wait_seconds="$min_wait_seconds"
+
+  local previous_signature="" signature="" stable_passes=0 elapsed=0 saw_media=0
+  while [[ "$elapsed" -le "$max_wait_seconds" ]]; do
+    signature="$(camera_card_inventory_signature "$vol_path" 2>/dev/null || true)"
+    [[ -n "$signature" ]] || signature="unreadable"
+    if [[ "$signature" == "$previous_signature" ]]; then
+      stable_passes=$((stable_passes + 1))
+    else
+      previous_signature="$signature"
+      stable_passes=1
+    fi
+
+    if volume_has_photos "$vol_path"; then
+      saw_media=1
+    fi
+    if [[ "$elapsed" -ge "$min_wait_seconds" && "$stable_passes" -ge "$required_passes" ]] \
+      && { [[ "$saw_media" == "1" ]] || [[ "$elapsed" -ge "$max_wait_seconds" ]]; }; then
+      log "Camera inventory settled for ${vol_name} after ${elapsed}s (stable passes=${stable_passes}, media_seen=${saw_media})."
+      return 0
+    fi
+
+    [[ "$elapsed" -ge "$max_wait_seconds" ]] && break
+    /bin/sleep "$interval_seconds"
+    elapsed=$((elapsed + interval_seconds))
+  done
+
+  log "Camera inventory did not expose media before the ${max_wait_seconds}s settle limit for ${vol_name}; continuing with normal detection."
+  return 0
+}
+
 volume_has_installer_shape() {
   local vol_path="$1"
   local hit
@@ -613,6 +675,11 @@ CAMERA_CARD_SCAN_MAX_DEPTH="10"
 CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA"
 CAMERA_CARD_REJECT_INSTALLER_SHAPES="1"
 CAMERA_CARD_SOURCE_ROOT_MAX_DEPTH="2"
+CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY="1"
+CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS="2"
+CAMERA_CARD_STABLE_SCAN_MIN_WAIT_SECONDS="4"
+CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS="30"
+CAMERA_CARD_STABLE_SCAN_REQUIRED_PASSES="2"
 CLOUD_UPLOADS_ENABLED="0"
 ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
@@ -5633,6 +5700,9 @@ for vol_path in /Volumes/*; do
     log "Skipping blocked volume: ${vol_name} (UUID: ${uuid:-none})"
     continue
   fi
+  # DJI drones and some card readers publish the volume before their DCIM tree
+  # is ready. Do not classify a just-mounted device as empty on the first scan.
+  wait_for_camera_card_inventory "$vol_name" "$vol_path"
   # Internal-volume skip: applies ONLY if the volume has no photo files. macOS sometimes
   # reports SD cards from USB-C readers as "Internal" — we don't want to silent-skip a
   # real photo card just because diskutil mislabels its location.

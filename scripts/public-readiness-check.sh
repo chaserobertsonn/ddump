@@ -17,6 +17,17 @@ git diff --check
 echo "ok"
 
 echo
+echo "== Delayed-mount regression guard =="
+grep -q '^wait_for_camera_card_inventory()' bin/ddump.sh
+grep -q '^camera_card_inventory_signature()' bin/ddump.sh
+grep -q '^CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY=' config/config.env
+grep -q "add_missing_key 'CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY'" bin/install.sh
+wait_line="$(grep -n 'wait_for_camera_card_inventory "\$vol_name" "\$vol_path"' bin/ddump.sh | head -1 | cut -d: -f1)"
+detection_line="$(grep -n 'volume_looks_like_camera_card "\$vol_path"' bin/ddump.sh | tail -1 | cut -d: -f1)"
+[[ -n "$wait_line" && -n "$detection_line" && "$wait_line" -lt "$detection_line" ]]
+echo "ok"
+
+echo
 echo "== Build =="
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}" ./scripts/build-app.sh
 echo "ok"
