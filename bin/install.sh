@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.14}"
+APP_VERSION="${DDUMP_VERSION:-0.3.16}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 

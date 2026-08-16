@@ -3237,12 +3237,12 @@ DDump will guide this in order:
 
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
-    panel.canChooseFiles = true
+    panel.canChooseFiles = false
     panel.allowsMultipleSelection = true
     panel.canCreateDirectories = false
     panel.directoryURL = URL(fileURLWithPath: "/Volumes")
-    panel.prompt = "Import Selected"
-    panel.message = "Pick the card itself, or choose specific files/folders. DDump will use the current scan window."
+    panel.prompt = "Select Folder to Import"
+    panel.message = "Pick the card itself or a folder on the card. DDump will scan it with the current scan window and copy it again even if it was seen before."
     guard panel.runModal() == .OK else { return }
 
     let selected = panel.urls.map(\.path).filter { !$0.isEmpty }
@@ -3251,16 +3251,14 @@ DDump will guide this in order:
       return
     }
 
-    let trustAlert = NSAlert()
-    trustAlert.messageText = "Import this card"
-    trustAlert.informativeText = "Trust once imports this selection now. Trust forever lets DDump import this card automatically next time."
-    trustAlert.alertStyle = .informational
-    trustAlert.addButton(withTitle: "Trust Once")
-    trustAlert.addButton(withTitle: "Trust Forever")
-    trustAlert.addButton(withTitle: "Cancel")
-    let trustResponse = trustAlert.runModal()
-    if trustResponse == .alertThirdButtonReturn { return }
-    let manualPolicy = (trustResponse == .alertSecondButtonReturn) ? "trust" : "once"
+    let confirmAlert = NSAlert()
+    confirmAlert.messageText = "Import selected folder"
+    confirmAlert.informativeText = "DDump will scan the selected folder or card volume using the current scan window. This trusts the selection for this import only and forces a fresh copy."
+    confirmAlert.alertStyle = .informational
+    confirmAlert.addButton(withTitle: "Import Once")
+    confirmAlert.addButton(withTitle: "Cancel")
+    guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
+    let manualPolicy = "once"
 
     do {
       try FileManager.default.createDirectory(
@@ -3282,7 +3280,7 @@ DDump will guide this in order:
     task.environment = env
     do {
       try task.run()
-      lastUtilityMessage = "Manual import started. DDump will scan \(selected.count) selected item(s) using the current scan window."
+      lastUtilityMessage = "Manual import started. DDump will scan \(selected.count) selected folder(s) and force a fresh copy."
     } catch {
       lastUtilityMessage = "Could not start manual import: \(error.localizedDescription)"
     }
@@ -4265,6 +4263,15 @@ struct MainActionFooter: View {
     .frame(maxWidth: fillWidth ? .infinity : nil)
 
     Button {
+      state.startManualSelectionImport()
+    } label: {
+      Label("Select folder to import", systemImage: "folder.badge.plus")
+    }
+    .buttonStyle(DDumpSecondaryButtonStyle())
+    .disabled(state.runActive)
+    .frame(maxWidth: fillWidth ? .infinity : nil)
+
+    Button {
       state.doNotEject()
     } label: {
       Label("Do not eject", systemImage: "pin.slash.fill")
@@ -4347,7 +4354,7 @@ struct SkippedVolumePanel: View {
           Button {
             state.startManualSelectionImport()
           } label: {
-            Label("Manual import", systemImage: "slider.horizontal.3")
+            Label("Select folder to import", systemImage: "folder.badge.plus")
           }
           .buttonStyle(DDumpPrimaryButtonStyle())
           .disabled(state.runActive)
@@ -4677,7 +4684,10 @@ struct ProgressDetail: View {
       if imported > 0 {
         return "Finished. \(volumes) \(cardWord) checked, \(imported) imported, \(duplicates) already copied, \(skippedExt) non-media skipped."
       }
-      return "Finished. \(volumes) \(cardWord) checked. No new files matched the scan window."
+      if duplicates > 0 {
+        return "Finished. \(volumes) \(cardWord) checked. \(duplicates) files were already marked copied, so DDump did not copy them again."
+      }
+      return "Finished. \(volumes) \(cardWord) checked. No files matched the scan window."
     }
 
     return trimmed

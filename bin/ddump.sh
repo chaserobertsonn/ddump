@@ -664,6 +664,7 @@ UPLOAD_RETRY_MINUTES="3,10,60,240"
 FILE_EXTENSIONS=""
 MANIFEST_RETENTION_DAYS="0"
 USE_FAST_SEEN_INDEX="1"
+DUMP_MEMORY_SCOPE="global"
 SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION="1"
 REQUIRE_PHOTOS_OR_TRUSTED="1"
 PHOTO_FILE_EXTENSIONS="jpg,jpeg,heic,heif,cr2,cr3,nef,arw,raf,dng,rw2,orf,pef,srw,tif,tiff,mp4,mov,m4v,avi,mts,m2ts,3gp,3gpp,insv,insp,gpr,srt,lrf,braw,mxf,crm,r3d,ari,arri,cine"
@@ -2711,6 +2712,63 @@ manual_selection_mentions_volume() {
   return 1
 }
 
+is_volume_mount_root() {
+  local path="${1%/}"
+  local remainder
+  case "$path" in
+    /Volumes/*)
+      remainder="${path#/Volumes/}"
+      [[ -n "$remainder" && "$remainder" != */* ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+manual_selection_volume_root_for_path() {
+  local selected_path="${1%/}"
+  local remainder volume_name parent
+  [[ -n "$selected_path" ]] || return 1
+  case "$selected_path" in
+    /Volumes/*)
+      remainder="${selected_path#/Volumes/}"
+      volume_name="${remainder%%/*}"
+      [[ -n "$volume_name" ]] || return 1
+      printf '/Volumes/%s' "$volume_name"
+      ;;
+    *)
+      if [[ -d "$selected_path" ]]; then
+        printf '%s' "$selected_path"
+      elif [[ -f "$selected_path" ]]; then
+        parent="$(/usr/bin/dirname "$selected_path")"
+        [[ -d "$parent" ]] || return 1
+        printf '%s' "$parent"
+      else
+        return 1
+      fi
+      ;;
+  esac
+}
+
+queue_manual_selection_volume_roots() {
+  local queue_file="$1"
+  [[ "$manual_selection_active" == "1" ]] || return 0
+  [[ -n "$MANUAL_SELECTION_FILE" && -f "$MANUAL_SELECTION_FILE" ]] || return 0
+
+  local selected_path normalized_path root_path
+  while IFS= read -r selected_path || [[ -n "$selected_path" ]]; do
+    selected_path="$(trim "$selected_path")"
+    [[ -n "$selected_path" ]] || continue
+    normalized_path="${selected_path%/}"
+    [[ -n "$normalized_path" ]] || continue
+    root_path="$(manual_selection_volume_root_for_path "$normalized_path" 2>/dev/null || true)"
+    if [[ -n "$root_path" && -d "$root_path" ]]; then
+      queue_path_unique "$queue_file" "$root_path"
+    else
+      log "Ignoring manual import selection that no longer exists: ${normalized_path}"
+    fi
+  done <"$MANUAL_SELECTION_FILE"
+}
+
 build_manual_candidates_for_volume() {
   local vol_name="$1"
   local vol_path="$2"
@@ -3447,24 +3505,33 @@ file_hash_matches() {
   [[ -n "$source_hash" && "$source_hash" == "$existing_hash" ]]
 }
 
-dump_memory_has_candidate() {
+dump_memory_match_candidate() {
   # Prevent a wide scan window from importing the same shoot into a new day.
   # Match by same filename and size anywhere under the Dump Folder, then hash
   # only the small set of same-name hits before declaring it a duplicate.
-  local rel_path="$1"
-  local file_size="$2"
-  local source_file="$3"
-  local root="${DEST_ROOT:-}"
+  local root="$1"
+  local rel_path="$2"
+  local file_size="$3"
+  local source_file="$4"
   [[ -d "$root" && -n "$rel_path" && -f "$source_file" ]] || return 1
   local base_name hit
   base_name="$(basename "${rel_path//:/_}")"
   while IFS= read -r hit || [[ -n "$hit" ]]; do
     [[ -f "$hit" ]] || continue
     if file_hash_matches "$source_file" "$hit"; then
+      printf '%s' "$hit"
       return 0
     fi
   done < <(/usr/bin/find "$root" -type f -name "$base_name" -size "${file_size}c" -print 2>/dev/null)
   return 1
+}
+
+dump_memory_has_candidate() {
+  local rel_path="$1"
+  local file_size="$2"
+  local source_file="$3"
+  local root="${DEST_ROOT:-}"
+  dump_memory_match_candidate "$root" "$rel_path" "$file_size" "$source_file" >/dev/null
 }
 
 get_volume_uuid() {
@@ -3686,6 +3753,49 @@ source_root_has_media_files() {
     | /usr/bin/grep -q "1"
 }
 
+discover_media_parent_source_roots() {
+  local vol_path="$1"
+  local scan_file="$2"
+  local max_depth
+  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-10}" "10")"
+  [[ "$max_depth" -lt 1 ]] && max_depth=1
+
+  local raw_scan_file
+  raw_scan_file="$(/usr/bin/mktemp "${STATE_DIR}/source-root-files.XXXXXX")"
+  : >"$raw_scan_file"
+
+  local src_file parent mtime name
+  while IFS= read -r -d '' src_file; do
+    is_ignored_source_file "$src_file" && continue
+    has_allowed_extension "$src_file" "$PHOTO_FILE_EXTENSIONS" || continue
+    parent="$(/usr/bin/dirname "$src_file")"
+    [[ -d "$parent" ]] || continue
+    mtime="$(/usr/bin/stat -f '%m' "$src_file" 2>/dev/null || /bin/echo 0)"
+    [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+    name="$(/usr/bin/basename "$parent")"
+    /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$raw_scan_file"
+  done < <(/usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f -print0 2>/dev/null)
+
+  if [[ -s "$raw_scan_file" ]]; then
+    /usr/bin/awk -F'\t' '
+      {
+        key=$3
+        if (!(key in best) || $1 > best[key]) {
+          best[key]=$1
+          names[key]=$2
+        }
+      }
+      END {
+        for (key in best) {
+          printf "%s\t%s\t%s\n", best[key], names[key], key
+        }
+      }
+    ' "$raw_scan_file" >>"$scan_file"
+  fi
+
+  /bin/rm -f "$raw_scan_file"
+}
+
 discover_current_media_source_roots() {
   local vol_path="$1"
   local out_file="$2"
@@ -3697,6 +3807,11 @@ discover_current_media_source_roots() {
   scan_file="$(/usr/bin/mktemp "${STATE_DIR}/source-root-scan.XXXXXX")"
   : >"$scan_file"
 
+  # Primary discovery is file-driven: if a folder directly contains media, it is
+  # a candidate source root. Camera folder names vary too much to rely on DCIM
+  # child naming alone (Sony MSDCF, DJI, Canon 100CANON/105EOSR6, etc.).
+  discover_media_parent_source_roots "$vol_path" "$scan_file"
+
   IFS=',' read -r -a _hint_dirs <<<"${CAMERA_CARD_HINT_DIRS:-DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA}"
   for hint in "${_hint_dirs[@]}"; do
     hint="$(trim "$hint")"
@@ -3705,7 +3820,8 @@ discover_current_media_source_roots() {
       while IFS= read -r parent || [[ -n "$parent" ]]; do
         [[ -d "$parent" ]] || continue
         if source_root_has_media_files "$parent"; then
-          mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
+          mtime="$(latest_allowed_file_epoch_under "$parent")"
+          [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
           name="$(/usr/bin/basename "$parent")"
           /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$scan_file"
         fi
@@ -3716,7 +3832,8 @@ discover_current_media_source_roots() {
     parent="${vol_path}/${hint}"
     [[ -d "$parent" ]] || continue
     if source_root_has_media_files "$parent"; then
-      mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
+      mtime="$(latest_allowed_file_epoch_under "$parent")"
+      [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
       name="$(/usr/bin/basename "$parent")"
       /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$scan_file"
     fi
@@ -3724,7 +3841,8 @@ discover_current_media_source_roots() {
       [[ -d "$dir" ]] || continue
       [[ "$dir" == "$parent" ]] && continue
       if source_root_has_media_files "$dir"; then
-        mtime="$(/usr/bin/stat -f '%m' "$dir" 2>/dev/null || /bin/echo 0)"
+        mtime="$(latest_allowed_file_epoch_under "$dir")"
+        [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(/usr/bin/stat -f '%m' "$dir" 2>/dev/null || /bin/echo 0)"
         name="$(/usr/bin/basename "$dir")"
         /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$dir" >>"$scan_file"
       fi
@@ -3732,6 +3850,9 @@ discover_current_media_source_roots() {
   done
 
   if [[ -s "$scan_file" ]]; then
+    local discovered_count
+    discovered_count="$(/usr/bin/awk -F'\t' '{ print $3 }' "$scan_file" | /usr/bin/sort -u | /usr/bin/wc -l | /usr/bin/awk '{print $1}')"
+    log "Discovered ${discovered_count} media source folder(s) on $(/usr/bin/basename "$vol_path") by scanning media files."
     /usr/bin/sort -t '	' -k1,1nr -k2,2r "$scan_file" \
       | /usr/bin/awk -F'\t' '{ print $3 }' \
       | while IFS= read -r dir || [[ -n "$dir" ]]; do
@@ -5637,8 +5758,16 @@ upload_complete_volume_count=0
 upload_complete_file_count=0
 upload_complete_targets=""
 
-queued_volume_names=()
+volume_paths_file="$(/usr/bin/mktemp "${STATE_DIR}/volume-paths.${run_id}.XXXXXX")"
+: >"$volume_paths_file"
 for queued_vol_path in /Volumes/*; do
+  [[ -d "$queued_vol_path" ]] || continue
+  queue_path_unique "$volume_paths_file" "$queued_vol_path"
+done
+queue_manual_selection_volume_roots "$volume_paths_file"
+
+queued_volume_names=()
+while IFS= read -r queued_vol_path || [[ -n "$queued_vol_path" ]]; do
   [[ -d "$queued_vol_path" ]] || continue
   queued_vol_name="$(basename "$queued_vol_path")"
   is_ignored_volume_name "$queued_vol_name" && continue
@@ -5648,10 +5777,11 @@ for queued_vol_path in /Volumes/*; do
   fi
   if volume_looks_like_camera_card "$queued_vol_path" \
     || is_trusted_name_prefix "$queued_vol_name" \
-    || is_uuid_trusted "$queued_uuid"; then
+    || is_uuid_trusted "$queued_uuid" \
+    || { [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$queued_vol_path"; }; then
     queued_volume_names+=("$queued_vol_name")
   fi
-done
+done <"$volume_paths_file"
 
 next_queued_volume_after() {
   local current_name="$1"
@@ -5678,7 +5808,7 @@ queue_status_suffix_for_volume() {
   fi
 }
 
-for vol_path in /Volumes/*; do
+while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
   [[ "$run_stopped" == "1" ]] && break
   [[ -d "$vol_path" ]] || continue
 
@@ -5692,8 +5822,20 @@ for vol_path in /Volumes/*; do
   set_status_phase "scanning" "Checking ${vol_name}.${volume_queue_suffix}"
 
   uuid="$(get_volume_uuid "$vol_path")"
-  if [[ "$IGNORE_NO_UUID_VOLUMES" == "1" && -z "$uuid" ]]; then
-    log "Skipping volume with no UUID: ${vol_name} (${vol_path})"
+  manual_selection_mentions_this_volume=0
+  if [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$vol_path"; then
+    manual_selection_mentions_this_volume=1
+  fi
+
+  no_uuid_volume_has_camera_shape=0
+  if [[ -z "$uuid" ]] && volume_looks_like_camera_card "$vol_path"; then
+    no_uuid_volume_has_camera_shape=1
+  fi
+  if [[ "$IGNORE_NO_UUID_VOLUMES" == "1" \
+        && -z "$uuid" \
+        && "$manual_selection_mentions_this_volume" != "1" \
+        && "$no_uuid_volume_has_camera_shape" != "1" ]]; then
+    log "Skipping volume with no UUID and no camera-card media shape: ${vol_name} (${vol_path})"
     continue
   fi
   if is_uuid_blocked "$uuid"; then
@@ -5706,9 +5848,11 @@ for vol_path in /Volumes/*; do
   # Internal-volume skip: applies ONLY if the volume has no photo files. macOS sometimes
   # reports SD cards from USB-C readers as "Internal" — we don't want to silent-skip a
   # real photo card just because diskutil mislabels its location.
+
   if [[ "$SKIP_INTERNAL_VOLUMES" == "1" ]] && ! is_trusted_name_prefix "$vol_name" \
        && is_internal_volume "$vol_path" && ! is_uuid_trusted "$uuid" \
-       && ! volume_looks_like_camera_card "$vol_path"; then
+       && ! volume_looks_like_camera_card "$vol_path" \
+       && [[ "$manual_selection_mentions_this_volume" != "1" ]]; then
     log "Skipping internal volume that does not look like a camera card: ${vol_name}"
     continue
   fi
@@ -5720,9 +5864,7 @@ for vol_path in /Volumes/*; do
   if volume_looks_like_camera_card "$vol_path"; then
     vol_has_photos=1
   fi
-  manual_selection_mentions_this_volume=0
-  if [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$vol_path"; then
-    manual_selection_mentions_this_volume=1
+  if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
     vol_has_photos=1
   fi
 
@@ -5760,7 +5902,7 @@ for vol_path in /Volumes/*; do
 
   if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
     trusted="1"
-    if [[ "$(manual_import_policy)" == "trust" && -n "$uuid" ]]; then
+    if [[ "$(manual_import_policy)" == "trust" && -n "$uuid" ]] && is_volume_mount_root "$vol_path"; then
       remember_uuid "$uuid"
       set_card_policy_mode "$uuid" "remember"
       log "Manual import trusted ${vol_name} forever (UUID: ${uuid})."
@@ -5796,6 +5938,10 @@ for vol_path in /Volumes/*; do
   if [[ -n "$uuid" ]] && should_force_recopy_for_uuid "$uuid"; then
     force_recopy_for_uuid=1
     log "Volume ${vol_name}: forcing re-copy from card because unfinished recovery exists for UUID ${uuid}."
+  fi
+  if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
+    force_recopy_for_uuid=1
+    log "Volume ${vol_name}: manual import selected; forcing fresh copy and bypassing duplicate memory for this run."
   fi
 
   manual_selection_for_volume=0
@@ -5863,6 +6009,7 @@ for vol_path in /Volumes/*; do
   imported_this_volume=0
   imported_bytes_this_volume=0
   skipped_existing_this_volume=0
+  skipped_dump_memory_this_volume=0
   skipped_extension_this_volume=0
   failed_copy=0
   has_candidates_this_volume=0
@@ -6003,9 +6150,24 @@ for vol_path in /Volumes/*; do
         fi
       fi
 
-      if [[ "$force_recopy_for_uuid" != "1" ]] && dump_memory_has_candidate "$rel_path" "$file_size" "$src_file"; then
+      dump_memory_match_path=""
+      dump_memory_scope_root=""
+      case "${DUMP_MEMORY_SCOPE:-global}" in
+        off|none|disabled)
+          dump_memory_scope_root=""
+          ;;
+        current_day|day|today)
+          dump_memory_scope_root="$dest_dir"
+          ;;
+        global|*)
+          dump_memory_scope_root="${DEST_ROOT:-}"
+          ;;
+      esac
+      if [[ "$force_recopy_for_uuid" != "1" && -n "$dump_memory_scope_root" ]] \
+         && dump_memory_match_path="$(dump_memory_match_candidate "$dump_memory_scope_root" "$rel_path" "$file_size" "$src_file" 2>/dev/null)"; then
         skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
-        record_missed_file "$vol_name" "skipped_dump_memory" "$src_file" "matched existing file in Dump Folder memory"
+        skipped_dump_memory_this_volume=$((skipped_dump_memory_this_volume + 1))
+        record_missed_file "$vol_name" "skipped_dump_memory" "$src_file" "matched existing file in Dump Folder: ${dump_memory_match_path}"
         db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "skipped_duplicate" "" "" "already exists in Dump Folder"
         processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
         current_status_processed="$processed_candidates_this_volume"
@@ -6216,9 +6378,24 @@ for vol_path in /Volumes/*; do
                     write_status
                     continue
                   fi
-                  if [[ "$force_recopy_for_uuid" != "1" ]] && dump_memory_has_candidate "$rel_path" "$file_size" "$src_file"; then
+                  dump_memory_match_path=""
+                  dump_memory_scope_root=""
+                  case "${DUMP_MEMORY_SCOPE:-global}" in
+                    off|none|disabled)
+                      dump_memory_scope_root=""
+                      ;;
+                    current_day|day|today)
+                      dump_memory_scope_root="$dest_dir"
+                      ;;
+                    global|*)
+                      dump_memory_scope_root="${DEST_ROOT:-}"
+                      ;;
+                  esac
+                  if [[ "$force_recopy_for_uuid" != "1" && -n "$dump_memory_scope_root" ]] \
+                     && dump_memory_match_path="$(dump_memory_match_candidate "$dump_memory_scope_root" "$rel_path" "$file_size" "$src_file" 2>/dev/null)"; then
                     skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
-                    record_missed_file "$vol_name" "skipped_dump_memory" "$src_file" "matched existing file in Dump Folder memory"
+                    skipped_dump_memory_this_volume=$((skipped_dump_memory_this_volume + 1))
+                    record_missed_file "$vol_name" "skipped_dump_memory" "$src_file" "matched existing file in Dump Folder: ${dump_memory_match_path}"
                     db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "skipped_duplicate" "" "" "already exists in Dump Folder"
                     processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
                     current_status_processed="$processed_candidates_this_volume"
@@ -6333,12 +6510,33 @@ for vol_path in /Volumes/*; do
     status="partial"
   fi
 
+  skip_eject_for_duplicate_memory=0
+  if [[ "$failed_copy" == "0" \
+        && "$imported_this_volume" -eq 0 \
+        && "$skipped_dump_memory_this_volume" -gt 0 \
+        && "$skipped_dump_memory_this_volume" -eq "$total_candidates_this_volume" ]]; then
+    skip_eject_for_duplicate_memory=1
+    status="skipped_duplicate"
+    log "Volume ${vol_name}: no fresh copy made; ${skipped_dump_memory_this_volume} file(s) matched existing exact copies under ${DEST_ROOT}."
+    record_attention_notice \
+      "$vol_name" \
+      "$vol_path" \
+      "$uuid" \
+      "all_files_already_in_dump_folder" \
+      "DDump found ${skipped_dump_memory_this_volume} media file(s), but every one already matched an exact copy in the Dump Folder." \
+      "The card was left mounted. Use Select folder to import if you want to force a fresh copy into today's dump folder."
+    notify "DDump" "${vol_name}: no fresh copy made; files already exist in previous dump folders. Card left mounted." warn "integrity_warning"
+    ntfy_notify "integrity_warning" "DDump: no fresh copy made" "${vol_name}: ${skipped_dump_memory_this_volume} file(s) already matched previous dump-folder copies. Card left mounted; use Select folder to import to force a fresh copy."
+  fi
+
   log "Volume ${vol_name}: imported=${imported_this_volume}, skipped_known=${skipped_existing_this_volume}, skipped_ext=${skipped_extension_this_volume}, copy_status=${status}"
 
   did_eject_msg="not requested."
   # Eject when: success + (run completed normally OR user explicitly requested "Eject Now").
   # The eject_now flag is set by the UI button; it overrides the "stopped mid-run" abort.
   if [[ "$EJECT_ON_SUCCESS" == "1" && "$failed_copy" == "0" ]] \
+     && [[ "$skip_eject_for_duplicate_memory" != "1" ]] \
+     && is_volume_mount_root "$vol_path" \
      && { [[ "$run_stopped" == "0" ]] || [[ -f "$EJECT_NOW_FLAG" ]]; }; then
     wait_for_min_eject_grace "$volume_started_epoch"
     if keep_mounted_requested "$no_eject_hold_file"; then
@@ -6443,7 +6641,8 @@ for vol_path in /Volumes/*; do
   /bin/rm -f "$imported_files_file"
   /bin/rm -f "$source_roots_file"
   /bin/rm -f "$no_eject_hold_file"
-done
+done <"$volume_paths_file"
+/bin/rm -f "$volume_paths_file"
 
 if [[ "$processed_volume_count" -eq 0 ]]; then
   log "No trusted SD card volumes found."
