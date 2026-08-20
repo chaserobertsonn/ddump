@@ -31,6 +31,7 @@ It is built for high-confidence transfer workflows:
 
 - Lookback-only import scanning (default 24h).
 - Manual select import for specific folders/files from a mounted card.
+- Persistent View Only mode for browsing an SSD or SD card without any automatic scan, copy, upload, or eject action.
 - Per-card saved source folder choices (avoids scanning whole card repeatedly).
 - Do Not Eject and Eject After This File controls.
 - Stop-after-file and Pause/Resume controls.

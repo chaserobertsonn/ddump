@@ -52,6 +52,7 @@ enum DDumpPaths {
   static var manualShootNameFile: URL { controlDir.appendingPathComponent("manual_shoot_name.txt") }
   static var lockDir: URL { appSupport.appendingPathComponent("state/run.lock") }
   static var pauseFlag: URL { controlDir.appendingPathComponent("pause.flag") }
+  static var viewOnlyFlag: URL { controlDir.appendingPathComponent("view_only.flag") }
   static var stopFlag: URL { controlDir.appendingPathComponent("stop_after_file.flag") }
   static var keepMountedFlag: URL { controlDir.appendingPathComponent("keep_mounted.flag") }
   static var appCloudKeepaliveFile: URL { controlDir.appendingPathComponent("app_cloud_keepalive.touch") }
@@ -198,6 +199,7 @@ final class AppState: ObservableObject {
   @Published var updatedAt: String = ""
   @Published var config: [String: String] = [:]
   @Published var paused: Bool = false
+  @Published var viewOnlyMode: Bool = false
   @Published var stopRequested: Bool = false
   @Published var ejectQueued: Bool = false
   @Published var keepMountedRequested: Bool = false
@@ -235,6 +237,8 @@ final class AppState: ObservableObject {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     refreshStatus()
     refreshConfig()
+    refreshControlFlags()
+    refreshLockState()
     refreshHealth()
     timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
       guard let self else { return }
@@ -450,11 +454,13 @@ final class AppState: ObservableObject {
   func refreshControlFlags() {
     let fm = FileManager.default
     let p = fm.fileExists(atPath: DDumpPaths.pauseFlag.path)
+    let v = fm.fileExists(atPath: DDumpPaths.viewOnlyFlag.path)
     let s = fm.fileExists(atPath: DDumpPaths.stopFlag.path)
     let e = fm.fileExists(atPath: DDumpPaths.ejectNowFlag.path)
     let k = fm.fileExists(atPath: DDumpPaths.keepMountedFlag.path)
     DispatchQueue.main.async {
       self.paused = p
+      self.viewOnlyMode = v
       self.stopRequested = s
       self.ejectQueued = e
       self.keepMountedRequested = k
@@ -1316,6 +1322,23 @@ client_secret=\(quotedClientSecret)
   func resume() {
     try? FileManager.default.removeItem(at: DDumpPaths.pauseFlag)
     paused = false
+  }
+
+  func setViewOnlyMode(_ enabled: Bool) {
+    guard !runActive else {
+      lastUtilityMessage = "Wait for the current run to finish before changing View Only mode."
+      return
+    }
+    ensureControlDir()
+    if enabled {
+      FileManager.default.createFile(atPath: DDumpPaths.viewOnlyFlag.path, contents: Data())
+      viewOnlyMode = true
+      lastUtilityMessage = "View Only is on. Newly connected cards and drives will stay untouched and mounted."
+    } else {
+      try? FileManager.default.removeItem(at: DDumpPaths.viewOnlyFlag)
+      viewOnlyMode = false
+      lastUtilityMessage = "Automatic card import is back on."
+    }
   }
 
   func stop() {
@@ -3543,6 +3566,7 @@ struct ContentView: View {
   @State private var showingOnboarding = false
 
   var phaseColor: Color {
+    if state.viewOnlyMode && !state.runActive { return .ddumpWarning }
     switch state.phase {
     case "importing", "scanning", "starting", "uploading", "recovering": return .ddumpPeach
     case "complete": return .ddumpSuccess
@@ -3552,6 +3576,7 @@ struct ContentView: View {
   }
 
   var phaseLabel: String {
+    if state.viewOnlyMode && !state.runActive { return "View only" }
     switch state.phase {
     case "starting": return "Preparing…"
     case "scanning": return "Scanning card"
@@ -3604,6 +3629,11 @@ struct ContentView: View {
           .padding(.bottom, 18)
           .overlay(alignment: .bottom) {
             Rectangle().fill(Color.ddumpLine1).frame(height: 1)
+          }
+
+          if state.viewOnlyMode && !state.runActive {
+            ViewOnlyPanel()
+              .padding(.top, 18)
           }
 
           if !state.runActive && state.total == 0 {
@@ -4231,7 +4261,22 @@ struct MainActionFooter: View {
 
   @ViewBuilder
   private func actionButtons(fillWidth: Bool) -> some View {
-    if state.paused {
+    if !state.runActive {
+      Button {
+        state.setViewOnlyMode(!state.viewOnlyMode)
+      } label: {
+        if state.viewOnlyMode {
+          Label("Resume auto-import", systemImage: "play.circle.fill")
+        } else {
+          Label("View only", systemImage: "eye.fill")
+        }
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+      .help(state.viewOnlyMode
+        ? "Allow DDump to automatically import newly connected camera cards again."
+        : "Leave newly connected SSDs and cards untouched so you can browse them in Finder.")
+      .frame(maxWidth: fillWidth ? .infinity : nil)
+    } else if state.paused {
       Button {
         state.resume()
       } label: {
@@ -4316,6 +4361,41 @@ struct IdleView: View {
       .font(DDumpFont.ui(13))
       .foregroundColor(.ddumpFG2)
     }
+  }
+}
+
+struct ViewOnlyPanel: View {
+  @EnvironmentObject var state: AppState
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Image(systemName: "eye.fill")
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundColor(.ddumpWarning)
+        .frame(width: 24)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("View Only is on")
+          .font(DDumpFont.ui(14, weight: .semibold))
+          .foregroundColor(.ddumpFG1)
+        Text("Plugged-in SSDs and SD cards will stay mounted. DDump will not scan, copy, upload, or eject them. Manual import still works when you choose it yourself.")
+          .font(DDumpFont.ui(12))
+          .foregroundColor(.ddumpFG2)
+      }
+      Spacer(minLength: 8)
+      Button("Resume auto-import") {
+        state.setViewOnlyMode(false)
+      }
+      .buttonStyle(DDumpSecondaryButtonStyle())
+    }
+    .padding(12)
+    .background(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(Color.ddumpWarning.opacity(0.09))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(Color.ddumpWarning.opacity(0.45), lineWidth: 1)
+    )
   }
 }
 
@@ -5993,6 +6073,14 @@ struct DetectionSettings: View {
       }
 
       Section("Cards") {
+        Toggle("View-only mode", isOn: Binding(
+          get: { state.viewOnlyMode },
+          set: { state.setViewOnlyMode($0) }
+        ))
+        .disabled(state.runActive)
+        Text("When on, automatic runs leave newly connected SSDs and cards completely untouched and mounted. Manual import remains available.")
+          .font(.caption)
+          .foregroundColor(.secondary)
         HStack(spacing: 6) {
           TextField("Auto-trust name prefixes (comma-separated)",
                     text: $prefixes, onCommit: { state.set("TRUSTED_NAME_PREFIXES", prefixes) })

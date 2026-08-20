@@ -723,6 +723,7 @@ STATUS_FILE="${STATE_DIR}/run_status.env"
 LAST_SKIPPED_VOLUME_FILE="${STATE_DIR}/last_skipped_volume.env"
 CONTROL_DIR="${STATE_DIR}/control"
 PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
+VIEW_ONLY_FLAG="${CONTROL_DIR}/view_only.flag"
 STOP_AFTER_FILE_FLAG="${CONTROL_DIR}/stop_after_file.flag"
 KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 EJECT_NOW_FLAG="${CONTROL_DIR}/eject_now.flag"
@@ -814,6 +815,16 @@ mkdir -p "$(dirname "$TRUSTED_UUID_FILE")" "$(dirname "$MANIFEST_FILE")"
 [[ -f "$SHOOT_CLUSTER_MAP_FILE" ]] || : > "$SHOOT_CLUSTER_MAP_FILE"
 mkdir -p "$CONTROL_DIR" "$PENDING_DIR"
 /bin/rm -f "$PAUSE_FLAG" "$STOP_AFTER_FILE_FLAG" "$KEEP_MOUNTED_FLAG" "$EJECT_NOW_FLAG" "$STATUS_FILE"
+
+# View Only is a persistent pre-insert safety switch. Automatic StartOnMount
+# runs stop here before recovery, scanning, copying, uploading, or ejecting.
+# An explicit manual import or retry is still allowed through.
+if [[ -f "$VIEW_ONLY_FLAG" \
+   && "$manual_selection_active" != "1" \
+   && "${DDUMP_RETRY_EXISTING_DUMPS:-0}" != "1" ]]; then
+  log "View Only mode is active; leaving connected volumes untouched and mounted."
+  exit 0
+fi
 
 sql_quote() {
   local s="${1:-}"

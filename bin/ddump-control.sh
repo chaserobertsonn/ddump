@@ -7,6 +7,7 @@ APP_SUPPORT_DIR="${HOME}/Library/Application Support/DDump"
 STATE_DIR="${APP_SUPPORT_DIR}/state"
 CONTROL_DIR="${STATE_DIR}/control"
 PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
+VIEW_ONLY_FLAG="${CONTROL_DIR}/view_only.flag"
 STOP_FLAG="${CONTROL_DIR}/stop_after_file.flag"
 KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 LOCK_DIR="${STATE_DIR}/run.lock"
@@ -15,7 +16,7 @@ DEBUG_SCRIPT="${APP_SUPPORT_DIR}/bin/ddump-debug-snapshot.sh"
 
 usage() {
   cat <<USAGE
-Usage: $(basename "$0") <pause|resume|stop|keep-mounted|eject-when-done|settings|debug|status>
+Usage: $(basename "$0") <pause|resume|view-only|auto-import|stop|keep-mounted|eject-when-done|settings|debug|status>
 USAGE
 }
 
@@ -35,6 +36,14 @@ case "$cmd" in
   resume)
     /bin/rm -f "$PAUSE_FLAG"
     echo "DDump resumed."
+    ;;
+  view-only)
+    /usr/bin/touch "$VIEW_ONLY_FLAG"
+    echo "View Only is on. Newly connected cards and drives will stay untouched and mounted."
+    ;;
+  auto-import)
+    /bin/rm -f "$VIEW_ONLY_FLAG"
+    echo "View Only is off. Automatic card import is enabled."
     ;;
   stop)
     /usr/bin/touch "$STOP_FLAG"
@@ -74,6 +83,11 @@ case "$cmd" in
       echo "Pause flag: on"
     else
       echo "Pause flag: off"
+    fi
+    if [[ -f "$VIEW_ONLY_FLAG" ]]; then
+      echo "View Only: on (automatic imports blocked)"
+    else
+      echo "View Only: off"
     fi
     if [[ -f "$STOP_FLAG" ]]; then
       echo "Stop flag: on"

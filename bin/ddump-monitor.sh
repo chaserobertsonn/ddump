@@ -13,6 +13,7 @@ if [[ -z "$STATUS_FILE" || -z "$CONTROL_DIR" || -z "$LOCK_DIR" ]]; then
 fi
 
 PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
+VIEW_ONLY_FLAG="${CONTROL_DIR}/view_only.flag"
 STOP_FLAG="${CONTROL_DIR}/stop_after_file.flag"
 KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,6 +142,11 @@ while true; do
     keep_state="OFF (card will auto-eject on success)"
   fi
   echo "Keep Mounted: ${keep_state}"
+  if [[ -f "$VIEW_ONLY_FLAG" ]]; then
+    echo "View Only: ON (new automatic imports are blocked)"
+  else
+    echo "View Only: OFF"
+  fi
   if [[ -n "$debug_notice" ]]; then
     echo "Debug: ${debug_notice}"
   fi
