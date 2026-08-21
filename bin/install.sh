@@ -9,7 +9,7 @@ CLOUD_IDLE_WATCH_LABEL="com.ddump.cloud-idle-watch"
 DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
-APP_VERSION="${DDUMP_VERSION:-0.3.16}"
+APP_VERSION="${DDUMP_VERSION:-0.3.17}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -73,6 +73,8 @@ elif [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
   <string>DDump</string>
   <key>CFBundleDisplayName</key>
   <string>DDump</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 Chase Robertson</string>
   <key>CFBundleIdentifier</key>
   <string>com.ddump.app</string>
   <key>CFBundleVersion</key>
@@ -96,7 +98,6 @@ elif [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
 PLIST
     if [[ -f "${PROJECT_DIR}/app/Assets/AppIcon.icns" ]]; then
       cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
-      cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/DefaultAppIcon.icns"
     fi
     if [[ -f "${PROJECT_DIR}/app/PrivacyInfo.xcprivacy" ]]; then
       cp "${PROJECT_DIR}/app/PrivacyInfo.xcprivacy" "${APP_BUNDLE}/Contents/Resources/PrivacyInfo.xcprivacy"
@@ -104,6 +105,7 @@ PLIST
     if [[ -d "${PROJECT_DIR}/app/Assets/Fonts" ]]; then
       mkdir -p "${APP_BUNDLE}/Contents/Resources/Fonts"
       cp "${PROJECT_DIR}/app/Assets/Fonts"/*.otf "${APP_BUNDLE}/Contents/Resources/Fonts/" 2>/dev/null || true
+      cp "${PROJECT_DIR}/app/Assets/Fonts/OFL.txt" "${APP_BUNDLE}/Contents/Resources/Fonts/OFL.txt"
     fi
     for asset in logo-icon.png logo-icon-512.png logo-mark.svg; do
       if [[ -f "${PROJECT_DIR}/app/Assets/${asset}" ]]; then
@@ -304,15 +306,18 @@ add_missing_key 'CAMERA_CARD_SCAN_MAX_DEPTH' '"10"'
 replace_key_if_exact 'CAMERA_CARD_SCAN_MAX_DEPTH' '6' '10'
 add_missing_key 'CAMERA_CARD_HINT_DIRS' '"DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC"'
 add_missing_key 'CAMERA_CARD_REJECT_INSTALLER_SHAPES' '"1"'
-add_missing_key 'CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY' '"1"' "Wait for cameras and drones to finish exposing media before classifying the volume."
-add_missing_key 'CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS' '"2"'
-add_missing_key 'CAMERA_CARD_STABLE_SCAN_MIN_WAIT_SECONDS' '"4"'
-add_missing_key 'CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS' '"30"'
-add_missing_key 'CAMERA_CARD_STABLE_SCAN_REQUIRED_PASSES' '"2"'
+add_missing_key 'CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY' '"1"' "Wait for cameras and drones to expose media before classifying the volume."
+replace_key_if_exact 'CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY' '0' '1'
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS' '"1"'
+replace_key_if_exact 'CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS' '2' '1'
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_QUIET_SECONDS' '"5"'
+add_missing_key 'CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS' '"120"'
+replace_key_if_exact 'CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS' '30' '120'
 add_missing_key 'PROMPT_NO_EJECT_ON_START' '"0"'
 add_missing_key 'EJECT_TIMEOUT_SECONDS' '"20"' "Maximum seconds to wait for macOS card eject before continuing with upload."
 add_missing_key 'SOURCE_SUBDIR_FALLBACK_ON_EMPTY_SELECTION' '"1"'
 add_missing_key 'USE_FAST_SEEN_INDEX' '"1"'
+add_missing_key 'DUMP_MEMORY_SCOPE' '"global"' "Exact duplicate protection across every dated folder under the Dump Folder."
 add_missing_key 'MIN_FREE_SPACE_GB' '"5"' "Minimum local staging free space required before import; 0 disables."
 replace_key_if_exact 'MIN_FREE_SPACE_GB' '100' '5'
 add_missing_key 'FINDERSERVER_BIN' '"$HOME/.local/bin/finderserver"' "Helper command for starting/refreshing shared Finder mounts."
@@ -430,6 +435,7 @@ add_missing_key 'NTFY_NOTIFY_CARD_ALMOST_FULL' '"1"'
 add_missing_key 'NTFY_NOTIFY_INTEGRITY_WARNING' '"1"'
 add_missing_key 'NTFY_NOTIFY_PENDING_RECOVERY_MISSING' '"1"'
 add_missing_key 'MACOS_NOTIFY_STAGING_STARTED' '"1"'
+add_missing_key 'MACOS_NOTIFICATIONS_ENABLED' '"1"' "Master switch for macOS notifications."
 add_missing_key 'MACOS_NOTIFY_CARD_EJECTED' '"1"'
 add_missing_key 'MACOS_NOTIFY_UPLOAD_STARTED' '"1"'
 add_missing_key 'MACOS_NOTIFY_UPLOAD_COMPLETE' '"1"'
@@ -450,8 +456,6 @@ add_missing_key 'NETWORK_RESUME_ENABLED' '"1"' "When internet reconnects and pen
 add_missing_key 'NETWORK_RESUME_CHECK_SECONDS' '"20"' "Network watcher poll interval."
 add_missing_key 'NETWORK_RESUME_COOLDOWN_SECONDS' '"120"' "Minimum seconds between reconnect-triggered retry runs."
 add_missing_key 'APP_COLOR_SCHEME' '"system"' "App appearance: system | light | dark."
-add_missing_key 'APP_ICON_DEFAULT_LIGHT' '""' "Stored icon preset ID used when app appearance is light."
-add_missing_key 'APP_ICON_DEFAULT_DARK' '""' "Stored icon preset ID used when app appearance is dark."
 if [[ "$fresh_config" == "1" ]]; then
   add_missing_key 'ONBOARDING_COMPLETED' '"0"' "First-run setup wizard completion flag."
 else

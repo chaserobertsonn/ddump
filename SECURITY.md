@@ -1,7 +1,9 @@
 # Security Policy
 
-DDump is currently distributed unsigned for early testers. macOS may
-show Gatekeeper warnings until a signed and notarized release is available.
+Public DDump releases are signed with Developer ID and notarized by Apple.
+Local development builds are explicitly named `-unsigned` and must not be
+published. Report any public download that triggers an unidentified-developer
+warning because it may be incomplete or tampered with.
 
 Please do not publish secrets in issues. Redact:
 

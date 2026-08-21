@@ -36,12 +36,13 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
 - Auto-start on mount via LaunchAgent.
 - Photo-aware card detection (silent skip for non-photo volumes).
 - Trust flow with `Trust / Just this time / Skip / Never`.
+- Manual import offers `Trust Card & Auto-Import` or `Import Once`.
 - UUID trust memory and UUID blocklist.
 - Name-prefix auto-trust rules.
 - Per-card source-folder memory (no forced whole-card scans).
 - Manual select import mode (specific files/folders only).
 - Lookback-based candidate filtering (time-window ingest safety).
-- Runtime controls: pause, resume, stop-after-file.
+- Runtime controls: timed pause imports, pause/resume active copy, stop-after-file.
 - Runtime eject controls: do-not-eject, eject-after-file.
 
 ### B) Copy verification and data safety
@@ -140,16 +141,10 @@ It is built around verifiable, recoverable transfers, not “best effort” sync
   auto-eject, scan window, offline shoot name, and ntfy basics.
 - Restart setup wizard button in General settings; each wizard page can be
   skipped.
-- General settings include destination mode, destination folders, appearance, and update checks.
+- General settings include destination mode, destination folders, theme, and update checks.
 - Launch-size setting: remember last window size, compact, or large.
 - Info tooltips (`i`) for key settings.
 - Theme mode: light/dark/system.
-- Icon preset library:
-  - Upload/store multiple icon presets.
-  - Apply selected icon now.
-  - Remove presets.
-  - Choose default icon for light mode.
-  - Choose default icon for dark mode.
 
 ### H) Packaging and deployment behavior
 

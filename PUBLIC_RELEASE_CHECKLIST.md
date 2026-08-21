@@ -6,7 +6,9 @@
 - Internal audit/scope notes removed from the public tree.
 - Private drive names and personal default notification topic removed from shipped defaults.
 - Update checks are off by default and use GitHub Releases when enabled.
-- DMG packaging script added for unsigned early-tester distribution.
+- Signed installer app replaces the Terminal-based `.command` install path.
+- Public DMG packaging fails closed unless Developer ID signing and notarytool
+  keychain-profile variables are explicitly supplied.
 - Shell syntax check passes with `bash -n bin/*.sh`.
 - Swift parse check passes with a writable module cache.
 - Calendar settings wizard added with Apple Calendar permission, Calendar Link
@@ -30,8 +32,8 @@
 
 ## Known Limitations
 
-- The app is currently unsigned and not notarized. Early testers may need to approve it
-  in macOS Privacy & Security after first launch.
+- Public signing and notarization require a Developer ID Application certificate
+  and a local notarytool keychain profile. Neither credential belongs in Git.
 - Auto-update is not Sparkle yet. DDump checks GitHub Releases and opens the
   installer asset or release page for the user. Full one-click/automatic app
   replacement should wait until the app is signed and notarized.
@@ -51,10 +53,19 @@
 
 ## Pre-Release Checks
 
+- Confirm the Apple Developer team will permanently own `com.ddump.app` and
+  `com.ddump.app.installer`; changing identifiers later resets macOS trust and
+  permission identity.
 - Run `bash -n bin/*.sh`.
 - Run `CLANG_MODULE_CACHE_PATH=/private/tmp/ddump-clang-cache swiftc -parse-as-library -o /private/tmp/DDump-check app/DDumpApp.swift`.
 - Run `./scripts/public-readiness-check.sh`.
-- Build the DMG with `./scripts/package-dmg.sh`.
+- Build a local-only test DMG with `./scripts/package-dmg.sh`; confirm the output
+  filename ends in `-unsigned.dmg`.
+- Build the public DMG with `DDUMP_RELEASE_MODE=1`, `DDUMP_SIGN_IDENTITY`, and
+  `DDUMP_NOTARY_PROFILE` set. Confirm notarytool reports `Accepted`.
+- Confirm both the embedded DDump.app submission and final DMG submission were
+  accepted, and inspect both notarization logs for warnings.
+- Confirm `codesign --verify`, `stapler validate`, and `spctl` all pass.
 - Install from the DMG on a clean macOS user account.
 - Confirm Settings opens, Cloud setup stays opt-in, and update checks are off by default.
 - Confirm the first-run wizard appears on a clean account and can be completed
@@ -69,7 +80,8 @@
 
 ## Senior-Dev Public-Launch Follow-Ups
 
-- Sign and notarize with Apple Developer ID.
+- Run the first signed/notarized release on a clean Mac and inspect the saved
+  notarization log for warnings before publishing it.
 - Add Sparkle or an equivalent signed update feed after notarized builds are
   stable. Until then, the in-app updater should only open the latest installer.
 - Position Mac Calendar as the primary public calendar path. Keep direct Google

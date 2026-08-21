@@ -31,7 +31,8 @@ It is built for high-confidence transfer workflows:
 
 - Lookback-only import scanning (default 24h).
 - Manual select import for specific folders/files from a mounted card.
-- Persistent View Only mode for browsing an SSD or SD card without any automatic scan, copy, upload, or eject action.
+- Timed Pause Imports control for browsing storage without automatic scan, copy,
+  upload, or eject. Choose indefinite, 1 hour, 8 hours, 1 day, or custom days.
 - Per-card saved source folder choices (avoids scanning whole card repeatedly).
 - Do Not Eject and Eject After This File controls.
 - Stop-after-file and Pause/Resume controls.
@@ -41,11 +42,13 @@ It is built for high-confidence transfer workflows:
 
 - Dump Folder-first architecture (cloud outage does not block card copy).
 - Pending upload queue with retry schedule.
-- Incomplete-session recovery runs before new card work.
+- New card copying runs before older cloud/backup recovery, so an unavailable
+  sync destination cannot delay the first safe card copy.
 - Reinsert-priority handling for files marked missing/incomplete.
 - Backup Folder reconciliation: skips re-copy if backup already matches source stats.
 - Optional SQLite state engine (beta), default OFF.
-- Dump Folder memory mode (default) to dedupe safely without DB.
+- Dump Folder memory mode (default) indexes prior dated folders by name and
+  size, then uses SHA-256 to confirm exact content before skipping a file.
 
 ### 3) Backup-folder and cloud robustness
 
@@ -205,18 +208,44 @@ Includes:
 ## Install
 
 Download the latest DMG from GitHub Releases, open it, then double-click
-`Install DDump.command`. The installer creates `~/Applications/DDump.app` and
-the helper files under your user Library.
+`Install DDump`. The notarized installer app creates `~/Applications/DDump.app`
+and the helper files under your user Library without opening Terminal.
 
 DDump release DMGs are built as universal Mac apps (`arm64` and `x86_64`) with
 a macOS 13.0+ deployment target. macOS 15.x users should use DDump 0.3.1 or
 newer; DDump 0.3.0 was accidentally built on a newer SDK as a macOS 26-only
 binary.
 
-Early builds are unsigned until the Apple Developer ID release is ready. If
-macOS blocks launch, open System Settings -> Privacy & Security, scroll to the
-security message for DDump, choose Open Anyway, then launch DDump again. You can
-also control-click the installer or app and choose Open.
+Public builds are signed with Developer ID, notarized by Apple, and stapled to
+the DMG. Developers can still make an explicitly named `-unsigned.dmg` for local
+testing; those artifacts must not be published.
+
+To build a public release, first create and install a Developer ID Application
+certificate. Store notarization credentials in the login keychain once; use an
+app-specific password, not the Apple Account password:
+
+```bash
+xcrun notarytool store-credentials "DDump-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID" \
+  --password "YOUR_APP_SPECIFIC_PASSWORD"
+```
+
+Then run:
+
+```bash
+DDUMP_RELEASE_MODE=1 \
+DDUMP_SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" \
+DDUMP_NOTARY_PROFILE="DDump-notary" \
+DDUMP_VERSION="0.3.17" \
+./scripts/package-dmg.sh
+```
+
+The release command fails unless the Developer ID identity and notarytool
+keychain profile are explicitly provided. It signs and notarizes DDump.app
+before embedding it, then signs the installer and notarizes the final DMG.
+Tickets are stapled and signature, stapler, and Gatekeeper checks must pass. If
+any public step fails, the incomplete public DMG is removed.
 
 If a card does not auto-import, open DDump manually and use Settings -> General
 -> Troubleshoot. The troubleshooter checks the card watcher, Dump Folder,
@@ -400,6 +429,9 @@ folders like `DCIM/101_2026` under the Backup Folder.
   `DCIM/100MSDCF`, Fujifilm `DCIM/100_FUJI`, Panasonic `DCIM/100_PANA`, DJI
   `DCIM/DJI_001`, GoPro `DCIM/100GOPRO`, and any DCIM subtree with supported
   photo/video files.
+- Camera-shaped and trusted volumes must expose an unchanged eligible-media
+  inventory for five seconds before copying. DDump checks again before eject;
+  a changing card stays mounted and a trusted card is rescanned.
 - If no files match the scan window, DDump leaves the card mounted and looks for
   the newest older shoot so the user can choose whether to import it manually.
 - Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.

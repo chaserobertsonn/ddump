@@ -43,8 +43,6 @@ enum DDumpPaths {
   static var pendingDir: URL { appSupport.appendingPathComponent("state/pending_uploads") }
   static var lastSkippedVolumeFile: URL { appSupport.appendingPathComponent("state/last_skipped_volume.env") }
   static var appNotificationQueue: URL { appSupport.appendingPathComponent("state/app_notifications.tsv") }
-  static var iconLibraryDir: URL { appSupport.appendingPathComponent("icons") }
-  static var iconPresetManifest: URL { iconLibraryDir.appendingPathComponent("presets.json") }
   static var scriptFile: URL { appSupport.appendingPathComponent("bin/ddump.sh") }
   static var controlDir: URL { appSupport.appendingPathComponent("state/control") }
   static var manualSelectionFile: URL { appSupport.appendingPathComponent("state/manual_selection.paths") }
@@ -53,6 +51,7 @@ enum DDumpPaths {
   static var lockDir: URL { appSupport.appendingPathComponent("state/run.lock") }
   static var pauseFlag: URL { controlDir.appendingPathComponent("pause.flag") }
   static var viewOnlyFlag: URL { controlDir.appendingPathComponent("view_only.flag") }
+  static var viewOnlyUntilFile: URL { controlDir.appendingPathComponent("view_only_until_epoch.txt") }
   static var stopFlag: URL { controlDir.appendingPathComponent("stop_after_file.flag") }
   static var keepMountedFlag: URL { controlDir.appendingPathComponent("keep_mounted.flag") }
   static var appCloudKeepaliveFile: URL { controlDir.appendingPathComponent("app_cloud_keepalive.touch") }
@@ -200,6 +199,7 @@ final class AppState: ObservableObject {
   @Published var config: [String: String] = [:]
   @Published var paused: Bool = false
   @Published var viewOnlyMode: Bool = false
+  @Published var viewOnlyUntilEpoch: TimeInterval = 0
   @Published var stopRequested: Bool = false
   @Published var ejectQueued: Bool = false
   @Published var keepMountedRequested: Bool = false
@@ -222,6 +222,7 @@ final class AppState: ObservableObject {
   @Published var onboardingRestartRequested: Bool = false
   @Published var skippedVolumeNotice: SkippedVolumeNotice?
   @Published var appleCalendars: [CalendarChoice] = []
+  @Published var macOSNotificationAuthorization: UNAuthorizationStatus = .notDetermined
 
   private var timer: Timer?
   private var mountKeepaliveTimer: Timer?
@@ -234,9 +235,15 @@ final class AppState: ObservableObject {
   }
 
   init() {
-    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     refreshStatus()
     refreshConfig()
+    if get("MACOS_NOTIFICATIONS_ENABLED", default: "1") == "1" {
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
+        self.refreshMacOSNotificationAuthorization()
+      }
+    } else {
+      refreshMacOSNotificationAuthorization()
+    }
     refreshControlFlags()
     refreshLockState()
     refreshHealth()
@@ -286,6 +293,7 @@ final class AppState: ObservableObject {
       return
     }
     try? "".write(to: url, atomically: true, encoding: .utf8)
+    guard get("MACOS_NOTIFICATIONS_ENABLED", default: "1") == "1" else { return }
 
     for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
       let parts = rawLine.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
@@ -454,13 +462,33 @@ final class AppState: ObservableObject {
   func refreshControlFlags() {
     let fm = FileManager.default
     let p = fm.fileExists(atPath: DDumpPaths.pauseFlag.path)
-    let v = fm.fileExists(atPath: DDumpPaths.viewOnlyFlag.path)
+    var v = fm.fileExists(atPath: DDumpPaths.viewOnlyFlag.path)
+    var viewOnlyUntil = (try? String(contentsOf: DDumpPaths.viewOnlyUntilFile, encoding: .utf8))
+      .flatMap { TimeInterval($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+    if v && viewOnlyUntil > 0 && viewOnlyUntil <= Date().timeIntervalSince1970 {
+      do {
+        try fm.removeItem(at: DDumpPaths.viewOnlyFlag)
+        guard !fm.fileExists(atPath: DDumpPaths.viewOnlyFlag.path) else {
+          throw CocoaError(.fileWriteUnknown)
+        }
+        v = false
+        viewOnlyUntil = 0
+        if fm.fileExists(atPath: DDumpPaths.viewOnlyUntilFile.path) {
+          try? fm.removeItem(at: DDumpPaths.viewOnlyUntilFile)
+        }
+        lastUtilityMessage = "Import pause ended. Automatic card imports are back on."
+      } catch {
+        v = true
+        lastUtilityMessage = "The pause timer ended, but DDump could not resume imports: \(error.localizedDescription)"
+      }
+    }
     let s = fm.fileExists(atPath: DDumpPaths.stopFlag.path)
     let e = fm.fileExists(atPath: DDumpPaths.ejectNowFlag.path)
     let k = fm.fileExists(atPath: DDumpPaths.keepMountedFlag.path)
     DispatchQueue.main.async {
       self.paused = p
       self.viewOnlyMode = v
+      self.viewOnlyUntilEpoch = viewOnlyUntil
       self.stopRequested = s
       self.ejectQueued = e
       self.keepMountedRequested = k
@@ -932,6 +960,61 @@ printf 'url=%s\\n' "$link"
     writeShellConfig(key: key, value: value, at: DDumpPaths.configFile)
   }
 
+  func setMacOSNotificationsEnabled(_ enabled: Bool) {
+    set("MACOS_NOTIFICATIONS_ENABLED", enabled ? "1" : "0")
+    guard enabled else { return }
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+      self.refreshMacOSNotificationAuthorization()
+      guard !granted else { return }
+      DispatchQueue.main.async {
+        self.lastUtilityMessage = error?.localizedDescription
+          ?? "Mac notifications are blocked. Allow DDump in System Settings > Notifications."
+      }
+    }
+  }
+
+  func refreshMacOSNotificationAuthorization() {
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      DispatchQueue.main.async {
+        self.macOSNotificationAuthorization = settings.authorizationStatus
+      }
+    }
+  }
+
+  func openMacOSNotificationSettings() {
+    guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+    NSWorkspace.shared.open(url)
+  }
+
+  func sendTestMacOSNotification() {
+    let center = UNUserNotificationCenter.current()
+    center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+      self.refreshMacOSNotificationAuthorization()
+      guard granted else {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = error?.localizedDescription
+            ?? "Mac notifications are blocked. Allow DDump in System Settings > Notifications."
+        }
+        return
+      }
+      let content = UNMutableNotificationContent()
+      content.title = "DDump notifications are on"
+      content.body = "Import and storage alerts will appear here."
+      content.sound = .default
+      let request = UNNotificationRequest(
+        identifier: "ddump.test.\(UUID().uuidString)",
+        content: content,
+        trigger: nil
+      )
+      center.add(request) { addError in
+        guard let addError else { return }
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not send the test notification: \(addError.localizedDescription)"
+        }
+      }
+    }
+  }
+
   func connectAppleCalendar() {
     let store = EKEventStore()
     lastUtilityMessage = "Asking macOS for Calendar access..."
@@ -1324,21 +1407,79 @@ client_secret=\(quotedClientSecret)
     paused = false
   }
 
-  func setViewOnlyMode(_ enabled: Bool) {
+  func setViewOnlyMode(_ enabled: Bool, duration: TimeInterval? = nil) {
     guard !runActive else {
       lastUtilityMessage = "Wait for the current run to finish before changing View Only mode."
       return
     }
-    ensureControlDir()
+    let fm = FileManager.default
+    let until = duration.map { Date().timeIntervalSince1970 + $0 } ?? 0
+    do {
+      try fm.createDirectory(at: DDumpPaths.controlDir, withIntermediateDirectories: true)
+      if enabled {
+        if duration != nil {
+          try "\(Int(until))\n".write(to: DDumpPaths.viewOnlyUntilFile, atomically: true, encoding: .utf8)
+        } else if fm.fileExists(atPath: DDumpPaths.viewOnlyUntilFile.path) {
+          try fm.removeItem(at: DDumpPaths.viewOnlyUntilFile)
+        }
+        try Data().write(to: DDumpPaths.viewOnlyFlag, options: .atomic)
+      } else {
+        if fm.fileExists(atPath: DDumpPaths.viewOnlyFlag.path) {
+          try fm.removeItem(at: DDumpPaths.viewOnlyFlag)
+        }
+        if fm.fileExists(atPath: DDumpPaths.viewOnlyUntilFile.path) {
+          try fm.removeItem(at: DDumpPaths.viewOnlyUntilFile)
+        }
+      }
+    } catch {
+      lastUtilityMessage = "Could not change the import pause: \(error.localizedDescription)"
+      refreshControlFlags()
+      return
+    }
     if enabled {
-      FileManager.default.createFile(atPath: DDumpPaths.viewOnlyFlag.path, contents: Data())
+      viewOnlyUntilEpoch = until
       viewOnlyMode = true
-      lastUtilityMessage = "View Only is on. Newly connected cards and drives will stay untouched and mounted."
+      lastUtilityMessage = "Imports are paused \(viewOnlyDurationLabel.lowercased()). Newly connected cards and drives will stay untouched and mounted."
     } else {
-      try? FileManager.default.removeItem(at: DDumpPaths.viewOnlyFlag)
       viewOnlyMode = false
+      viewOnlyUntilEpoch = 0
       lastUtilityMessage = "Automatic card import is back on."
     }
+  }
+
+  func pauseAutoImportsForCustomDays() {
+    let alert = NSAlert()
+    alert.messageText = "Pause imports for custom days"
+    alert.informativeText = "Enter a whole number of days. DDump will resume automatic imports when the timer ends."
+    alert.alertStyle = .informational
+    let field = NSTextField(string: "2")
+    field.placeholderString = "Number of days"
+    field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+    alert.accessoryView = field
+    alert.addButton(withTitle: "Pause Imports")
+    alert.addButton(withTitle: "Cancel")
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    let raw = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let days = Int(raw), (1...3650).contains(days) else {
+      lastUtilityMessage = "Enter a whole number from 1 to 3650 days."
+      return
+    }
+    setViewOnlyMode(true, duration: TimeInterval(days) * 24 * 60 * 60)
+  }
+
+  var viewOnlyDurationLabel: String {
+    guard viewOnlyUntilEpoch > 0 else { return "indefinitely" }
+    let remaining = max(0, viewOnlyUntilEpoch - Date().timeIntervalSince1970)
+    if remaining >= 23 * 60 * 60 {
+      let days = Int(ceil(Double(remaining) / Double(24 * 60 * 60)))
+      return "for \(days) day\(days == 1 ? "" : "s")"
+    }
+    if remaining >= 59 * 60 {
+      let hours = Int(ceil(Double(remaining) / Double(60 * 60)))
+      return "for \(hours) hour\(hours == 1 ? "" : "s")"
+    }
+    let minutes = max(1, Int(ceil(Double(remaining) / 60.0)))
+    return "for \(minutes) minute\(minutes == 1 ? "" : "s")"
   }
 
   func stop() {
@@ -3265,7 +3406,7 @@ DDump will guide this in order:
     panel.canCreateDirectories = false
     panel.directoryURL = URL(fileURLWithPath: "/Volumes")
     panel.prompt = "Select Folder to Import"
-    panel.message = "Pick the card itself or a folder on the card. DDump will scan it with the current scan window and copy it again even if it was seen before."
+    panel.message = "Pick the card itself or a folder on the card. Choose the card volume if you want DDump to recognize it automatically in the future."
     guard panel.runModal() == .OK else { return }
 
     let selected = panel.urls.map(\.path).filter { !$0.isEmpty }
@@ -3276,12 +3417,14 @@ DDump will guide this in order:
 
     let confirmAlert = NSAlert()
     confirmAlert.messageText = "Import selected folder"
-    confirmAlert.informativeText = "DDump will scan the selected folder or card volume using the current scan window. This trusts the selection for this import only and forces a fresh copy."
+    confirmAlert.informativeText = "Trusting a card saves its hardware ID so DDump imports it automatically next time. Import Once does not change your trusted-card list. Exact files already present in the Dump Folder will be skipped either way."
     confirmAlert.alertStyle = .informational
+    confirmAlert.addButton(withTitle: "Trust Card & Auto-Import")
     confirmAlert.addButton(withTitle: "Import Once")
     confirmAlert.addButton(withTitle: "Cancel")
-    guard confirmAlert.runModal() == .alertFirstButtonReturn else { return }
-    let manualPolicy = "once"
+    let response = confirmAlert.runModal()
+    guard response != .alertThirdButtonReturn else { return }
+    let manualPolicy = response == .alertFirstButtonReturn ? "trust" : "once"
 
     do {
       try FileManager.default.createDirectory(
@@ -3303,7 +3446,9 @@ DDump will guide this in order:
     task.environment = env
     do {
       try task.run()
-      lastUtilityMessage = "Manual import started. DDump will scan \(selected.count) selected folder(s) and force a fresh copy."
+      lastUtilityMessage = manualPolicy == "trust"
+        ? "Manual import started. DDump will remember eligible card volumes for automatic imports."
+        : "Manual import started for \(selected.count) selected folder(s)."
     } catch {
       lastUtilityMessage = "Could not start manual import: \(error.localizedDescription)"
     }
@@ -3576,7 +3721,7 @@ struct ContentView: View {
   }
 
   var phaseLabel: String {
-    if state.viewOnlyMode && !state.runActive { return "View only" }
+    if state.viewOnlyMode && !state.runActive { return "Imports paused" }
     switch state.phase {
     case "starting": return "Preparing…"
     case "scanning": return "Scanning card"
@@ -4262,20 +4407,30 @@ struct MainActionFooter: View {
   @ViewBuilder
   private func actionButtons(fillWidth: Bool) -> some View {
     if !state.runActive {
-      Button {
-        state.setViewOnlyMode(!state.viewOnlyMode)
-      } label: {
-        if state.viewOnlyMode {
+      if state.viewOnlyMode {
+        Button {
+          state.setViewOnlyMode(false)
+        } label: {
           Label("Resume auto-import", systemImage: "play.circle.fill")
-        } else {
-          Label("View only", systemImage: "eye.fill")
         }
+        .buttonStyle(DDumpSecondaryButtonStyle())
+        .help("Allow DDump to automatically import newly connected camera cards again.")
+        .frame(maxWidth: fillWidth ? .infinity : nil)
+      } else {
+        Menu {
+          Button("Indefinite") { state.setViewOnlyMode(true) }
+          Button("1 hour") { state.setViewOnlyMode(true, duration: 60 * 60) }
+          Button("8 hours") { state.setViewOnlyMode(true, duration: 8 * 60 * 60) }
+          Button("1 day") { state.setViewOnlyMode(true, duration: 24 * 60 * 60) }
+          Divider()
+          Button("Custom days…") { state.pauseAutoImportsForCustomDays() }
+        } label: {
+          Label("Pause imports", systemImage: "pause.circle.fill")
+        }
+        .menuStyle(.borderlessButton)
+        .help("Pause automatic imports before connecting storage you only want to browse.")
+        .frame(maxWidth: fillWidth ? .infinity : nil)
       }
-      .buttonStyle(DDumpSecondaryButtonStyle())
-      .help(state.viewOnlyMode
-        ? "Allow DDump to automatically import newly connected camera cards again."
-        : "Leave newly connected SSDs and cards untouched so you can browse them in Finder.")
-      .frame(maxWidth: fillWidth ? .infinity : nil)
     } else if state.paused {
       Button {
         state.resume()
@@ -4374,7 +4529,7 @@ struct ViewOnlyPanel: View {
         .foregroundColor(.ddumpWarning)
         .frame(width: 24)
       VStack(alignment: .leading, spacing: 4) {
-        Text("View Only is on")
+        Text("Imports paused \(state.viewOnlyDurationLabel)")
           .font(DDumpFont.ui(14, weight: .semibold))
           .foregroundColor(.ddumpFG1)
         Text("Plugged-in SSDs and SD cards will stay mounted. DDump will not scan, copy, upload, or eject them. Manual import still works when you choose it yourself.")
@@ -5236,6 +5391,7 @@ struct GeneralSettings: View {
           sendBugReportButton
             .gridCellColumns(2)
         }
+        .padding(.top, 8)
         Text("Use these when a card did not import, a folder does not open, or you need to send a useful bug report.")
           .font(.caption)
           .foregroundColor(.secondary)
@@ -5326,7 +5482,16 @@ struct GeneralSettings: View {
           .foregroundColor(.secondary)
       }
 
-      AppearanceOptions()
+      Section("Theme") {
+        Picker("Appearance", selection: Binding(
+          get: { state.get("APP_COLOR_SCHEME", default: "system") },
+          set: { state.set("APP_COLOR_SCHEME", $0) }
+        )) {
+          Label("System", systemImage: "circle.lefthalf.filled").tag("system")
+          Label("Light", systemImage: "sun.max.fill").tag("light")
+          Label("Dark", systemImage: "moon.fill").tag("dark")
+        }
+      }
     }
     .formStyle(.grouped)
     .ddumpFormSkin()
@@ -5407,6 +5572,7 @@ struct GeneralSettings: View {
   private func settingsButtonLabel(_ title: String, systemImage: String) -> some View {
     Label(title, systemImage: systemImage)
       .frame(maxWidth: .infinity, alignment: .center)
+      .frame(minHeight: 24)
   }
 
   private var troubleshootPanel: some View {
@@ -6199,6 +6365,7 @@ struct NotificationEventConfig: Identifiable {
 struct NotificationsSettings: View {
   @EnvironmentObject var state: AppState
   @State private var ntfyTopic: String = ""
+  @State private var macOSNotificationsEnabled: Bool = true
   @State private var notificationTimeoutSeconds: String = "60"
   @State private var ntfyEnabled: [String: Bool] = [:]
   @State private var macosEnabled: [String: Bool] = [:]
@@ -6229,6 +6396,35 @@ struct NotificationsSettings: View {
   var body: some View {
     Form {
       Section("Delivery") {
+        HStack {
+          Toggle("Mac notifications", isOn: Binding(
+            get: { macOSNotificationsEnabled },
+            set: { value in
+              macOSNotificationsEnabled = value
+              state.setMacOSNotificationsEnabled(value)
+            }
+          ))
+          Spacer()
+          Button("Send test") {
+            state.sendTestMacOSNotification()
+          }
+          .buttonStyle(DDumpSecondaryButtonStyle())
+          .disabled(!macOSNotificationsEnabled)
+        }
+        Text("On by default. Shows DDump import, upload, eject, and warning alerts through macOS. Individual event switches are below.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+        if macOSNotificationsEnabled && state.macOSNotificationAuthorization == .denied {
+          HStack {
+            Label("Blocked by macOS", systemImage: "exclamationmark.triangle.fill")
+              .foregroundColor(.ddumpWarning)
+            Spacer()
+            Button("Open Notification Settings") {
+              state.openMacOSNotificationSettings()
+            }
+            .buttonStyle(DDumpSecondaryButtonStyle())
+          }
+        }
         VStack(alignment: .leading, spacing: 8) {
           Text("Phone alerts are optional.")
             .font(DDumpFont.ui(13, weight: .semibold))
@@ -6351,6 +6547,8 @@ struct NotificationsSettings: View {
   }
 
   func load() {
+    state.refreshMacOSNotificationAuthorization()
+    macOSNotificationsEnabled = state.get("MACOS_NOTIFICATIONS_ENABLED", default: "1") == "1"
     ntfyTopic = state.get("NTFY_TOPIC", default: "")
     notificationTimeoutSeconds = state.get("NOTIFICATION_TIMEOUT_SECONDS", default: "60")
     for event in Self.events {
@@ -7339,334 +7537,6 @@ struct CalendarProviderRow: View {
   }
 }
 
-struct IconPreset: Codable, Identifiable, Hashable {
-  let id: String
-  let name: String
-  let fileName: String
-  let createdAt: TimeInterval
-}
-
-struct AppearanceOptions: View {
-  @EnvironmentObject var state: AppState
-  @Environment(\.colorScheme) var colorScheme
-  @State private var notice: String = ""
-  @State private var refreshTrigger: Int = 0
-  @State private var colorSchemeChoice: String = "system"
-  @State private var presets: [IconPreset] = []
-  @State private var selectedPresetID: String = ""
-  @State private var defaultLightPresetID: String = ""
-  @State private var defaultDarkPresetID: String = ""
-  @State private var lastAppliedSignature: String = ""
-
-  var body: some View {
-    Group {
-      Section("Theme") {
-        Picker("Appearance", selection: $colorSchemeChoice) {
-          Label("System", systemImage: "circle.lefthalf.filled").tag("system")
-          Label("Light", systemImage: "sun.max.fill").tag("light")
-          Label("Dark", systemImage: "moon.fill").tag("dark")
-        }
-        .ddumpOnChange(of: colorSchemeChoice) { v in
-          state.set("APP_COLOR_SCHEME", v)
-          applyConfiguredDefaultIconForCurrentAppearance(force: true)
-        }
-      }
-
-      Section {
-        HStack(alignment: .top, spacing: 16) {
-          let img = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
-          Image(nsImage: img)
-            .resizable()
-            .frame(width: 96, height: 96)
-            .id(refreshTrigger)
-          VStack(alignment: .leading, spacing: 8) {
-            Text("Upload and store icon presets. You can pick one now, and set separate defaults for light and dark mode.")
-              .font(.callout).foregroundColor(.secondary)
-            Picker("Current icon", selection: $selectedPresetID) {
-              Text("Built-in DDump icon").tag("")
-              ForEach(presets) { preset in
-                Text(preset.name).tag(preset.id)
-              }
-            }
-            HStack {
-              Button("Add Icon…") { chooseIcon() }
-              Button("Apply Now") { applySelectedPresetNow() }
-              Button("Remove Selected") { removeSelectedPreset() }
-              Button("Reset") { resetIcon() }
-            }
-            Picker("Default for Light", selection: $defaultLightPresetID) {
-              Text("Built-in DDump icon").tag("")
-              ForEach(presets) { preset in
-                Text(preset.name).tag(preset.id)
-              }
-            }
-            .ddumpOnChange(of: defaultLightPresetID) { v in
-              state.set("APP_ICON_DEFAULT_LIGHT", v)
-              applyConfiguredDefaultIconForCurrentAppearance(force: true)
-            }
-
-            Picker("Default for Dark", selection: $defaultDarkPresetID) {
-              Text("Built-in DDump icon").tag("")
-              ForEach(presets) { preset in
-                Text(preset.name).tag(preset.id)
-              }
-            }
-            .ddumpOnChange(of: defaultDarkPresetID) { v in
-              state.set("APP_ICON_DEFAULT_DARK", v)
-              applyConfiguredDefaultIconForCurrentAppearance(force: true)
-            }
-            if !notice.isEmpty {
-              Text(notice).font(.caption).foregroundColor(.secondary)
-            }
-          }
-        }
-      } header: {
-        Text("App icon")
-      } footer: {
-        Text("Finder/Dock may take a moment to refresh after icon changes.")
-          .font(.caption).foregroundColor(.secondary)
-      }
-    }
-    .onAppear {
-      colorSchemeChoice = state.get("APP_COLOR_SCHEME", default: "system")
-      defaultLightPresetID = state.get("APP_ICON_DEFAULT_LIGHT")
-      defaultDarkPresetID = state.get("APP_ICON_DEFAULT_DARK")
-      loadPresets()
-      applyConfiguredDefaultIconForCurrentAppearance(force: false)
-    }
-    .ddumpOnChange(of: colorScheme) { _ in
-      if colorSchemeChoice == "system" {
-        applyConfiguredDefaultIconForCurrentAppearance(force: true)
-      }
-    }
-  }
-
-  func chooseIcon() {
-    let panel = NSOpenPanel()
-    panel.allowsMultipleSelection = false
-    panel.canChooseDirectories = false
-    panel.allowedContentTypes = [.image, .icns]
-    panel.prompt = "Use as DDump icon"
-    if panel.runModal() == .OK, let url = panel.url {
-      addPreset(from: url)
-    }
-  }
-
-  func effectiveAppearanceMode() -> String {
-    switch colorSchemeChoice {
-    case "light":
-      return "light"
-    case "dark":
-      return "dark"
-    default:
-      return colorScheme == .dark ? "dark" : "light"
-    }
-  }
-
-  func presetURL(_ preset: IconPreset) -> URL {
-    DDumpPaths.iconLibraryDir.appendingPathComponent(preset.fileName)
-  }
-
-  func loadPresets() {
-    let fm = FileManager.default
-    try? fm.createDirectory(at: DDumpPaths.iconLibraryDir, withIntermediateDirectories: true)
-    guard let data = try? Data(contentsOf: DDumpPaths.iconPresetManifest),
-          let decoded = try? JSONDecoder().decode([IconPreset].self, from: data)
-    else {
-      presets = []
-      selectedPresetID = ""
-      return
-    }
-    let filtered = decoded.filter { fm.fileExists(atPath: presetURL($0).path) }
-    presets = filtered.sorted { $0.createdAt < $1.createdAt }
-    if filtered.count != decoded.count {
-      savePresets()
-    }
-    if !selectedPresetID.isEmpty && presets.first(where: { $0.id == selectedPresetID }) == nil {
-      selectedPresetID = ""
-    }
-    if !defaultLightPresetID.isEmpty && presets.first(where: { $0.id == defaultLightPresetID }) == nil {
-      defaultLightPresetID = ""
-      state.set("APP_ICON_DEFAULT_LIGHT", "")
-    }
-    if !defaultDarkPresetID.isEmpty && presets.first(where: { $0.id == defaultDarkPresetID }) == nil {
-      defaultDarkPresetID = ""
-      state.set("APP_ICON_DEFAULT_DARK", "")
-    }
-  }
-
-  func savePresets() {
-    if let data = try? JSONEncoder().encode(presets) {
-      try? data.write(to: DDumpPaths.iconPresetManifest, options: [.atomic])
-    }
-  }
-
-  func addPreset(from url: URL) {
-    let fm = FileManager.default
-    do {
-      try fm.createDirectory(at: DDumpPaths.iconLibraryDir, withIntermediateDirectories: true)
-      let id = UUID().uuidString
-      let fileName = "\(id).icns"
-      let out = DDumpPaths.iconLibraryDir.appendingPathComponent(fileName)
-      if url.pathExtension.lowercased() == "icns" {
-        try fm.copyItem(at: url, to: out)
-      } else if let img = NSImage(contentsOf: url) {
-        try writeICNS(image: img, to: out)
-      } else {
-        notice = "Could not read image."
-        return
-      }
-      let name = url.deletingPathExtension().lastPathComponent
-      let preset = IconPreset(id: id, name: name.isEmpty ? "Icon \(presets.count + 1)" : name, fileName: fileName, createdAt: Date().timeIntervalSince1970)
-      presets.append(preset)
-      selectedPresetID = preset.id
-      savePresets()
-      applySelectedPresetNow()
-      notice = "Icon preset added and applied."
-    } catch {
-      notice = "Failed to add icon: \(error.localizedDescription)"
-    }
-  }
-
-  func applySelectedPresetNow() {
-    if selectedPresetID.isEmpty {
-      resetIcon()
-      return
-    }
-    guard let preset = presets.first(where: { $0.id == selectedPresetID }) else {
-      notice = "Selected preset not found."
-      return
-    }
-    installIcon(from: presetURL(preset))
-  }
-
-  func removeSelectedPreset() {
-    guard !selectedPresetID.isEmpty,
-          let idx = presets.firstIndex(where: { $0.id == selectedPresetID })
-    else {
-      notice = "Select an icon preset to remove."
-      return
-    }
-    let preset = presets[idx]
-    try? FileManager.default.removeItem(at: presetURL(preset))
-    presets.remove(at: idx)
-    if defaultLightPresetID == preset.id {
-      defaultLightPresetID = ""
-      state.set("APP_ICON_DEFAULT_LIGHT", "")
-    }
-    if defaultDarkPresetID == preset.id {
-      defaultDarkPresetID = ""
-      state.set("APP_ICON_DEFAULT_DARK", "")
-    }
-    selectedPresetID = ""
-    savePresets()
-    notice = "Preset removed."
-    applyConfiguredDefaultIconForCurrentAppearance(force: true)
-  }
-
-  func applyConfiguredDefaultIconForCurrentAppearance(force: Bool) {
-    let mode = effectiveAppearanceMode()
-    let presetID = (mode == "dark") ? defaultDarkPresetID : defaultLightPresetID
-    let signature = "\(mode):\(presetID)"
-    if !force && signature == lastAppliedSignature {
-      return
-    }
-    lastAppliedSignature = signature
-    if presetID.isEmpty {
-      if force {
-        resetIcon()
-      }
-      return
-    }
-    guard let preset = presets.first(where: { $0.id == presetID }) else {
-      notice = "Default \(mode) icon preset is missing."
-      return
-    }
-    installIcon(from: presetURL(preset))
-  }
-
-  func installIcon(from url: URL) {
-    let target = Bundle.main.bundleURL
-      .appendingPathComponent("Contents/Resources/AppIcon.icns")
-    do {
-      if FileManager.default.fileExists(atPath: target.path) {
-        try FileManager.default.removeItem(at: target)
-      }
-      if url.pathExtension.lowercased() == "icns" {
-        try FileManager.default.copyItem(at: url, to: target)
-      } else if let img = NSImage(contentsOf: url) {
-        try writeICNS(image: img, to: target)
-      }
-      // Touch the bundle so Finder/Dock pick up the change
-      let task = Process()
-      task.launchPath = "/usr/bin/touch"
-      task.arguments = [Bundle.main.bundlePath]
-      try? task.run()
-      task.waitUntilExit()
-      refreshTrigger += 1
-      notice = "Icon updated. May take a moment to appear everywhere."
-    } catch {
-      notice = "Failed to set icon: \(error.localizedDescription)"
-    }
-  }
-
-  func resetIcon() {
-    let target = Bundle.main.bundleURL
-      .appendingPathComponent("Contents/Resources/AppIcon.icns")
-    let defaultIcon = Bundle.main.bundleURL
-      .appendingPathComponent("Contents/Resources/DefaultAppIcon.icns")
-    do {
-      if FileManager.default.fileExists(atPath: defaultIcon.path) {
-        if FileManager.default.fileExists(atPath: target.path) {
-          try FileManager.default.removeItem(at: target)
-        }
-        try FileManager.default.copyItem(at: defaultIcon, to: target)
-      }
-      refreshTrigger += 1
-      selectedPresetID = ""
-      notice = "Reset to default icon."
-    } catch {
-      notice = "Failed to reset icon: \(error.localizedDescription)"
-    }
-  }
-
-  func writeICNS(image: NSImage, to url: URL) throws {
-    let sizes: [(Int, String)] = [
-      (16, "icon_16x16.png"),
-      (32, "icon_16x16@2x.png"),
-      (32, "icon_32x32.png"),
-      (64, "icon_32x32@2x.png"),
-      (128, "icon_128x128.png"),
-      (256, "icon_128x128@2x.png"),
-      (256, "icon_256x256.png"),
-      (512, "icon_256x256@2x.png"),
-      (512, "icon_512x512.png"),
-      (1024, "icon_512x512@2x.png"),
-    ]
-    let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-      .appendingPathComponent("DDumpIcon-\(UUID().uuidString).iconset")
-    try? FileManager.default.removeItem(at: tmp)
-    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-    for (sz, name) in sizes {
-      let target = NSImage(size: NSSize(width: sz, height: sz))
-      target.lockFocus()
-      image.draw(in: NSRect(x: 0, y: 0, width: sz, height: sz))
-      target.unlockFocus()
-      if let tiff = target.tiffRepresentation,
-         let rep = NSBitmapImageRep(data: tiff),
-         let png = rep.representation(using: .png, properties: [:]) {
-        try png.write(to: tmp.appendingPathComponent(name))
-      }
-    }
-    let task = Process()
-    task.launchPath = "/usr/bin/iconutil"
-    task.arguments = ["-c", "icns", "-o", url.path, tmp.path]
-    try task.run()
-    task.waitUntilExit()
-    try? FileManager.default.removeItem(at: tmp)
-  }
-}
-
 func pickFolder(prompt: String) -> String? {
   let panel = NSOpenPanel()
   panel.canChooseDirectories = true
@@ -7704,10 +7574,11 @@ func applyConfiguredWindowMode(_ window: NSWindow) {
 
 /// AppDelegate that assigns a frameAutosaveName to the main window so macOS
 /// remembers its position/size across launches.
-class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
+class WindowMemoryDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   weak var appState: AppState?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    UNUserNotificationCenter.current().delegate = self
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
       for window in NSApplication.shared.windows {
         // SwiftUI Settings scenes create separate windows; tag the main one only
@@ -7718,6 +7589,18 @@ class WindowMemoryDelegate: NSObject, NSApplicationDelegate {
           applyConfiguredWindowMode(window)
         }
       }
+    }
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    if appState?.get("MACOS_NOTIFICATIONS_ENABLED", default: "1") == "1" {
+      completionHandler([.banner, .sound])
+    } else {
+      completionHandler([])
     }
   }
 

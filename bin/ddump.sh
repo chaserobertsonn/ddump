@@ -49,6 +49,9 @@ notify() {
   local msg="$2"
   local kind="${3:-info}"   # info | warn | done
   local event_key="${4:-general}"
+  if [[ "${MACOS_NOTIFICATIONS_ENABLED:-1}" != "1" ]]; then
+    return
+  fi
   if [[ "$event_key" != "general" ]] && [[ "$(macos_notify_enabled "$event_key")" != "1" ]]; then
     return
   fi
@@ -254,35 +257,6 @@ is_trusted_name_prefix() {
   return 1
 }
 
-volume_has_photos() {
-  # Quick scan: does the volume contain at least one file matching PHOTO_FILE_EXTENSIONS?
-  # Caps at 4 dirs deep, bails on first match.
-  local vol_path="$1"
-  local raw_list="${PHOTO_FILE_EXTENSIONS:-}"
-  [[ -n "$raw_list" ]] || return 1
-
-  local find_args=()
-  local item
-  IFS=',' read -r -a _ext_list <<<"$raw_list"
-  local first=1
-  find_args+=(\( )
-  for item in "${_ext_list[@]}"; do
-    item="$(trim "$item")"
-    [[ -n "$item" ]] || continue
-    item="${item#.}"
-    if [[ "$first" -eq 0 ]]; then
-      find_args+=(-o)
-    fi
-    find_args+=(-iname "*.${item}")
-    first=0
-  done
-  find_args+=(\) )
-
-  local hit
-  hit="$(/usr/bin/find "$vol_path" -maxdepth 4 -type f "${find_args[@]}" -print -quit 2>/dev/null)"
-  [[ -n "$hit" ]]
-}
-
 photo_find_name_args() {
   local raw_list="${PHOTO_FILE_EXTENSIONS:-}"
   [[ -n "$raw_list" ]] || return 1
@@ -303,8 +277,17 @@ photo_find_name_args() {
   printf '%s\0' ')'
 }
 
+volume_has_photos() {
+  local vol_path="$1"
+  local count
+  count="$(camera_card_media_sample_count "$vol_path")"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  [[ "$count" -ge 1 ]]
+}
+
 camera_card_media_sample_count() {
   local vol_path="$1"
+  local error_file="${2:-/dev/null}"
   local max_depth limit count
   max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-6}" "6")"
   limit="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
@@ -316,11 +299,49 @@ camera_card_media_sample_count() {
     find_args+=("$token")
   done < <(photo_find_name_args)
 
-  count="$(/usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f "${find_args[@]}" -print 2>/dev/null \
+  count="$(/usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f "${find_args[@]}" -print 2>"$error_file" \
     | /usr/bin/head -n "$limit" \
     | /usr/bin/wc -l \
     | /usr/bin/awk '{print $1}')"
   printf '%s' "${count:-0}"
+}
+
+volume_has_camera_structure() {
+  # A newly mounted camera can expose its directory tree before media entries.
+  # This is only a reason to wait, not enough by itself to import or eject.
+  local vol_path="$1"
+  [[ -d "${vol_path}/DCIM" \
+    || -d "${vol_path}/PRIVATE" \
+    || -d "${vol_path}/M4ROOT" \
+    || -d "${vol_path}/CLIP" \
+    || -d "${vol_path}/XDROOT" \
+    || -d "${vol_path}/AVCHD" ]]
+}
+
+camera_card_inventory_signature() {
+  # One full, exact inventory snapshot. Perl performs stat calls in-process so
+  # this avoids spawning one `stat` process for every file on the card.
+  local vol_path="$1"
+  local error_file="${2:-/dev/null}"
+  local max_depth
+  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-10}" "10")"
+
+  local find_args=()
+  local token
+  while IFS= read -r -d '' token; do
+    find_args+=("$token")
+  done < <(photo_find_name_args)
+
+  /usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f "${find_args[@]}" -print0 2>"$error_file" \
+    | /usr/bin/perl -0ne '
+        chomp;
+        my @stat = stat($_);
+        next unless @stat;
+        printf "%s\t%d\t%d\n", unpack("H*", $_), $stat[7], $stat[9];
+      ' \
+    | LC_ALL=C /usr/bin/sort \
+    | /usr/bin/shasum -a 256 \
+    | /usr/bin/awk '{print $1}'
 }
 
 volume_has_camera_hint_dir() {
@@ -346,17 +367,6 @@ volume_has_camera_hint_dir() {
   return 1
 }
 
-volume_has_dcim_media_tree() {
-  local vol_path="$1"
-  local min_media count
-  [[ -d "${vol_path}/DCIM" ]] || return 1
-  min_media="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
-  [[ "$min_media" -lt 1 ]] && min_media=1
-  count="$(camera_card_media_sample_count_under "${vol_path}/DCIM")"
-  [[ "$count" =~ ^[0-9]+$ ]] || count=0
-  [[ "$count" -ge "$min_media" ]]
-}
-
 camera_card_media_sample_count_under() {
   local root_path="$1"
   local max_depth limit count
@@ -378,56 +388,42 @@ camera_card_media_sample_count_under() {
   printf '%s' "${count:-0}"
 }
 
-camera_card_inventory_signature() {
-  # A camera or drone can mount before macOS has finished exposing its files.
-  # Hash the current eligible-media inventory so callers can wait for it to stop
-  # changing before deciding that the device is not a camera card.
-  local vol_path="$1"
-  local max_depth
-  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SCAN_MAX_DEPTH:-10}" "10")"
-
-  local find_args=()
-  local token
-  while IFS= read -r -d '' token; do
-    find_args+=("$token")
-  done < <(photo_find_name_args)
-
-  /usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f "${find_args[@]}" \
-    -exec /usr/bin/stat -f '%N\t%z\t%m' {} + 2>/dev/null \
-    | /usr/bin/sort \
-    | /usr/bin/shasum -a 256 \
-    | /usr/bin/awk '{print $1}'
-}
-
 wait_for_camera_card_inventory() {
   local vol_name="$1"
   local vol_path="$2"
+  local max_wait_override="${3:-}"
   [[ "${CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY:-1}" == "1" ]] || return 0
 
-  local interval_seconds min_wait_seconds max_wait_seconds required_passes
-  interval_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS:-2}" "2")"
-  min_wait_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_MIN_WAIT_SECONDS:-4}" "4")"
-  max_wait_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS:-30}" "30")"
-  required_passes="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_REQUIRED_PASSES:-2}" "2")"
-  [[ "$max_wait_seconds" -lt "$min_wait_seconds" ]] && max_wait_seconds="$min_wait_seconds"
+  local interval_seconds max_wait_seconds min_media quiet_seconds
+  interval_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS:-1}" "1")"
+  max_wait_seconds="$(sanitize_positive_int "${max_wait_override:-${CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS:-120}}" "120")"
+  min_media="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
+  quiet_seconds="$(sanitize_positive_int "${CAMERA_CARD_STABLE_SCAN_QUIET_SECONDS:-5}" "5")"
 
-  local previous_signature="" signature="" stable_passes=0 elapsed=0 saw_media=0
+  local elapsed=0 media_count=0 error_file error_detail="" signature="" previous_signature="" last_change_elapsed=0
+  CAMERA_INVENTORY_SETTLED_SIGNATURE=""
+  error_file="$(/usr/bin/mktemp "${STATE_DIR}/inventory-errors.XXXXXX")"
   while [[ "$elapsed" -le "$max_wait_seconds" ]]; do
-    signature="$(camera_card_inventory_signature "$vol_path" 2>/dev/null || true)"
-    [[ -n "$signature" ]] || signature="unreadable"
-    if [[ "$signature" == "$previous_signature" ]]; then
-      stable_passes=$((stable_passes + 1))
+    : >"$error_file"
+    media_count="$(camera_card_media_sample_count "$vol_path" "$error_file" || true)"
+    [[ "$media_count" =~ ^[0-9]+$ ]] || media_count=0
+    signature="$(camera_card_inventory_signature "$vol_path" "$error_file" || true)"
+    if [[ -s "$error_file" ]]; then
+      error_detail="$(/usr/bin/head -n 1 "$error_file" | /usr/bin/tr '\n' ' ')"
+      previous_signature=""
+      last_change_elapsed="$elapsed"
+    elif [[ -n "$signature" && "$signature" == "$previous_signature" ]]; then
+      :
     else
       previous_signature="$signature"
-      stable_passes=1
+      last_change_elapsed="$elapsed"
     fi
-
-    if volume_has_photos "$vol_path"; then
-      saw_media=1
-    fi
-    if [[ "$elapsed" -ge "$min_wait_seconds" && "$stable_passes" -ge "$required_passes" ]] \
-      && { [[ "$saw_media" == "1" ]] || [[ "$elapsed" -ge "$max_wait_seconds" ]]; }; then
-      log "Camera inventory settled for ${vol_name} after ${elapsed}s (stable passes=${stable_passes}, media_seen=${saw_media})."
+    if [[ "$media_count" -ge "$min_media" \
+      && $((elapsed - last_change_elapsed)) -ge "$quiet_seconds" \
+      && ! -s "$error_file" ]]; then
+      CAMERA_INVENTORY_SETTLED_SIGNATURE="$signature"
+      /bin/rm -f "$error_file"
+      log "Camera inventory settled for ${vol_name} after ${elapsed}s (${media_count}+ media files visible, ${quiet_seconds}s unchanged)."
       return 0
     fi
 
@@ -436,7 +432,15 @@ wait_for_camera_card_inventory() {
     elapsed=$((elapsed + interval_seconds))
   done
 
-  log "Camera inventory did not expose media before the ${max_wait_seconds}s settle limit for ${vol_name}; continuing with normal detection."
+  if [[ ! -s "$error_file" && -n "$signature" && "$media_count" -gt 0 ]]; then
+    CAMERA_INVENTORY_SETTLED_SIGNATURE="$signature"
+  fi
+  /bin/rm -f "$error_file"
+  if [[ -n "$error_detail" ]]; then
+    log "Camera inventory was not readable for ${vol_name}: ${error_detail}"
+  else
+    log "Camera inventory did not expose ${min_media} media files before the ${max_wait_seconds}s arrival limit for ${vol_name}; continuing with normal detection."
+  fi
   return 0
 }
 
@@ -473,17 +477,17 @@ volume_looks_like_camera_card() {
 
   min_media="$(sanitize_positive_int "${CAMERA_CARD_MIN_MEDIA_FILES:-3}" "3")"
   [[ "$min_media" -lt 1 ]] && min_media=1
-  media_count="$(camera_card_media_sample_count "$vol_path")"
-  [[ "$media_count" =~ ^[0-9]+$ ]] || media_count=0
   dcim_media_count="$(camera_card_media_sample_count_under "${vol_path}/DCIM")"
   [[ "$dcim_media_count" =~ ^[0-9]+$ ]] || dcim_media_count=0
 
   if [[ "$has_installer" -eq 1 && "$has_hint" -ne 1 ]]; then
     return 1
   fi
-  if [[ "$dcim_media_count" -ge "$min_media" ]] || volume_has_dcim_media_tree "$vol_path"; then
+  if [[ "$dcim_media_count" -ge "$min_media" ]]; then
     return 0
   fi
+  media_count="$(camera_card_media_sample_count "$vol_path")"
+  [[ "$media_count" =~ ^[0-9]+$ ]] || media_count=0
   if [[ "$has_hint" -eq 1 && "$media_count" -ge 1 ]]; then
     return 0
   fi
@@ -517,11 +521,19 @@ count_recent_photos_on_volume() {
   done
   find_args+=(\) )
 
-  local total recent hours
+  local counts total recent hours
   hours="$(sanitize_positive_int "$recent_hours" "24")"
-  total="$(/usr/bin/find "$vol_path" -maxdepth 6 -type f "${find_args[@]}" 2>/dev/null | /usr/bin/wc -l | /usr/bin/awk '{print $1}')"
-  recent="$(/usr/bin/find "$vol_path" -maxdepth 6 -type f "${find_args[@]}" -print0 2>/dev/null \
-    | /usr/bin/perl -0ne 'BEGIN { $hours = shift @ARGV; $cutoff = time - ($hours * 3600); $count = 0 } chomp; $count++ if -f $_ && (stat($_))[9] >= $cutoff; END { print $count }' "$hours")"
+  counts="$(/usr/bin/find "$vol_path" -maxdepth "${CAMERA_CARD_SCAN_MAX_DEPTH:-10}" -type f "${find_args[@]}" -print0 2>/dev/null \
+    | /usr/bin/perl -0ne '
+        BEGIN { $hours = shift @ARGV; $cutoff = time - ($hours * 3600); $total = 0; $recent = 0 }
+        chomp;
+        my @stat = stat($_);
+        next unless @stat;
+        $total++;
+        $recent++ if $stat[9] >= $cutoff;
+        END { printf "%d\t%d", $total, $recent }
+      ' "$hours")"
+  IFS=$'\t' read -r total recent <<<"$counts"
   printf '%s\t%s\n' "$total" "$recent"
 }
 
@@ -619,6 +631,14 @@ release_run_lock() {
 acquire_run_lock
 cleanup() {
   stop_finderserver_timer_guard 2>/dev/null || true
+  if [[ -n "${DUMP_MEMORY_INDEX_PID:-}" ]] && /bin/kill -0 "$DUMP_MEMORY_INDEX_PID" >/dev/null 2>&1; then
+    /bin/kill -TERM "$DUMP_MEMORY_INDEX_PID" >/dev/null 2>&1 || true
+    wait "$DUMP_MEMORY_INDEX_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${DUMP_MEMORY_INDEX_FILE:-}" ]]; then
+    /bin/rm -f "$DUMP_MEMORY_INDEX_FILE" "${DUMP_MEMORY_INDEX_READY_FILE:-}" \
+      "${DUMP_MEMORY_INDEX_DELTA_FILE:-}" "${DUMP_MEMORY_INDEX_FILE}.building" 2>/dev/null || true
+  fi
   /bin/rm -f "${PAUSE_FLAG:-}" "${STOP_AFTER_FILE_FLAG:-}" "${KEEP_MOUNTED_FLAG:-}" "${EJECT_NOW_FLAG:-}" 2>/dev/null || true
   release_run_lock
 }
@@ -677,10 +697,9 @@ CAMERA_CARD_HINT_DIRS="DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJ
 CAMERA_CARD_REJECT_INSTALLER_SHAPES="1"
 CAMERA_CARD_SOURCE_ROOT_MAX_DEPTH="2"
 CAMERA_CARD_WAIT_FOR_STABLE_INVENTORY="1"
-CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS="2"
-CAMERA_CARD_STABLE_SCAN_MIN_WAIT_SECONDS="4"
-CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS="30"
-CAMERA_CARD_STABLE_SCAN_REQUIRED_PASSES="2"
+CAMERA_CARD_STABLE_SCAN_INTERVAL_SECONDS="1"
+CAMERA_CARD_STABLE_SCAN_QUIET_SECONDS="5"
+CAMERA_CARD_STABLE_SCAN_MAX_WAIT_SECONDS="120"
 CLOUD_UPLOADS_ENABLED="0"
 ENABLE_POST_EJECT_MOVE="1"
 POST_MOVE_ROOT=""
@@ -724,6 +743,7 @@ LAST_SKIPPED_VOLUME_FILE="${STATE_DIR}/last_skipped_volume.env"
 CONTROL_DIR="${STATE_DIR}/control"
 PAUSE_FLAG="${CONTROL_DIR}/pause.flag"
 VIEW_ONLY_FLAG="${CONTROL_DIR}/view_only.flag"
+VIEW_ONLY_UNTIL_FILE="${CONTROL_DIR}/view_only_until_epoch.txt"
 STOP_AFTER_FILE_FLAG="${CONTROL_DIR}/stop_after_file.flag"
 KEEP_MOUNTED_FLAG="${CONTROL_DIR}/keep_mounted.flag"
 EJECT_NOW_FLAG="${CONTROL_DIR}/eject_now.flag"
@@ -765,6 +785,7 @@ NTFY_NOTIFY_CARD_ALMOST_FULL="1"
 NTFY_NOTIFY_INTEGRITY_WARNING="1"
 NTFY_NOTIFY_PENDING_RECOVERY_MISSING="1"
 MACOS_NOTIFY_STAGING_STARTED="1"
+MACOS_NOTIFICATIONS_ENABLED="1"
 MACOS_NOTIFY_CARD_EJECTED="1"
 MACOS_NOTIFY_UPLOAD_STARTED="1"
 MACOS_NOTIFY_UPLOAD_COMPLETE="1"
@@ -816,9 +837,21 @@ mkdir -p "$(dirname "$TRUSTED_UUID_FILE")" "$(dirname "$MANIFEST_FILE")"
 mkdir -p "$CONTROL_DIR" "$PENDING_DIR"
 /bin/rm -f "$PAUSE_FLAG" "$STOP_AFTER_FILE_FLAG" "$KEEP_MOUNTED_FLAG" "$EJECT_NOW_FLAG" "$STATUS_FILE"
 
-# View Only is a persistent pre-insert safety switch. Automatic StartOnMount
+# View Only is a pre-insert safety switch. It can be indefinite or expire at a
+# saved epoch. Automatic StartOnMount
 # runs stop here before recovery, scanning, copying, uploading, or ejecting.
 # An explicit manual import or retry is still allowed through.
+if [[ -f "$VIEW_ONLY_FLAG" && -f "$VIEW_ONLY_UNTIL_FILE" ]]; then
+  view_only_until="$(/usr/bin/tr -dc '0-9' < "$VIEW_ONLY_UNTIL_FILE" 2>/dev/null || true)"
+  if [[ -n "$view_only_until" && "$view_only_until" -le "$(/bin/date '+%s')" ]]; then
+    if /bin/rm -f "$VIEW_ONLY_FLAG" && [[ ! -f "$VIEW_ONLY_FLAG" ]]; then
+      /bin/rm -f "$VIEW_ONLY_UNTIL_FILE" || true
+      log "Timed import pause ended; automatic imports are back on."
+    else
+      log "Timed import pause ended, but the pause flag could not be removed; imports remain paused."
+    fi
+  fi
+fi
 if [[ -f "$VIEW_ONLY_FLAG" \
    && "$manual_selection_active" != "1" \
    && "${DDUMP_RETRY_EXISTING_DUMPS:-0}" != "1" ]]; then
@@ -967,37 +1000,36 @@ status_escape() {
 write_status() {
   local status_file_tmp
   status_file_tmp="$(/usr/bin/mktemp "${STATE_DIR}/status.${run_id}.XXXXXX")"
-  {
-    /bin/echo "run_id=\"$(status_escape "$run_id")\""
-    /bin/echo "phase=\"$(status_escape "$current_status_phase")\""
-    /bin/echo "message=\"$(status_escape "$current_status_message")\""
-    /bin/echo "volume=\"$(status_escape "$current_status_volume")\""
-    /bin/echo "dest_dir=\"$(status_escape "$last_dest_dir")\""
-    /bin/echo "total=\"$(status_escape "$current_status_total")\""
-    /bin/echo "processed=\"$(status_escape "$current_status_processed")\""
-    /bin/echo "imported=\"$(status_escape "$current_status_imported")\""
-    /bin/echo "skipped=\"$(status_escape "$current_status_skipped")\""
-    /bin/echo "failed=\"$(status_escape "$current_status_failed")\""
-    /bin/echo "upload_total=\"$(status_escape "$current_upload_total")\""
-    /bin/echo "upload_done=\"$(status_escape "$current_upload_done")\""
-    /bin/echo "upload_failed=\"$(status_escape "$current_upload_failed")\""
-    /bin/echo "upload_percent=\"$(status_escape "$current_upload_percent")\""
-    /bin/echo "upload_speed=\"$(status_escape "$current_upload_speed")\""
-    /bin/echo "upload_eta=\"$(status_escape "$current_upload_eta")\""
-    /bin/echo "upload_target=\"$(status_escape "$current_upload_target")\""
-    /bin/echo "upload_item=\"$(status_escape "$current_upload_item")\""
-    /bin/echo "upload_last_error=\"$(status_escape "$current_upload_last_error")\""
-    /bin/echo "card_ejected=\"$(status_escape "$current_card_ejected")\""
-    /bin/echo "eject_status=\"$(status_escape "$current_eject_status")\""
-    /bin/echo "startup_cause=\"$(status_escape "$startup_cause")\""
-    /bin/echo "startup_volume=\"$(status_escape "$startup_volume")\""
-    /bin/echo "startup_path=\"$(status_escape "$startup_path")\""
-    /bin/echo "startup_uuid=\"$(status_escape "$startup_uuid")\""
-    /bin/echo "summary_errors=\"$(status_escape "$summary_errors_total")\""
-    /bin/echo "started_at=\"$(status_escape "$run_timestamp")\""
-    /bin/echo "started_epoch=\"$(status_escape "$run_started_epoch")\""
-    /bin/echo "updated_at=\"$(/bin/date '+%Y-%m-%d %H:%M:%S')\""
-  } >"$status_file_tmp"
+  printf 'run_id="%s"\nphase="%s"\nmessage="%s"\nvolume="%s"\ndest_dir="%s"\ntotal="%s"\nprocessed="%s"\nimported="%s"\nskipped="%s"\nfailed="%s"\nupload_total="%s"\nupload_done="%s"\nupload_failed="%s"\nupload_percent="%s"\nupload_speed="%s"\nupload_eta="%s"\nupload_target="%s"\nupload_item="%s"\nupload_last_error="%s"\ncard_ejected="%s"\neject_status="%s"\nstartup_cause="%s"\nstartup_volume="%s"\nstartup_path="%s"\nstartup_uuid="%s"\nsummary_errors="%s"\nstarted_at="%s"\nstarted_epoch="%s"\nupdated_at="%s"\n' \
+    "$(status_escape "$run_id")" \
+    "$(status_escape "$current_status_phase")" \
+    "$(status_escape "$current_status_message")" \
+    "$(status_escape "$current_status_volume")" \
+    "$(status_escape "$last_dest_dir")" \
+    "$(status_escape "$current_status_total")" \
+    "$(status_escape "$current_status_processed")" \
+    "$(status_escape "$current_status_imported")" \
+    "$(status_escape "$current_status_skipped")" \
+    "$(status_escape "$current_status_failed")" \
+    "$(status_escape "$current_upload_total")" \
+    "$(status_escape "$current_upload_done")" \
+    "$(status_escape "$current_upload_failed")" \
+    "$(status_escape "$current_upload_percent")" \
+    "$(status_escape "$current_upload_speed")" \
+    "$(status_escape "$current_upload_eta")" \
+    "$(status_escape "$current_upload_target")" \
+    "$(status_escape "$current_upload_item")" \
+    "$(status_escape "$current_upload_last_error")" \
+    "$(status_escape "$current_card_ejected")" \
+    "$(status_escape "$current_eject_status")" \
+    "$(status_escape "$startup_cause")" \
+    "$(status_escape "$startup_volume")" \
+    "$(status_escape "$startup_path")" \
+    "$(status_escape "$startup_uuid")" \
+    "$(status_escape "$summary_errors_total")" \
+    "$(status_escape "$run_timestamp")" \
+    "$(status_escape "$run_started_epoch")" \
+    "$(/bin/date '+%Y-%m-%d %H:%M:%S')" >"$status_file_tmp"
   /bin/mv "$status_file_tmp" "$STATUS_FILE"
 }
 
@@ -3340,19 +3372,36 @@ find_candidates() {
   local out_file="$2"
   local hours="${3:-${LOOKBACK_HOURS:-24}}"
   hours="$(sanitize_positive_int "$hours" "24")"
-  local cutoff scan_file src_file file_mtime
+  local cutoff scan_file
   cutoff="$(candidate_cutoff_epoch "$hours")"
   scan_file="$(/usr/bin/mktemp "${STATE_DIR}/candidate-scan.XXXXXX")"
   : >"$scan_file"
 
-  while IFS= read -r -d '' src_file; do
-    is_ignored_source_file "$src_file" && continue
-    has_allowed_extension "$src_file" "$FILE_EXTENSIONS" || continue
-    file_mtime="$(/usr/bin/stat -f '%m' "$src_file" 2>/dev/null || /bin/echo 0)"
-    [[ "$file_mtime" =~ ^[0-9]+$ ]] || file_mtime=0
-    [[ "$file_mtime" -ge "$cutoff" ]] || continue
-    /usr/bin/printf '%s\t%s\n' "$file_mtime" "$src_file" >>"$scan_file"
-  done < <(/usr/bin/find "$source_root" -type f -print0 2>/dev/null)
+  /usr/bin/find "$source_root" -type f -print0 2>/dev/null \
+    | DDUMP_CANDIDATE_CUTOFF="$cutoff" DDUMP_CANDIDATE_EXTENSIONS="${FILE_EXTENSIONS:-}" \
+      /usr/bin/perl -0ne '
+        BEGIN {
+          $cutoff = 0 + ($ENV{"DDUMP_CANDIDATE_CUTOFF"} // 0);
+          for my $ext (split /,/, lc($ENV{"DDUMP_CANDIDATE_EXTENSIONS"} // "")) {
+            $ext =~ s/^\s+|\s+$//g;
+            $ext =~ s/^\.//;
+            $allowed{$ext} = 1 if $ext ne "";
+          }
+          $filter_extensions = scalar(keys %allowed) > 0;
+        }
+        chomp;
+        next if m{/(?:\.fseventsd|\.Spotlight-V100|\.Trashes|\.TemporaryItems|\.DocumentRevisions-V100)/};
+        (my $base = $_) =~ s{.*/}{};
+        next if $base eq ".DS_Store" || $base =~ /^\._/ || $base eq "fseventsd-uuid" || $base eq ".metadata_never_index" || $base eq ".VolumeIcon.icns";
+        if ($filter_extensions) {
+          my ($ext) = $base =~ /\.([^.]+)$/;
+          next unless defined($ext) && $allowed{lc($ext)};
+        }
+        my @stat = stat($_);
+        next unless @stat && $stat[9] >= $cutoff;
+        next if /[\t\r\n]/;
+        printf "%d\t%s\n", $stat[9], $_;
+      ' >>"$scan_file"
 
   if [[ -s "$scan_file" ]]; then
     /usr/bin/sort -t '	' -k1,1nr -k2,2r "$scan_file" \
@@ -3488,22 +3537,27 @@ staging_memory_has_candidate() {
   local dest_dir="$1"
   local rel_path="$2"
   local file_size="$3"
+  local source_file="$4"
   [[ -d "$dest_dir" ]] || return 1
   [[ -n "$rel_path" ]] || return 1
+  [[ -f "$source_file" ]] || return 1
 
   local safe_rel_path expected_path expected_size base_name hit
   safe_rel_path="${rel_path//:/_}"
   expected_path="${dest_dir}/${safe_rel_path}"
   if [[ -f "$expected_path" ]]; then
     expected_size="$(file_size_bytes "$expected_path")"
-    if [[ "$expected_size" == "$file_size" ]]; then
+    if [[ "$expected_size" == "$file_size" ]] && file_hash_matches "$source_file" "$expected_path"; then
       return 0
     fi
   fi
 
   base_name="$(basename "$safe_rel_path")"
-  hit="$(/usr/bin/find "$dest_dir" -type f -name "$base_name" -size "${file_size}c" -print -quit 2>/dev/null || true)"
-  [[ -n "$hit" ]]
+  while IFS= read -r hit || [[ -n "$hit" ]]; do
+    [[ -f "$hit" ]] || continue
+    file_hash_matches "$source_file" "$hit" && return 0
+  done < <(/usr/bin/find "$dest_dir" -type f -name "$base_name" -size "${file_size}c" -print 2>/dev/null)
+  return 1
 }
 
 file_hash_matches() {
@@ -3514,6 +3568,68 @@ file_hash_matches() {
   source_hash="$(/usr/bin/shasum -a 256 "$source_file" 2>/dev/null | /usr/bin/awk '{print $1}')"
   existing_hash="$(/usr/bin/shasum -a 256 "$existing_file" 2>/dev/null | /usr/bin/awk '{print $1}')"
   [[ -n "$source_hash" && "$source_hash" == "$existing_hash" ]]
+}
+
+DUMP_MEMORY_INDEX_FILE=""
+DUMP_MEMORY_INDEX_READY_FILE=""
+DUMP_MEMORY_INDEX_DELTA_FILE=""
+DUMP_MEMORY_INDEX_PID=""
+
+start_dump_memory_index() {
+  [[ "${DUMP_MEMORY_SCOPE:-global}" == "global" ]] || return 0
+  [[ -d "${DEST_ROOT:-}" ]] || return 0
+  DUMP_MEMORY_INDEX_FILE="$(/usr/bin/mktemp "${STATE_DIR}/dump-memory-index.XXXXXX")"
+  DUMP_MEMORY_INDEX_READY_FILE="${DUMP_MEMORY_INDEX_FILE}.ready"
+  DUMP_MEMORY_INDEX_DELTA_FILE="${DUMP_MEMORY_INDEX_FILE}.delta"
+  : >"$DUMP_MEMORY_INDEX_DELTA_FILE"
+  local build_file="${DUMP_MEMORY_INDEX_FILE}.building"
+  (
+    /usr/bin/find "$DEST_ROOT" -type f -print0 2>>"$LOG_FILE" \
+      | /usr/bin/perl -0ne '
+          chomp;
+          my @stat = stat($_);
+          next unless @stat;
+          (my $base = $_) =~ s{.*/}{};
+          next if $base =~ /[\t\r\n]/ || $_ =~ /[\t\r\n]/;
+          printf "%d:%s\t%s\n", $stat[7], $base, $_;
+        ' \
+      | LC_ALL=C /usr/bin/sort -t $'\t' -k1,1 -k2,2 >"$build_file"
+    /bin/mv "$build_file" "$DUMP_MEMORY_INDEX_FILE"
+    : >"$DUMP_MEMORY_INDEX_READY_FILE"
+  ) &
+  DUMP_MEMORY_INDEX_PID="$!"
+  log "Building one Dump Folder duplicate index in the background."
+}
+
+ensure_dump_memory_index_ready() {
+  [[ -n "$DUMP_MEMORY_INDEX_FILE" ]] || return 1
+  while [[ ! -f "$DUMP_MEMORY_INDEX_READY_FILE" ]] \
+    && [[ -n "$DUMP_MEMORY_INDEX_PID" ]] \
+    && /bin/kill -0 "$DUMP_MEMORY_INDEX_PID" >/dev/null 2>&1; do
+    /bin/sleep 0.1
+  done
+  [[ -f "$DUMP_MEMORY_INDEX_READY_FILE" && -f "$DUMP_MEMORY_INDEX_FILE" ]]
+}
+
+dump_memory_index_candidate_paths() {
+  local base_name="$1"
+  local file_size="$2"
+  local key="${file_size}:${base_name}"
+  if [[ -s "$DUMP_MEMORY_INDEX_DELTA_FILE" ]]; then
+    /usr/bin/awk -F'\t' -v k="$key" '$1 == k { print substr($0, index($0, "\t") + 1) }' "$DUMP_MEMORY_INDEX_DELTA_FILE"
+  fi
+  LC_ALL=C /usr/bin/look "${key}"$'\t' "$DUMP_MEMORY_INDEX_FILE" 2>/dev/null \
+    | /usr/bin/cut -f2-
+}
+
+record_dump_memory_index_entry() {
+  local path="$1"
+  local file_size="$2"
+  [[ -n "$DUMP_MEMORY_INDEX_DELTA_FILE" && -f "$path" ]] || return 0
+  local base_name
+  base_name="$(basename "$path")"
+  [[ "$base_name" != *$'\t'* && "$base_name" != *$'\n'* && "$path" != *$'\t'* && "$path" != *$'\n'* ]] || return 0
+  /usr/bin/printf '%s:%s\t%s\n' "$file_size" "$base_name" "$path" >>"$DUMP_MEMORY_INDEX_DELTA_FILE"
 }
 
 dump_memory_match_candidate() {
@@ -3527,6 +3643,18 @@ dump_memory_match_candidate() {
   [[ -d "$root" && -n "$rel_path" && -f "$source_file" ]] || return 1
   local base_name hit
   base_name="$(basename "${rel_path//:/_}")"
+
+  if [[ "$root" == "${DEST_ROOT:-}" ]] && ensure_dump_memory_index_ready; then
+    while IFS= read -r hit || [[ -n "$hit" ]]; do
+      [[ -f "$hit" ]] || continue
+      if file_hash_matches "$source_file" "$hit"; then
+        printf '%s' "$hit"
+        return 0
+      fi
+    done < <(dump_memory_index_candidate_paths "$base_name" "$file_size")
+    return 1
+  fi
+
   while IFS= read -r hit || [[ -n "$hit" ]]; do
     [[ -f "$hit" ]] || continue
     if file_hash_matches "$source_file" "$hit"; then
@@ -3560,6 +3688,18 @@ is_internal_volume() {
   internal_flag="$(/usr/sbin/diskutil info "$vol_path" 2>/dev/null | /usr/bin/awk -F': *' '/^ *Internal/ {print $2; exit}' | /usr/bin/xargs)"
   location="$(/usr/sbin/diskutil info "$vol_path" 2>/dev/null | /usr/bin/awk -F': *' '/Device Location/ {print $2; exit}' | /usr/bin/xargs)"
   [[ "$internal_flag" == "Yes" || "$location" == "Internal" ]]
+}
+
+is_external_or_removable_volume() {
+  local vol_path="$1"
+  local info internal_flag removable_flag protocol
+  info="$(/usr/sbin/diskutil info "$vol_path" 2>/dev/null || true)"
+  [[ -n "$info" ]] || return 1
+  internal_flag="$(printf '%s\n' "$info" | /usr/bin/awk -F': *' '/^ *Internal/ {print $2; exit}' | /usr/bin/xargs)"
+  removable_flag="$(printf '%s\n' "$info" | /usr/bin/awk -F': *' '/^ *Removable Media/ {print $2; exit}' | /usr/bin/xargs)"
+  protocol="$(printf '%s\n' "$info" | /usr/bin/awk -F': *' '/^ *Protocol/ {print $2; exit}' | /usr/bin/xargs)"
+  [[ "$protocol" != "Disk Image" && "$protocol" != "Virtual" ]] || return 1
+  [[ "$internal_flag" == "No" || "$removable_flag" == "Yes" ]]
 }
 
 is_uuid_trusted() {
@@ -3625,6 +3765,15 @@ remember_uuid_blocked() {
   if ! is_uuid_blocked "$uuid"; then
     /bin/echo "$uuid" >>"$BLOCKED_UUID_FILE"
   fi
+}
+
+forget_uuid_blocked() {
+  local uuid="$1"
+  [[ -n "$uuid" ]] || return 1
+  local tmp_file
+  tmp_file="$(/usr/bin/mktemp "${STATE_DIR}/blocked-uuids.XXXXXX")"
+  /usr/bin/awk -v u="$uuid" '$0 != u { print }' "$BLOCKED_UUID_FILE" >"$tmp_file"
+  /bin/mv "$tmp_file" "$BLOCKED_UUID_FILE"
 }
 
 get_card_policy_mode() {
@@ -3751,19 +3900,6 @@ load_source_roots_for_uuid() {
   return "$found_any"
 }
 
-source_root_has_media_files() {
-  local root_path="$1"
-  [[ -d "$root_path" ]] || return 1
-  /usr/bin/find "$root_path" -maxdepth 1 -type f -print0 2>/dev/null \
-    | while IFS= read -r -d '' f; do
-        is_ignored_source_file "$f" && continue
-        has_allowed_extension "$f" "$PHOTO_FILE_EXTENSIONS" || continue
-        /bin/echo "1"
-        break
-      done \
-    | /usr/bin/grep -q "1"
-}
-
 discover_media_parent_source_roots() {
   local vol_path="$1"
   local scan_file="$2"
@@ -3775,17 +3911,29 @@ discover_media_parent_source_roots() {
   raw_scan_file="$(/usr/bin/mktemp "${STATE_DIR}/source-root-files.XXXXXX")"
   : >"$raw_scan_file"
 
-  local src_file parent mtime name
-  while IFS= read -r -d '' src_file; do
-    is_ignored_source_file "$src_file" && continue
-    has_allowed_extension "$src_file" "$PHOTO_FILE_EXTENSIONS" || continue
-    parent="$(/usr/bin/dirname "$src_file")"
-    [[ -d "$parent" ]] || continue
-    mtime="$(/usr/bin/stat -f '%m' "$src_file" 2>/dev/null || /bin/echo 0)"
-    [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
-    name="$(/usr/bin/basename "$parent")"
-    /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$raw_scan_file"
-  done < <(/usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f -print0 2>/dev/null)
+  /usr/bin/find "$vol_path" -maxdepth "$max_depth" -type f -print0 2>/dev/null \
+    | DDUMP_DISCOVERY_EXTENSIONS="${PHOTO_FILE_EXTENSIONS:-}" \
+      /usr/bin/perl -0ne '
+        BEGIN {
+          for my $ext (split /,/, lc($ENV{"DDUMP_DISCOVERY_EXTENSIONS"} // "")) {
+            $ext =~ s/^\s+|\s+$//g;
+            $ext =~ s/^\.//;
+            $allowed{$ext} = 1 if $ext ne "";
+          }
+        }
+        chomp;
+        next if m{/(?:\.fseventsd|\.Spotlight-V100|\.Trashes|\.TemporaryItems|\.DocumentRevisions-V100)/};
+        (my $base = $_) =~ s{.*/}{};
+        next if $base eq ".DS_Store" || $base =~ /^\._/ || $base eq "fseventsd-uuid" || $base eq ".metadata_never_index" || $base eq ".VolumeIcon.icns";
+        my ($ext) = $base =~ /\.([^.]+)$/;
+        next unless defined($ext) && $allowed{lc($ext)};
+        my @stat = stat($_);
+        next unless @stat;
+        (my $parent = $_) =~ s{/[^/]+$}{};
+        (my $name = $parent) =~ s{.*/}{};
+        next if $parent =~ /[\t\r\n]/ || $name =~ /[\t\r\n]/;
+        printf "%d\t%s\t%s\n", $stat[9], $name, $parent;
+      ' >>"$raw_scan_file"
 
   if [[ -s "$raw_scan_file" ]]; then
     /usr/bin/awk -F'\t' '
@@ -3810,11 +3958,7 @@ discover_media_parent_source_roots() {
 discover_current_media_source_roots() {
   local vol_path="$1"
   local out_file="$2"
-  local max_depth
-  max_depth="$(sanitize_positive_int "${CAMERA_CARD_SOURCE_ROOT_MAX_DEPTH:-2}" "2")"
-  [[ "$max_depth" -lt 1 ]] && max_depth=1
-
-  local scan_file parent dir mtime name
+  local scan_file
   scan_file="$(/usr/bin/mktemp "${STATE_DIR}/source-root-scan.XXXXXX")"
   : >"$scan_file"
 
@@ -3822,43 +3966,6 @@ discover_current_media_source_roots() {
   # a candidate source root. Camera folder names vary too much to rely on DCIM
   # child naming alone (Sony MSDCF, DJI, Canon 100CANON/105EOSR6, etc.).
   discover_media_parent_source_roots "$vol_path" "$scan_file"
-
-  IFS=',' read -r -a _hint_dirs <<<"${CAMERA_CARD_HINT_DIRS:-DCIM,PRIVATE,M4ROOT,CLIP,XDROOT,AVCHD,MP_ROOT,CANONMSC,DJI,DJI_*,PANORAMA}"
-  for hint in "${_hint_dirs[@]}"; do
-    hint="$(trim "$hint")"
-    [[ -n "$hint" ]] || continue
-    if [[ "$hint" == *"*"* ]]; then
-      while IFS= read -r parent || [[ -n "$parent" ]]; do
-        [[ -d "$parent" ]] || continue
-        if source_root_has_media_files "$parent"; then
-          mtime="$(latest_allowed_file_epoch_under "$parent")"
-          [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
-          name="$(/usr/bin/basename "$parent")"
-          /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$scan_file"
-        fi
-      done < <(/usr/bin/find "$vol_path" -maxdepth 2 -type d -name "$hint" 2>/dev/null)
-      continue
-    fi
-
-    parent="${vol_path}/${hint}"
-    [[ -d "$parent" ]] || continue
-    if source_root_has_media_files "$parent"; then
-      mtime="$(latest_allowed_file_epoch_under "$parent")"
-      [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(/usr/bin/stat -f '%m' "$parent" 2>/dev/null || /bin/echo 0)"
-      name="$(/usr/bin/basename "$parent")"
-      /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$parent" >>"$scan_file"
-    fi
-    while IFS= read -r dir || [[ -n "$dir" ]]; do
-      [[ -d "$dir" ]] || continue
-      [[ "$dir" == "$parent" ]] && continue
-      if source_root_has_media_files "$dir"; then
-        mtime="$(latest_allowed_file_epoch_under "$dir")"
-        [[ "$mtime" =~ ^[0-9]+$ ]] || mtime="$(/usr/bin/stat -f '%m' "$dir" 2>/dev/null || /bin/echo 0)"
-        name="$(/usr/bin/basename "$dir")"
-        /usr/bin/printf '%s\t%s\t%s\n' "$mtime" "$name" "$dir" >>"$scan_file"
-      fi
-    done < <(/usr/bin/find "$parent" -maxdepth "$max_depth" -type d 2>/dev/null)
-  done
 
   if [[ -s "$scan_file" ]]; then
     local discovered_count
@@ -5748,26 +5855,27 @@ retry_existing_dump_folder_backups() {
 
 # ----- end folder-naming helpers ---------------------------------------------
 
-set_status_phase "starting" "Checking incomplete sessions before new card import."
+set_status_phase "starting" "Checking connected storage for new camera media."
 seed_pending_from_db_incomplete
-recover_pending_imports
-if [[ "${DDUMP_RETRY_EXISTING_DUMPS:-0}" == "1" ]]; then
-  retry_existing_dump_folder_backups
-fi
 
 run_day_folder=""
 if [[ "$CREATE_DAILY_FOLDER" == "1" ]]; then
   run_day_folder="$(/bin/date +"$DAILY_FOLDER_FORMAT")"
 fi
 
+start_dump_memory_index
+
 processed_volume_count=0
 imported_file_count_total=0
 run_stopped=0
+inventory_rescan_needed=0
+last_meaningful_volume=""
 no_candidate_volume_count=0
 no_candidate_volume_names=""
 upload_complete_volume_count=0
 upload_complete_file_count=0
 upload_complete_targets=""
+/bin/rm -f "$LAST_SKIPPED_VOLUME_FILE" 2>/dev/null || true
 
 volume_paths_file="$(/usr/bin/mktemp "${STATE_DIR}/volume-paths.${run_id}.XXXXXX")"
 : >"$volume_paths_file"
@@ -5783,10 +5891,11 @@ while IFS= read -r queued_vol_path || [[ -n "$queued_vol_path" ]]; do
   queued_vol_name="$(basename "$queued_vol_path")"
   is_ignored_volume_name "$queued_vol_name" && continue
   queued_uuid="$(get_volume_uuid "$queued_vol_path")"
-  if [[ -n "$queued_uuid" ]] && is_uuid_blocked "$queued_uuid"; then
+  if [[ -n "$queued_uuid" ]] && is_uuid_blocked "$queued_uuid" \
+    && ! { [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$queued_vol_path"; }; then
     continue
   fi
-  if volume_looks_like_camera_card "$queued_vol_path" \
+  if [[ -d "${queued_vol_path}/DCIM" ]] \
     || is_trusted_name_prefix "$queued_vol_name" \
     || is_uuid_trusted "$queued_uuid" \
     || { [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$queued_vol_path"; }; then
@@ -5834,35 +5943,47 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
 
   uuid="$(get_volume_uuid "$vol_path")"
   manual_selection_mentions_this_volume=0
+  CAMERA_INVENTORY_SETTLED_SIGNATURE=""
   if [[ "$manual_selection_active" == "1" ]] && manual_selection_mentions_volume "$vol_path"; then
     manual_selection_mentions_this_volume=1
   fi
 
-  no_uuid_volume_has_camera_shape=0
-  if [[ -z "$uuid" ]] && volume_looks_like_camera_card "$vol_path"; then
-    no_uuid_volume_has_camera_shape=1
+  if [[ "$manual_selection_mentions_this_volume" == "1" ]] \
+    || is_trusted_name_prefix "$vol_name" \
+    || is_uuid_trusted "$uuid" \
+    || volume_has_camera_structure "$vol_path" \
+    || volume_has_camera_hint_dir "$vol_path"; then
+    # Cameras and drones can mount before macOS exposes their DCIM entries.
+    # Require a short unchanged inventory before classifying or copying.
+    wait_for_camera_card_inventory "$vol_name" "$vol_path"
+  elif is_external_or_removable_volume "$vol_path"; then
+    # First insert can arrive before even DCIM exists. Give an unknown physical
+    # device a short arrival window without stalling on mounted DMG installers.
+    wait_for_camera_card_inventory "$vol_name" "$vol_path" "15"
+  fi
+
+  volume_camera_shape=0
+  if volume_looks_like_camera_card "$vol_path"; then
+    volume_camera_shape=1
   fi
   if [[ "$IGNORE_NO_UUID_VOLUMES" == "1" \
         && -z "$uuid" \
         && "$manual_selection_mentions_this_volume" != "1" \
-        && "$no_uuid_volume_has_camera_shape" != "1" ]]; then
+        && "$volume_camera_shape" != "1" ]]; then
     log "Skipping volume with no UUID and no camera-card media shape: ${vol_name} (${vol_path})"
     continue
   fi
-  if is_uuid_blocked "$uuid"; then
+  if is_uuid_blocked "$uuid" && [[ "$manual_selection_mentions_this_volume" != "1" ]]; then
     log "Skipping blocked volume: ${vol_name} (UUID: ${uuid:-none})"
     continue
   fi
-  # DJI drones and some card readers publish the volume before their DCIM tree
-  # is ready. Do not classify a just-mounted device as empty on the first scan.
-  wait_for_camera_card_inventory "$vol_name" "$vol_path"
   # Internal-volume skip: applies ONLY if the volume has no photo files. macOS sometimes
   # reports SD cards from USB-C readers as "Internal" — we don't want to silent-skip a
   # real photo card just because diskutil mislabels its location.
 
   if [[ "$SKIP_INTERNAL_VOLUMES" == "1" ]] && ! is_trusted_name_prefix "$vol_name" \
        && is_internal_volume "$vol_path" && ! is_uuid_trusted "$uuid" \
-       && ! volume_looks_like_camera_card "$vol_path" \
+       && [[ "$volume_camera_shape" != "1" ]] \
        && [[ "$manual_selection_mentions_this_volume" != "1" ]]; then
     log "Skipping internal volume that does not look like a camera card: ${vol_name}"
     continue
@@ -5872,7 +5993,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
   # not name-prefixed, and lacking camera-card shape. Prevents popup/notification
   # on DMG installers, app mounts, update volumes, etc.
   vol_has_photos=0
-  if volume_looks_like_camera_card "$vol_path"; then
+  if [[ "$volume_camera_shape" == "1" ]]; then
     vol_has_photos=1
   fi
   if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
@@ -5884,14 +6005,19 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
      && ! is_trusted_name_prefix "$vol_name" \
      && ! is_uuid_trusted "$uuid"; then
     log "Silently skipping non-camera volume: ${vol_name} (not trusted, no name prefix, no camera-card media shape)"
-    record_skipped_volume \
-      "$vol_name" \
-      "$vol_path" \
-      "$uuid" \
-      "not_camera_shape" \
-      "DDump saw ${vol_name}, but it was not trusted and did not look enough like a camera card." \
-      "Open DDump, set the scan window if needed, then use Manual import and choose the card itself. You can trust it once or forever."
-    set_status_phase "idle" "Saw ${vol_name}, but it did not look like a camera card."
+    if [[ "$processed_volume_count" -eq 0 ]]; then
+      record_skipped_volume \
+        "$vol_name" \
+        "$vol_path" \
+        "$uuid" \
+        "not_camera_shape" \
+        "DDump saw ${vol_name}, but it was not trusted and did not look enough like a camera card." \
+        "Use Manual select and choose the card itself. Choose Trust Card & Auto-Import if this is a card you always want DDump to import."
+      set_status_phase "idle" "Saw ${vol_name}, but it did not look like a camera card."
+    else
+      current_status_volume="$last_meaningful_volume"
+      set_status_phase "scanning" "Finished checking ${last_meaningful_volume}; ignored unrelated volume ${vol_name}."
+    fi
     continue
   fi
 
@@ -5914,6 +6040,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
   if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
     trusted="1"
     if [[ "$(manual_import_policy)" == "trust" && -n "$uuid" ]] && is_volume_mount_root "$vol_path"; then
+      forget_uuid_blocked "$uuid" || true
       remember_uuid "$uuid"
       set_card_policy_mode "$uuid" "remember"
       log "Manual import trusted ${vol_name} forever (UUID: ${uuid})."
@@ -5951,8 +6078,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
     log "Volume ${vol_name}: forcing re-copy from card because unfinished recovery exists for UUID ${uuid}."
   fi
   if [[ "$manual_selection_mentions_this_volume" == "1" ]]; then
-    force_recopy_for_uuid=1
-    log "Volume ${vol_name}: manual import selected; forcing fresh copy and bypassing duplicate memory for this run."
+    log "Volume ${vol_name}: manual import selected; exact Dump Folder duplicate protection remains active."
   fi
 
   manual_selection_for_volume=0
@@ -5986,6 +6112,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
   fi
 
   processed_volume_count=$((processed_volume_count + 1))
+  last_meaningful_volume="$vol_name"
   activate_ddump_app_for_card
   volume_started_epoch="$(/bin/date '+%s')"
   no_eject_hold_file="${STATE_DIR}/hold-eject.${vol_name//[^A-Za-z0-9._-]/_}.flag"
@@ -6023,6 +6150,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
   skipped_dump_memory_this_volume=0
   skipped_extension_this_volume=0
   failed_copy=0
+  inventory_changed_after_scan=0
   has_candidates_this_volume=0
   total_candidates_this_volume=0
   processed_candidates_this_volume=0
@@ -6148,7 +6276,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
       fi
 
       if [[ "$force_recopy_for_uuid" != "1" ]] && [[ "${DB_ENABLED:-0}" != "1" ]]; then
-        if staging_memory_has_candidate "$dest_dir" "$rel_path" "$file_size"; then
+        if staging_memory_has_candidate "$dest_dir" "$rel_path" "$file_size" "$src_file"; then
           skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
           record_missed_file "$vol_name" "skipped_staging_memory" "$src_file" "matched existing file in staging memory"
           processed_candidates_this_volume=$((processed_candidates_this_volume + 1))
@@ -6174,7 +6302,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
           dump_memory_scope_root="${DEST_ROOT:-}"
           ;;
       esac
-      if [[ "$force_recopy_for_uuid" != "1" && -n "$dump_memory_scope_root" ]] \
+      if [[ -n "$dump_memory_scope_root" ]] \
          && dump_memory_match_path="$(dump_memory_match_candidate "$dump_memory_scope_root" "$rel_path" "$file_size" "$src_file" 2>/dev/null)"; then
         skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
         skipped_dump_memory_this_volume=$((skipped_dump_memory_this_volume + 1))
@@ -6266,6 +6394,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
       fi
 
       record_import "$fingerprint" "$src_file" "$out_path"
+      record_dump_memory_index_entry "$out_path" "$file_size"
       db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "copied" "$out_path" "$fingerprint" ""
       if [[ "$USE_FAST_SEEN_INDEX" == "1" && -n "$uuid" ]]; then
         record_fast_seen_key "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "$fingerprint"
@@ -6402,7 +6531,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
                       dump_memory_scope_root="${DEST_ROOT:-}"
                       ;;
                   esac
-                  if [[ "$force_recopy_for_uuid" != "1" && -n "$dump_memory_scope_root" ]] \
+                  if [[ -n "$dump_memory_scope_root" ]] \
                      && dump_memory_match_path="$(dump_memory_match_candidate "$dump_memory_scope_root" "$rel_path" "$file_size" "$src_file" 2>/dev/null)"; then
                     skipped_existing_this_volume=$((skipped_existing_this_volume + 1))
                     skipped_dump_memory_this_volume=$((skipped_dump_memory_this_volume + 1))
@@ -6446,6 +6575,7 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
                     continue
                   fi
                   record_import "$fingerprint" "$src_file" "$out_path"
+                  record_dump_memory_index_entry "$out_path" "$file_size"
                   db_update_file_status "$uuid" "$source_root_rel" "$rel_path" "$file_size" "$file_mtime" "copied" "$out_path" "$fingerprint" ""
                   record_pending_import "$pending_imports_file" "$dest_dir" "$out_path"
                   /bin/echo "$out_path" >>"$imported_files_file"
@@ -6535,18 +6665,44 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
       "$uuid" \
       "all_files_already_in_dump_folder" \
       "DDump found ${skipped_dump_memory_this_volume} media file(s), but every one already matched an exact copy in the Dump Folder." \
-      "The card was left mounted. Use Select folder to import if you want to force a fresh copy into today's dump folder."
+      "The card was left mounted because no new copy was needed. New or changed media will still import normally."
     notify "DDump" "${vol_name}: no fresh copy made; files already exist in previous dump folders. Card left mounted." warn "integrity_warning"
-    ntfy_notify "integrity_warning" "DDump: no fresh copy made" "${vol_name}: ${skipped_dump_memory_this_volume} file(s) already matched previous dump-folder copies. Card left mounted; use Select folder to import to force a fresh copy."
+    ntfy_notify "integrity_warning" "DDump: no fresh copy made" "${vol_name}: ${skipped_dump_memory_this_volume} file(s) already matched previous Dump Folder copies. Card left mounted because no new copy was needed."
   fi
 
   log "Volume ${vol_name}: imported=${imported_this_volume}, skipped_known=${skipped_existing_this_volume}, skipped_ext=${skipped_extension_this_volume}, copy_status=${status}"
+
+  if [[ -n "${CAMERA_INVENTORY_SETTLED_SIGNATURE:-}" && -d "$vol_path" ]]; then
+    final_inventory_error="$(/usr/bin/mktemp "${STATE_DIR}/final-inventory-errors.XXXXXX")"
+    final_inventory_signature="$(camera_card_inventory_signature "$vol_path" "$final_inventory_error" || true)"
+    if [[ ! -s "$final_inventory_error" \
+      && -n "$final_inventory_signature" \
+      && "$final_inventory_signature" != "$CAMERA_INVENTORY_SETTLED_SIGNATURE" ]]; then
+      inventory_changed_after_scan=1
+      status="partial"
+      summary_errors_total=$((summary_errors_total + 1))
+      log "Card inventory changed after scanning ${vol_name}; leaving it mounted and scheduling a safe rescan when eligible."
+      record_attention_notice \
+        "$vol_name" \
+        "$vol_path" \
+        "$uuid" \
+        "inventory_changed_during_import" \
+        "${vol_name} exposed additional or changed media while DDump was importing." \
+        "The card was left mounted so no late file is missed. DDump will rescan a permanently trusted card automatically."
+      notify "DDump" "${vol_name}: card contents changed during import; leaving it mounted for another scan." warn "integrity_warning"
+      if is_trusted_name_prefix "$vol_name" || is_uuid_trusted "$uuid"; then
+        inventory_rescan_needed=1
+      fi
+    fi
+    /bin/rm -f "$final_inventory_error"
+  fi
 
   did_eject_msg="not requested."
   # Eject when: success + (run completed normally OR user explicitly requested "Eject Now").
   # The eject_now flag is set by the UI button; it overrides the "stopped mid-run" abort.
   if [[ "$EJECT_ON_SUCCESS" == "1" && "$failed_copy" == "0" ]] \
      && [[ "$skip_eject_for_duplicate_memory" != "1" ]] \
+     && [[ "$inventory_changed_after_scan" != "1" ]] \
      && is_volume_mount_root "$vol_path" \
      && { [[ "$run_stopped" == "0" ]] || [[ -f "$EJECT_NOW_FLAG" ]]; }; then
     wait_for_min_eject_grace "$volume_started_epoch"
@@ -6655,6 +6811,17 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
 done <"$volume_paths_file"
 /bin/rm -f "$volume_paths_file"
 
+# Old cloud/backup recovery used to run before connected-card discovery and
+# could delay a new import by minutes. New card safety is handled first; only
+# then do we spend time retrying earlier incomplete backup work.
+if [[ "$run_stopped" != "1" && ! -f "$STOP_AFTER_FILE_FLAG" ]]; then
+  set_status_phase "recovering" "Checking earlier incomplete backup sessions."
+  recover_pending_imports
+  if [[ "${DDUMP_RETRY_EXISTING_DUMPS:-0}" == "1" ]]; then
+    retry_existing_dump_folder_backups
+  fi
+fi
+
 if [[ "$processed_volume_count" -eq 0 ]]; then
   log "No trusted SD card volumes found."
 fi
@@ -6701,4 +6868,10 @@ fi
 finalize_empty_missed_report
 write_daily_digest "$daily_digest_file" "$summary_message" "$kept_mounted_msg" "blocked=${summary_post_move_blocked_total}, failed=${summary_post_move_fail_total}" "$summary_errors_total"
 stop_gdrive_mount_if_started
+if [[ "$inventory_rescan_needed" == "1" && "$run_stopped" != "1" ]]; then
+  (
+    /bin/sleep 3
+    DDUMP_MANUAL_SELECTION_FILE="" /bin/bash "${SCRIPT_DIR}/ddump.sh"
+  ) >/dev/null 2>&1 &
+fi
 exit 0

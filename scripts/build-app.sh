@@ -5,7 +5,7 @@ PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-APP_VERSION="${DDUMP_VERSION:-0.3.16}"
+APP_VERSION="${DDUMP_VERSION:-0.3.17}"
 MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_BUNDLE="${DIST_DIR}/DDump.app"
@@ -33,6 +33,8 @@ cat >"${APP_BUNDLE}/Contents/Info.plist" <<PLIST
   <string>DDump</string>
   <key>CFBundleDisplayName</key>
   <string>DDump</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 Chase Robertson</string>
   <key>CFBundleIdentifier</key>
   <string>com.ddump.app</string>
   <key>CFBundleVersion</key>
@@ -46,7 +48,7 @@ cat >"${APP_BUNDLE}/Contents/Info.plist" <<PLIST
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>${MACOS_DEPLOYMENT_TARGET}</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>DDump uses calendar events to name shoot folders and resolve photo clusters between scheduled shoots.</string>
   <key>NSCalendarsUsageDescription</key>
@@ -57,7 +59,6 @@ PLIST
 
 if [[ -f "${PROJECT_DIR}/app/Assets/AppIcon.icns" ]]; then
   cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
-  cp "${PROJECT_DIR}/app/Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/DefaultAppIcon.icns"
 fi
 
 if [[ -f "${PROJECT_DIR}/app/PrivacyInfo.xcprivacy" ]]; then
@@ -67,6 +68,7 @@ fi
 if [[ -d "${PROJECT_DIR}/app/Assets/Fonts" ]]; then
   mkdir -p "${APP_BUNDLE}/Contents/Resources/Fonts"
   cp "${PROJECT_DIR}/app/Assets/Fonts"/*.otf "${APP_BUNDLE}/Contents/Resources/Fonts/" 2>/dev/null || true
+  cp "${PROJECT_DIR}/app/Assets/Fonts/OFL.txt" "${APP_BUNDLE}/Contents/Resources/Fonts/OFL.txt"
 fi
 
 for asset in logo-icon.png logo-icon-512.png logo-mark.svg; do
