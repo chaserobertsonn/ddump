@@ -3544,32 +3544,48 @@ struct InfoHint: View {
   }
 }
 
+enum DDumpPalette {
+  static func ns(_ hex: Int, alpha: CGFloat = 1) -> NSColor {
+    NSColor(
+      calibratedRed: CGFloat((hex >> 16) & 0xFF) / 255,
+      green: CGFloat((hex >> 8) & 0xFF) / 255,
+      blue: CGFloat(hex & 0xFF) / 255,
+      alpha: alpha
+    )
+  }
+
+  static func dynamic(light: NSColor, dark: NSColor) -> Color {
+    Color(nsColor: NSColor(name: nil) { appearance in
+      appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+    })
+  }
+}
+
 extension Color {
-  static let ddumpBG = Color(red: 0x0B / 255.0, green: 0x0A / 255.0, blue: 0x09 / 255.0)
-  static let ddumpBGAlt = Color(red: 0x11 / 255.0, green: 0x0F / 255.0, blue: 0x0D / 255.0)
-  static let ddumpSurface = Color(red: 0x16 / 255.0, green: 0x13 / 255.0, blue: 0x10 / 255.0)
-  static let ddumpSurface2 = Color(red: 0x1D / 255.0, green: 0x1A / 255.0, blue: 0x16 / 255.0)
-  static let ddumpSurface3 = Color(red: 0x26 / 255.0, green: 0x22 / 255.0, blue: 0x1C / 255.0)
-  static let ddumpSurface4 = Color(red: 0x32 / 255.0, green: 0x2D / 255.0, blue: 0x26 / 255.0)
-  static let ddumpFG1 = Color(red: 0xF2 / 255.0, green: 0xEB / 255.0, blue: 0xE0 / 255.0)
-  static let ddumpFG2 = Color(red: 0xB8 / 255.0, green: 0xAF / 255.0, blue: 0xA2 / 255.0)
-  static let ddumpFG3 = Color(red: 0x7A / 255.0, green: 0x74 / 255.0, blue: 0x68 / 255.0)
-  static let ddumpFG4 = Color(red: 0x4E / 255.0, green: 0x48 / 255.0, blue: 0x3F / 255.0)
-  static let ddumpLine1 = Color.white.opacity(0.06)
-  static let ddumpLine2 = Color.white.opacity(0.10)
-  static let ddumpLine3 = Color.white.opacity(0.16)
-  static let ddumpPeach = Color(red: 0xE8 / 255.0, green: 0xB9 / 255.0, blue: 0x99 / 255.0)
-  static let ddumpPeachLight = Color(red: 0xF4 / 255.0, green: 0xD8 / 255.0, blue: 0xC0 / 255.0)
-  static let ddumpPeachSoft = Color(red: 0xE8 / 255.0, green: 0xB9 / 255.0, blue: 0x99 / 255.0, opacity: 0.12)
-  static let ddumpSuccess = Color(red: 0x7F / 255.0, green: 0xB0 / 255.0, blue: 0x89 / 255.0)
-  static let ddumpWarning = Color(red: 0xD4 / 255.0, green: 0xA8 / 255.0, blue: 0x57 / 255.0)
-  static let ddumpDanger = Color(red: 0xD1 / 255.0, green: 0x72 / 255.0, blue: 0x66 / 255.0)
+  static let ddumpBG = DDumpPalette.dynamic(light: DDumpPalette.ns(0xEEE9DF), dark: DDumpPalette.ns(0x12110F))
+  static let ddumpBGAlt = DDumpPalette.dynamic(light: DDumpPalette.ns(0xE5DED1), dark: DDumpPalette.ns(0x1B1916))
+  static let ddumpSurface = DDumpPalette.dynamic(light: DDumpPalette.ns(0xF7F3EB), dark: DDumpPalette.ns(0x201D19))
+  static let ddumpSurface2 = DDumpPalette.dynamic(light: DDumpPalette.ns(0xE9E2D6), dark: DDumpPalette.ns(0x2A2621))
+  static let ddumpSurface3 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x131211), dark: DDumpPalette.ns(0xEEE9DF))
+  static let ddumpSurface4 = DDumpPalette.dynamic(light: DDumpPalette.ns(0xD4CCBE), dark: DDumpPalette.ns(0x38322C))
+  static let ddumpFG1 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x131211), dark: DDumpPalette.ns(0xF7F3EB))
+  static let ddumpFG2 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x49443D), dark: DDumpPalette.ns(0xD2CBBF))
+  static let ddumpFG3 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x6B655C), dark: DDumpPalette.ns(0x9C9487))
+  static let ddumpFG4 = DDumpPalette.dynamic(light: DDumpPalette.ns(0xA9A194), dark: DDumpPalette.ns(0x5F584F))
+  static let ddumpLine1 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x2B2925, alpha: 0.18), dark: DDumpPalette.ns(0xF7F3EB, alpha: 0.18))
+  static let ddumpLine2 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x2B2925, alpha: 0.30), dark: DDumpPalette.ns(0xF7F3EB, alpha: 0.30))
+  static let ddumpLine3 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x2B2925, alpha: 0.48), dark: DDumpPalette.ns(0xF7F3EB, alpha: 0.48))
+  static let ddumpPeach = DDumpPalette.dynamic(light: DDumpPalette.ns(0xE8503A), dark: DDumpPalette.ns(0xF05C45))
+  static let ddumpPeachLight = DDumpPalette.dynamic(light: DDumpPalette.ns(0xF26A55), dark: DDumpPalette.ns(0xFF806B))
+  static let ddumpPeachSoft = DDumpPalette.dynamic(light: DDumpPalette.ns(0xE8503A, alpha: 0.12), dark: DDumpPalette.ns(0xF05C45, alpha: 0.15))
+  static let ddumpSuccess = DDumpPalette.dynamic(light: DDumpPalette.ns(0x176E50), dark: DDumpPalette.ns(0x73B592))
+  static let ddumpWarning = DDumpPalette.dynamic(light: DDumpPalette.ns(0xA36112), dark: DDumpPalette.ns(0xD9A84E))
+  static let ddumpDanger = DDumpPalette.dynamic(light: DDumpPalette.ns(0xB73325), dark: DDumpPalette.ns(0xE37A6C))
 }
 
 enum DDumpFont {
   static func display(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
-    let name = (weight == .bold || weight == .black || weight == .heavy) ? "Montserrat Alternates Bold" : "Montserrat Alternates SemiBold"
-    return .custom(name, size: size)
+    .system(size: size, weight: weight, design: .serif)
   }
 
   static func ui(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
@@ -3588,56 +3604,47 @@ enum DDumpFont {
 }
 
 struct DDumpPrimaryButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .font(DDumpFont.ui(13, weight: .medium))
+      .font(DDumpFont.ui(12, weight: .bold))
       .lineLimit(1)
       .minimumScaleFactor(0.82)
-      .foregroundColor(Color(red: 0x1A / 255.0, green: 0x11 / 255.0, blue: 0x07 / 255.0))
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
+      .textCase(.uppercase)
+      .tracking(0.5)
+      .foregroundColor(.white)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
       .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(LinearGradient(colors: [.ddumpPeachLight, .ddumpPeach], startPoint: .top, endPoint: .bottom))
+        Rectangle().fill(Color.ddumpPeach)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .stroke(Color.black.opacity(0.35), lineWidth: 1)
+        Rectangle().stroke(Color.ddumpFG1, lineWidth: 1)
       )
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .stroke(Color.white.opacity(0.12), lineWidth: 1)
-          .blendMode(.plusLighter)
-      )
-      .opacity(configuration.isPressed ? 0.88 : 1)
-      .scaleEffect(configuration.isPressed ? 0.99 : 1)
+      .opacity(!isEnabled ? 0.42 : (configuration.isPressed ? 0.88 : 1))
+      .offset(x: isEnabled && configuration.isPressed ? 2 : 0, y: isEnabled && configuration.isPressed ? 2 : 0)
   }
 }
 
 struct DDumpSecondaryButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .font(DDumpFont.ui(13, weight: .medium))
+      .font(DDumpFont.ui(12, weight: .semibold))
       .lineLimit(1)
       .minimumScaleFactor(0.82)
       .foregroundColor(.ddumpFG1)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
+      .padding(.horizontal, 13)
+      .padding(.vertical, 8)
       .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(LinearGradient(colors: [.ddumpSurface3, .ddumpSurface2], startPoint: .top, endPoint: .bottom))
+        Rectangle().fill(Color.ddumpSurface)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .stroke(Color.black.opacity(0.45), lineWidth: 1)
+        Rectangle().stroke(Color.ddumpLine2, lineWidth: 1)
       )
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .stroke(Color.white.opacity(0.08), lineWidth: 1)
-          .blendMode(.plusLighter)
-      )
-      .opacity(configuration.isPressed ? 0.88 : 1)
-      .scaleEffect(configuration.isPressed ? 0.99 : 1)
+      .opacity(!isEnabled ? 0.42 : (configuration.isPressed ? 0.88 : 1))
   }
 }
 
@@ -3656,8 +3663,9 @@ struct DDumpStatusPill: View {
     }
     .foregroundColor(.ddumpFG1)
     .padding(.horizontal, 10)
-    .padding(.vertical, 4)
-    .background(color.opacity(0.14), in: Capsule())
+    .padding(.vertical, 5)
+    .background(color.opacity(0.12), in: Rectangle())
+    .overlay(Rectangle().stroke(color.opacity(0.55), lineWidth: 1))
   }
 }
 
@@ -3679,14 +3687,12 @@ struct DDumpTabChip: View {
       .font(DDumpFont.ui(12, weight: active ? .medium : .regular))
       .foregroundColor(active ? .ddumpFG1 : .ddumpFG2)
       .padding(.horizontal, 12)
-      .padding(.vertical, 6)
+      .padding(.vertical, 8)
       .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(active ? Color.ddumpSurface2 : Color.clear)
+        Rectangle().fill(active ? Color.ddumpSurface : Color.clear)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .stroke(active ? Color.black.opacity(0.45) : Color.clear, lineWidth: 1)
+        Rectangle().stroke(active ? Color.ddumpFG1 : Color.clear, lineWidth: 1)
       )
     }
     .buttonStyle(.plain)
@@ -3712,6 +3718,7 @@ struct ContentView: View {
 
   var phaseColor: Color {
     if state.viewOnlyMode && !state.runActive { return .ddumpWarning }
+    if state.phase == "complete" && state.pendingUploadCount > 0 { return .ddumpWarning }
     switch state.phase {
     case "importing", "scanning", "starting", "uploading", "recovering": return .ddumpPeach
     case "complete": return .ddumpSuccess
@@ -3722,6 +3729,7 @@ struct ContentView: View {
 
   var phaseLabel: String {
     if state.viewOnlyMode && !state.runActive { return "Imports paused" }
+    if state.phase == "complete" && state.pendingUploadCount > 0 { return "Local copy done · backup pending" }
     switch state.phase {
     case "starting": return "Preparing…"
     case "scanning": return "Scanning card"
@@ -3748,9 +3756,13 @@ struct ContentView: View {
               .resizable()
               .frame(width: 56, height: 56)
               .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-            VStack(alignment: .leading, spacing: 4) {
-              Text("DDump")
-                .font(DDumpFont.display(22, weight: .semibold))
+            VStack(alignment: .leading, spacing: 3) {
+              Text("DDUMP / CARD INGEST / MACOS")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.2)
+                .foregroundColor(.ddumpPeach)
+              Text("Keep the shoot.")
+                .font(DDumpFont.display(30, weight: .regular))
                 .foregroundColor(.ddumpFG1)
               HStack(spacing: 10) {
                 DDumpStatusPill(text: "\(phaseLabel)\(state.volume.isEmpty ? "" : " · \(state.volume)")", color: phaseColor)
@@ -3771,7 +3783,7 @@ struct ContentView: View {
                 .foregroundColor(.ddumpFG1)
             }
           }
-          .padding(.bottom, 18)
+          .padding(.bottom, 16)
           .overlay(alignment: .bottom) {
             Rectangle().fill(Color.ddumpLine1).frame(height: 1)
           }
@@ -3806,6 +3818,9 @@ struct ContentView: View {
             .padding(.top, 20)
 
           HealthPanel()
+            .padding(.top, 18)
+
+          HandoffManifestPanel()
             .padding(.top, 18)
         }
         .padding(.horizontal, 28)
@@ -4176,11 +4191,11 @@ struct ScanWindowInlineControl: View {
     }
     .padding(10)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(Color.ddumpSurface)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(Color.ddumpLine1, lineWidth: 1)
     )
     .onAppear {
@@ -4267,11 +4282,11 @@ struct SettingsTabBar: View {
     }
     .padding(4)
     .background(
-      RoundedRectangle(cornerRadius: 9, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(Color.ddumpBGAlt)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 9, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(Color.ddumpLine1, lineWidth: 1)
     )
   }
@@ -4500,21 +4515,66 @@ struct IdleView: View {
   @EnvironmentObject var state: AppState
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Insert an SD card and DDump will")
-        .font(DDumpFont.ui(11, weight: .semibold))
-        .textCase(.uppercase)
-        .tracking(1.4)
-        .foregroundColor(.ddumpFG3)
-      VStack(alignment: .leading, spacing: 6) {
-        Label("Detect photo files automatically — no DCIM required", systemImage: "magnifyingglass")
-        Label("Copy locally, verify size, optional SHA-256", systemImage: "checkmark.shield")
-        Label("Group by capture-time clusters", systemImage: "square.3.layers.3d")
-        Label("Copy to your Backup Folder when the dump is verified", systemImage: "folder.badge.plus")
-        Label("Eject only when files are safe", systemImage: "eject")
+    ViewThatFits(in: .horizontal) {
+      HStack(alignment: .top, spacing: 0) {
+        idleHeadline
+          .frame(maxWidth: .infinity, alignment: .leading)
+        idleSteps
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .overlay(alignment: .leading) { Rectangle().fill(Color.ddumpLine2).frame(width: 1) }
       }
-      .font(DDumpFont.ui(13))
-      .foregroundColor(.ddumpFG2)
+      VStack(alignment: .leading, spacing: 0) {
+        idleHeadline
+        idleSteps
+          .overlay(alignment: .top) { Rectangle().fill(Color.ddumpLine2).frame(height: 1) }
+      }
+    }
+    .background(Color.ddumpSurface)
+    .overlay(Rectangle().stroke(Color.ddumpLine2, lineWidth: 1))
+  }
+
+  private var idleHeadline: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("READY / CARD BAY 01")
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .tracking(1.1)
+        .foregroundColor(.ddumpPeach)
+      Text("Ready for the next card.")
+        .font(DDumpFont.display(36, weight: .regular))
+        .foregroundColor(.ddumpFG1)
+      Text("Insert camera media or select a folder manually. DDump keeps the first verified copy local before anything is called safe.")
+        .font(DDumpFont.ui(12))
+        .foregroundColor(.ddumpFG2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(18)
+  }
+
+  private var idleSteps: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      contactStep("01", "Detect recent media")
+      contactStep("02", "Copy and verify locally")
+      contactStep("03", "Group the shoot")
+      contactStep("04", "Queue the backup")
+      contactStep("05", "Eject only when safe", last: true)
+    }
+    .padding(14)
+  }
+
+  private func contactStep(_ number: String, _ title: String, last: Bool = false) -> some View {
+    HStack(spacing: 10) {
+      Text(number)
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .foregroundColor(.ddumpPeach)
+        .frame(width: 24, alignment: .leading)
+      Text(title)
+        .font(DDumpFont.ui(12, weight: .semibold))
+        .foregroundColor(.ddumpFG1)
+      Spacer(minLength: 0)
+    }
+    .padding(.vertical, 8)
+    .overlay(alignment: .bottom) {
+      if !last { Rectangle().fill(Color.ddumpLine1).frame(height: 1) }
     }
   }
 }
@@ -4544,11 +4604,11 @@ struct ViewOnlyPanel: View {
     }
     .padding(12)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(Color.ddumpWarning.opacity(0.09))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(Color.ddumpWarning.opacity(0.45), lineWidth: 1)
     )
   }
@@ -4604,11 +4664,11 @@ struct SkippedVolumePanel: View {
       }
       .padding(12)
       .background(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
           .fill(Color.ddumpSurface)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
           .stroke(Color.ddumpWarning.opacity(0.45), lineWidth: 1)
       )
     }
@@ -4644,11 +4704,11 @@ struct BackupFolderWarningPanel: View {
       }
       .padding(12)
       .background(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
           .fill(Color.ddumpSurface)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
           .stroke(Color.ddumpWarning.opacity(0.55), lineWidth: 1)
       )
     }
@@ -4741,11 +4801,11 @@ struct DestinationSummaryPanel: View {
     .padding(14)
     .frame(maxWidth: .infinity, minHeight: 118, maxHeight: 118, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(Color.ddumpSurface)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(Color.ddumpLine1, lineWidth: 1)
     )
   }
@@ -4768,11 +4828,11 @@ struct HealthPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .fill(Color.ddumpSurface2)
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .stroke(Color.ddumpLine1, lineWidth: 1)
         )
       }
@@ -4803,6 +4863,72 @@ struct HealthPanel: View {
         Text(state.lastUtilityMessage)
           .font(DDumpFont.ui(12))
           .foregroundColor(.ddumpFG3)
+      }
+    }
+  }
+}
+
+struct HandoffManifestPanel: View {
+  private let cells: [(String, String, String)] = [
+    ("01 / FIRST COPY", "Local", "A fast Mac or connected SSD comes first."),
+    ("02 / PROOF", "Verified", "DDump checks the copy before changing card state."),
+    ("03 / RELEASE", "Eject last", "The card stays mounted when safety is unknown.")
+  ]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack {
+        Text("HANDOFF MANIFEST / NON-NEGOTIABLE")
+          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .tracking(1.1)
+          .foregroundColor(.ddumpPeach)
+        Spacer()
+        Text("KEEP THE SHOOT")
+          .font(.system(size: 10, weight: .semibold, design: .monospaced))
+          .tracking(1.1)
+          .foregroundColor(.ddumpFG3)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+      .overlay(alignment: .bottom) { Rectangle().fill(Color.ddumpLine2).frame(height: 1) }
+
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .top, spacing: 0) {
+          manifestCells(horizontal: true)
+        }
+        VStack(alignment: .leading, spacing: 0) {
+          manifestCells(horizontal: false)
+        }
+      }
+    }
+    .background(Color.ddumpSurface)
+    .overlay(Rectangle().stroke(Color.ddumpLine2, lineWidth: 1))
+  }
+
+  @ViewBuilder
+  private func manifestCells(horizontal: Bool) -> some View {
+    ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
+      VStack(alignment: .leading, spacing: 3) {
+        Text(cell.0)
+          .font(.system(size: 9, weight: .semibold, design: .monospaced))
+          .tracking(0.8)
+          .foregroundColor(.ddumpPeach)
+        Text(cell.1)
+          .font(DDumpFont.display(20, weight: .regular))
+          .foregroundColor(.ddumpFG1)
+        Text(cell.2)
+          .font(DDumpFont.ui(9))
+          .foregroundColor(.ddumpFG2)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(10)
+      .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+      .overlay(alignment: horizontal ? .trailing : .bottom) {
+        if index < cells.count - 1 {
+          if horizontal { Rectangle().fill(Color.ddumpLine2).frame(width: 1) }
+          else { Rectangle().fill(Color.ddumpLine2).frame(height: 1) }
+        }
       }
     }
   }
@@ -4883,11 +5009,11 @@ struct ProgressDetail: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .fill(Color.ddumpSurface2)
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .stroke(Color.ddumpLine1, lineWidth: 1)
         )
       }
@@ -5138,10 +5264,10 @@ struct RunChecklistPanel: View {
     .padding(.horizontal, 12)
     .background(step == .active ? Color.ddumpPeachSoft : Color.clear)
     .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(step == .active ? Color.ddumpPeach.opacity(0.22) : Color.clear, lineWidth: 1)
     )
-    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
   }
 
   var body: some View {
@@ -5158,15 +5284,15 @@ struct RunChecklistPanel: View {
       row("1. Copy to Dump Folder", step: step1State, linkTitle: "Open Dump Folder", linkPath: state.get("DEST_ROOT", default: "\(NSHomeDirectory())/Temp"))
       row("2. Eject card", step: step2State)
       row("3. Copy to Backup Folder", step: step3State, linkTitle: "Open Backup Folder", linkPath: state.uploadRootForUI, cloudDestination: true)
-      row("4. All complete!", step: step4State)
+      row("4. Handoff complete", step: step4State)
     }
     .padding(14)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(Color.ddumpSurface)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(Color.ddumpLine1, lineWidth: 1)
     )
   }
@@ -5628,18 +5754,18 @@ struct GeneralSettings: View {
         }
         .padding(10)
         .background(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .fill(Color.ddumpSurface2)
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .stroke(Color.ddumpLine1, lineWidth: 1)
         )
       }
     }
     .padding(10)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(Color.ddumpSurface)
     )
   }
@@ -5995,7 +6121,7 @@ struct NamingSettings: View {
           }
           .padding(10)
           .background(Color.white.opacity(0.035))
-          .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
         } else {
           Text("Choose the lowest real shoot/date folder, for example .../2026/2026.06/2026.06.12/1 - Photo. DDump infers the parent before the year/month/day ladder and previews future folders here.")
             .font(.caption)
@@ -6490,9 +6616,9 @@ struct NotificationsSettings: View {
           .frame(minHeight: 48)
           .scrollContentBackground(.hidden)
           .background(Color.ddumpBGAlt)
-          .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+          .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
           .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
           .disabled(!(ntfyEnabled[event.id] ?? event.defaultNtfy))
@@ -6623,11 +6749,11 @@ struct CloudSettings: View {
     }
     .padding(12)
     .background(
-      RoundedRectangle(cornerRadius: 9, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .fill(tint.opacity(0.12))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 9, style: .continuous)
+      RoundedRectangle(cornerRadius: 2, style: .continuous)
         .stroke(tint.opacity(0.35), lineWidth: 1)
     )
   }
@@ -6658,11 +6784,11 @@ struct CloudSettings: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 8)
           .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .fill(Color.ddumpSurface2)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
         }
@@ -6828,11 +6954,11 @@ struct CloudSettings: View {
             }
             .padding(10)
             .background(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
+              RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(Color.ddumpSurface2)
             )
             .overlay(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
+              RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .stroke(Color.ddumpLine1, lineWidth: 1)
             )
           }
@@ -6845,11 +6971,11 @@ struct CloudSettings: View {
         }
         .padding(14)
         .background(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .fill(Color.ddumpSurface)
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
+          RoundedRectangle(cornerRadius: 2, style: .continuous)
             .stroke(Color.ddumpLine1, lineWidth: 1)
         )
 
@@ -6914,11 +7040,11 @@ struct CloudSettings: View {
           }
           .padding(.horizontal, 14)
           .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .fill(Color.ddumpSurface)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
 
@@ -6941,11 +7067,11 @@ struct CloudSettings: View {
           }
           .padding(10)
           .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .fill(Color.ddumpSurface2)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
           }
@@ -7063,11 +7189,11 @@ struct CloudSettings: View {
             }
             .padding(10)
             .background(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
+              RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .fill(Color.ddumpSurface2)
             )
             .overlay(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
+              RoundedRectangle(cornerRadius: 2, style: .continuous)
                 .stroke(Color.ddumpLine1, lineWidth: 1)
             )
           }
@@ -7105,11 +7231,11 @@ struct CloudSettings: View {
           .font(DDumpFont.ui(13))
           .padding(14)
           .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .fill(Color.ddumpSurface)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
 
@@ -7128,11 +7254,11 @@ struct CloudSettings: View {
           }
           .padding(14)
           .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .fill(Color.ddumpSurface2)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
               .stroke(Color.ddumpLine1, lineWidth: 1)
           )
 

@@ -26,4 +26,4 @@ jobs:
           installer_archs="$(lipo -archs 'dist/dmg-root/Install DDump.app/Contents/MacOS/InstallDDump')"
           [[ " $app_archs " == *" arm64 "* && " $app_archs " == *" x86_64 "* ]]
           [[ " $installer_archs " == *" arm64 "* && " $installer_archs " == *" x86_64 "* ]]
-          test -f dist/DDump-0.3.17-unsigned.dmg
+          test -f dist/DDump-0.3.18-unsigned.dmg
