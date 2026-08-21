@@ -3576,6 +3576,7 @@ extension Color {
   static let ddumpLine2 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x2B2925, alpha: 0.30), dark: DDumpPalette.ns(0xF7F3EB, alpha: 0.30))
   static let ddumpLine3 = DDumpPalette.dynamic(light: DDumpPalette.ns(0x2B2925, alpha: 0.48), dark: DDumpPalette.ns(0xF7F3EB, alpha: 0.48))
   static let ddumpPeach = DDumpPalette.dynamic(light: DDumpPalette.ns(0xE8503A), dark: DDumpPalette.ns(0xF05C45))
+  static let ddumpOnAccent = DDumpPalette.dynamic(light: DDumpPalette.ns(0x131211), dark: DDumpPalette.ns(0x12110F))
   static let ddumpPeachLight = DDumpPalette.dynamic(light: DDumpPalette.ns(0xF26A55), dark: DDumpPalette.ns(0xFF806B))
   static let ddumpPeachSoft = DDumpPalette.dynamic(light: DDumpPalette.ns(0xE8503A, alpha: 0.12), dark: DDumpPalette.ns(0xF05C45, alpha: 0.15))
   static let ddumpSuccess = DDumpPalette.dynamic(light: DDumpPalette.ns(0x176E50), dark: DDumpPalette.ns(0x73B592))
@@ -3613,7 +3614,7 @@ struct DDumpPrimaryButtonStyle: ButtonStyle {
       .minimumScaleFactor(0.82)
       .textCase(.uppercase)
       .tracking(0.5)
-      .foregroundColor(.white)
+      .foregroundColor(.ddumpOnAccent)
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
       .background(
