@@ -237,7 +237,7 @@ Then run:
 DDUMP_RELEASE_MODE=1 \
 DDUMP_SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)" \
 DDUMP_NOTARY_PROFILE="DDump-notary" \
-DDUMP_VERSION="0.3.17" \
+DDUMP_VERSION="0.3.18" \
 ./scripts/package-dmg.sh
 ```
 
