@@ -43,6 +43,8 @@ cat >"${APP_BUNDLE}/Contents/Info.plist" <<PLIST
   <string>${APP_VERSION}</string>
   <key>CFBundleExecutable</key>
   <string>DDump</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIconName</key>

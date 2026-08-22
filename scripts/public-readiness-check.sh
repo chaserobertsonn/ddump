@@ -29,6 +29,7 @@ grep -q '<string>E174.1</string>' app/PrivacyInfo.xcprivacy
 grep -q '<string>85F4.1</string>' app/PrivacyInfo.xcprivacy
 grep -q 'SIL OPEN FONT LICENSE Version 1.1' app/Assets/Fonts/OFL.txt
 grep -q 'Resources/Fonts/OFL.txt' scripts/build-app.sh
+grep -A1 '<key>CFBundlePackageType</key>' scripts/build-app.sh | grep -q '<string>APPL</string>'
 if grep -q 'Install DDump.command' scripts/package-dmg.sh; then
   echo "public installer regression: Terminal .command path returned" >&2
   exit 1
