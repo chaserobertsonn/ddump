@@ -2,6 +2,24 @@
 
 DDump is a macOS photo-card ingest app for photographers who need a reliable path from camera card to a verified Dump Folder and optional Backup Folder.
 
+## Current Release Status
+
+- The latest public GitHub Release and the download currently linked from
+  `ddump.app` are v0.3.14.
+- DDump 0.3.18 has been built as a universal macOS 13+ app. Its final local DMG
+  passed Developer ID signing, Apple notarization, stapling, disk-image
+  verification, and Gatekeeper assessment. It is a private-beta candidate, not
+  the final paid marketing release.
+- The Gatekeeper bundle-type fix is commit `fcf2ba7`. PR #3 merged to `main` as
+  `338e231`, and post-merge macOS CI passed on 2026-08-22.
+- The current updater checks public GitHub Releases and opens the installer.
+  Sparkle is not implemented.
+- Paid-launch architecture, release automation, Donna operations, and evidence
+  gates are documented under `docs/`.
+
+Do not infer live release state from this snapshot alone. Verify GitHub, the
+public download URL, CI, and the exact artifact before promotion.
+
 It is built for high-confidence transfer workflows:
 
 - Import only recent card files (lookback window) or a manual selection.
@@ -207,18 +225,40 @@ Includes:
 
 ## Install
 
-Download the latest DMG from GitHub Releases, open it, then double-click
-`Install DDump`. The notarized installer app creates `~/Applications/DDump.app`
-and the helper files under your user Library without opening Terminal.
+The current public download is v0.3.14 through `ddump.app` and GitHub Releases.
+Open the DMG, then double-click `Install DDump`. The installer app creates
+`~/Applications/DDump.app` and the helper files under your user Library without
+opening Terminal.
+
+DDump 0.3.18 is a signed/notarized private-beta candidate. It must not replace
+the public website download or be described as the final paid release until the
+go-live gates pass. The planned paid distribution path is Cloudflare R2 at
+`downloads.ddump.app` with separate Sparkle 2 beta and stable appcasts at
+`updates.ddump.app`.
 
 DDump release DMGs are built as universal Mac apps (`arm64` and `x86_64`) with
 a macOS 13.0+ deployment target. macOS 15.x users should use DDump 0.3.1 or
 newer; DDump 0.3.0 was accidentally built on a newer SDK as a macOS 26-only
 binary.
 
-Public builds are signed with Developer ID, notarized by Apple, and stapled to
-the DMG. Developers can still make an explicitly named `-unsigned.dmg` for local
-testing; those artifacts must not be published.
+Public and paid release candidates must be signed with Developer ID, notarized
+by Apple, stapled, and accepted by Gatekeeper before distribution. The local
+0.3.18 private-beta candidate has passed those checks. Developers can still make
+an explicitly named `-unsigned.dmg` for local testing; those artifacts must not
+be published.
+
+## Source License and Repository Visibility
+
+This repository currently contains the MIT License and is public. Subject to
+legal review of the full repository, contribution history, and third-party
+components, copies already distributed under MIT retain valid permissions
+granted by that license. A later repository-visibility or future-license change
+is not expected to revoke valid existing grants. Legal and contributor-rights
+review are required before any future proprietary licensing claim.
+
+The website and current updater depend on public GitHub release URLs. Public
+downloads must move to `downloads.ddump.app`, and Sparkle feeds must be verified
+at `updates.ddump.app`, before the source repository can safely be made private.
 
 To build a public release, first create and install a Developer ID Application
 certificate. Store notarization credentials in the login keychain once; use an
@@ -437,7 +477,10 @@ folders like `DCIM/101_2026` under the Backup Folder.
 - Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.
 - SQLite memory is OFF by default (Dump Folder memory mode is default).
 - Card eject grace defaults to 60 seconds.
-- Update checks and auto updates are OFF by default until a public release/update feed is configured.
+- Update checks and automatic installer opening are OFF by default. When enabled,
+  the current implementation reads public GitHub Releases and opens the latest
+  installer; it does not replace the app automatically. Sparkle 2 and signed
+  beta/stable appcasts are planned but not implemented.
 - Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.
 - Default ntfy toggles prioritize card ejected, upload complete, and pending recovery. Mount-failure ntfy alerts are off by default because cloud mounts are short lived and retried from the app.
 - Google Drive Desktop local-folder copy is the default cloud handoff. The

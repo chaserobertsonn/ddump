@@ -1,96 +1,190 @@
 # Public Release Checklist
 
-## Completed
+Last evidence review: 2026-08-22
 
-- MIT license added.
-- Internal audit/scope notes removed from the public tree.
-- Private drive names and personal default notification topic removed from shipped defaults.
-- Update checks are off by default and use GitHub Releases when enabled.
-- Signed installer app replaces the Terminal-based `.command` install path.
-- Public DMG packaging fails closed unless Developer ID signing and notarytool
-  keychain-profile variables are explicitly supplied.
-- Shell syntax check passes with `bash -n bin/*.sh`.
-- Swift parse check passes with a writable module cache.
-- Calendar settings wizard added with Apple Calendar permission, Calendar Link
-  validation, and Google Calendar browser-sign-in entry point.
-- Apple Calendar is now the recommended public calendar path. DDump caches
-  upcoming local Mac Calendar events for background imports, so Google OAuth is
-  optional instead of required for normal calendar naming.
-- Bundled Google Calendar OAuth helper added. It uses the desktop PKCE flow,
-  read-only Calendar scope, and a secure local app-support token file.
-- First-run wizard added for staging folder, destination folder, fallback
-  destination, auto-eject, scan window, offline shoot name, and ntfy topic.
-- First-run wizard can be restarted from Settings -> General, and each page can
-  be skipped.
-- Settings window is capped to a bounded size, and the main window minimum size
-  was reduced for smaller laptop screens.
-- Folder destinations are provider-neutral. Any cloud app that exposes a local
-  synced folder can be used before rclone fallback is needed.
-- Smart folder sample paths now preview inferred future folders in the app.
-- Destination shoot folders are flat by default so final uploads do not nest
-  camera-card folders like `DCIM/101_2026`.
+This checklist covers public distribution. Paid-launch architecture and commerce gates are in:
 
-## Known Limitations
+- `docs/PAID_LAUNCH_ARCHITECTURE.md`
+- `docs/RELEASE_AUTOMATION.md`
+- `docs/DONNA_OPERATIONS.md`
+- `docs/GO_LIVE_CHECKLIST.md`
 
-- Public signing and notarization require a Developer ID Application certificate
-  and a local notarytool keychain profile. Neither credential belongs in Git.
-- Auto-update is not Sparkle yet. DDump checks GitHub Releases and opens the
-  installer asset or release page for the user. Full one-click/automatic app
-  replacement should wait until the app is signed and notarized.
-- Cloud syncing through a local synced folder requires the user's sync app
-  (Google Drive Desktop, Dropbox, Box, OneDrive, iCloud Drive, pCloud, etc.) to
-  be installed and signed in. rclone remains an advanced fallback/verification
-  path, not the primary consumer setup.
-- Google Calendar OAuth cannot complete while the Google Cloud consent screen is
-  in Testing unless the signed-in account is added as a test user. Publish or
-  verify the consent screen before broad release. Apple Calendar avoids this by
-  using local macOS Calendar permission.
-- The Desktop OAuth credential's client secret must be present in
-  `GOOGLE_CALENDAR_CLIENT_SECRET`; it comes from the Google Cloud downloaded
-  OAuth JSON and is not a user password.
-- Calendar ambiguity questions are configured in settings; the full post-upload
-  rename/move workflow for answered questions still needs end-to-end testing.
+A checked box requires command output, CI evidence, or authoritative external readback.
 
-## Pre-Release Checks
+## Status vocabulary
 
-- Confirm the Apple Developer team will permanently own `com.ddump.app` and
-  `com.ddump.app.installer`; changing identifiers later resets macOS trust and
-  permission identity.
-- Run `bash -n bin/*.sh`.
-- Run `CLANG_MODULE_CACHE_PATH=/private/tmp/ddump-clang-cache swiftc -parse-as-library -o /private/tmp/DDump-check app/DDumpApp.swift`.
-- Run `./scripts/public-readiness-check.sh`.
-- Build a local-only test DMG with `./scripts/package-dmg.sh`; confirm the output
-  filename ends in `-unsigned.dmg`.
-- Build the public DMG with `DDUMP_RELEASE_MODE=1`, `DDUMP_SIGN_IDENTITY`, and
-  `DDUMP_NOTARY_PROFILE` set. Confirm notarytool reports `Accepted`.
-- Confirm both the embedded DDump.app submission and final DMG submission were
-  accepted, and inspect both notarization logs for warnings.
-- Confirm `codesign --verify`, `stapler validate`, and `spctl` all pass.
-- Install from the DMG on a clean macOS user account.
-- Confirm Settings opens, Cloud setup stays opt-in, and update checks are off by default.
-- Confirm the first-run wizard appears on a clean account and can be completed
-  without Terminal access.
-- Confirm Calendar setup can connect Apple Calendar without terminal access.
-- Confirm Calendar Link accepts a private ICS URL and rejects non-calendar URLs.
-- Confirm Google Calendar browser sign-in works with a Google account that is
-  allowed by the OAuth consent screen.
-- Confirm smart folder sample preview matches the intended tomorrow/next-week
-  destination structure.
-- Measure app bundle size and idle RSS on a clean Mac before public marketing.
+- **VERIFIED**: backed by evidence.
+- **COMPLETED**: implemented and backed by cited evidence.
+- **PLANNED**: not implemented or verified.
+- **BLOCKED**: dependency or safety gate prevents progress.
+- **OWNER DECISION**: requires explicit owner choice or approval.
 
-## Senior-Dev Public-Launch Follow-Ups
+## Current release snapshot
 
-- Run the first signed/notarized release on a clean Mac and inspect the saved
-  notarization log for warnings before publishing it.
-- Add Sparkle or an equivalent signed update feed after notarized builds are
-  stable. Until then, the in-app updater should only open the latest installer.
-- Position Mac Calendar as the primary public calendar path. Keep direct Google
-  Calendar OAuth optional unless enough users need it to justify Google's
-  verification process.
-- Add a clean-account QA script that covers first launch, Apple Calendar
-  permission, staging copy, destination copy, no-internet import, and ntfy-off
-  default behavior.
-- Keep rclone/mount alerts disabled by default and verify old LaunchAgents are
-  removed during upgrades.
-- Trim packaged image assets so source-brand PNGs do not inflate the app bundle.
-- Profile idle memory and CPU on Intel, Apple Silicon, and 8 GB RAM Macs.
+### VERIFIED
+
+- [x] Repository `chaserobertsonn/ddump` is public and defaults to `main`.
+  - Evidence: GitHub repository readback on 2026-08-22.
+- [x] Gatekeeper fix `fcf2ba7` merged through PR #3 as `338e231`, and post-merge macOS CI passed.
+  - Evidence: GitHub PR, merge, and main check-run readback on 2026-08-22.
+- [x] DDump 0.3.18 built as universal `arm64` and `x86_64` for macOS 13+.
+  - Evidence: local Mac public-readiness output and successful macOS CI.
+- [x] Local 0.3.18 DMG has valid disk-image checksum, Developer ID signature, Apple notarization ticket, and Gatekeeper acceptance.
+  - Evidence: read-only local Mac `codesign`, `hdiutil`, `stapler`, and `spctl` validation on 2026-08-22; Apple notarization submission `4b653a42-e63f-408d-b031-8564165101e6` returned `Accepted`.
+  - `xcrun stapler validate`: worked.
+  - `spctl`: accepted, `source=Notarized Developer ID`.
+  - SHA-256: `c723f1ec3ed95c900a0923d215335373a9d1606a3d21ecb7b087a342df056dbd`.
+- [x] Latest public GitHub Release is v0.3.14.
+  - Evidence: GitHub Releases readback on 2026-08-22.
+- [x] Live `ddump.app` download buttons still point to GitHub-hosted v0.3.14.
+  - Evidence: HTTPS 200 readback and parsed links on 2026-08-22.
+- [x] Current updater checks the public GitHub Releases API and opens a DMG/ZIP/release page.
+  - Evidence: source inspection on 2026-08-22.
+- [x] Sparkle is not implemented.
+  - Evidence: source/repository search on 2026-08-22.
+- [x] MIT License exists in the repository.
+  - Evidence: `LICENSE` readback on 2026-08-22.
+
+### COMPLETED
+
+- [x] Public packaging fails closed without explicit Developer ID and notarytool profile variables.
+  - Evidence: `scripts/package-dmg.sh` source inspection and release command behavior.
+- [x] Packaging signs/notarizes the app and final DMG, staples tickets, and verifies signatures/Gatekeeper.
+  - Evidence: packaging source inspection and 0.3.18 local validation output.
+- [x] CI builds an unsigned test DMG and verifies universal app and installer binaries.
+  - Evidence: `.github/workflows/macos-ci.yml` readback and successful PR #3 checks.
+- [x] Current public updater is disabled by default and does not silently replace the app.
+  - Evidence: `config/config.env`, `bin/install.sh`, and updater source inspection.
+- [x] Signed installer app replaces the old Terminal-based install path.
+  - Evidence: packaging/installer source inspection and CI artifact construction.
+- [x] Source defaults remove known private drive names and personal notification topics.
+  - Evidence: repository default/config inspection and public-readiness checks.
+
+### PLANNED
+
+- [ ] Treat 0.3.18 as a private-beta candidate, not the paid marketing release.
+- [ ] Implement Sparkle 2 with EdDSA signatures.
+- [ ] Publish immutable assets through Cloudflare R2 at `downloads.ddump.app`.
+- [ ] Publish separate beta/stable appcasts at `updates.ddump.app`.
+- [ ] Add protected beta/stable promotion and rollback automation.
+- [ ] Complete the paid-launch, entitlement, legal, support, and monitoring gates.
+
+### BLOCKED
+
+- [ ] Do not publish 0.3.18 as paid stable until `docs/GO_LIVE_CHECKLIST.md` passes.
+- [ ] Do not change the repository to private while downloads or updates rely on public GitHub URLs.
+- [ ] Do not claim full automatic updates until Sparkle is implemented and verified.
+- [ ] Do not describe existing MIT-licensed copies as proprietary.
+
+### OWNER DECISION
+
+- [ ] Approve private-beta audience and release notes.
+- [ ] Approve stable paid release version and rollout.
+- [ ] Approve future licensing after legal review.
+- [ ] Approve repository visibility only after GitHub distribution dependencies are removed.
+
+## 0.3.18 private-beta candidate gate
+
+- [x] Universal macOS 13+ build evidence exists.
+  - Evidence: local Mac public-readiness output and successful PR #3 macOS CI.
+- [x] Developer ID signature, Apple notarization, stapling, disk-image checksum, and Gatekeeper validation evidence exist.
+  - Evidence: local Mac `codesign`, `hdiutil`, `stapler`, and `spctl` output.
+- [x] Gatekeeper fix commit is merged and post-merge CI passes.
+  - Evidence: PR #3 merged as `338e231`; main `build-and-package` check completed successfully on 2026-08-22.
+- [ ] Install from the final DMG on a clean non-developer Mac account.
+- [ ] Verify version, bundle identifier, app location, installer behavior, and first launch.
+- [ ] Run a real-card smoke test: detect, copy, verify, organize, backup handoff, and eject last.
+- [ ] Run interrupted network and unavailable-backup recovery.
+- [ ] Update from v0.3.14 without losing config, trust records, pending work, receipts, logs, or customer files.
+- [ ] Verify app update/install cannot relaunch during active card work.
+- [ ] Record known issues, tester list, exact SHA-256, source commit, and expiration/distribution scope.
+- [ ] Obtain owner approval before distributing the private beta.
+
+## Public distribution migration
+
+The current website and updater depend on public GitHub. Required order:
+
+1. [ ] Configure and verify `downloads.ddump.app`.
+2. [ ] Configure and verify `updates.ddump.app/beta/appcast.xml`.
+3. [ ] Configure and verify `updates.ddump.app/stable/appcast.xml`.
+4. [ ] Publish an immutable signed/notarized test asset to R2.
+5. [ ] Verify anonymous HTTP 200, TLS, content type, length, SHA-256, and cache headers.
+6. [ ] Implement Sparkle 2 and reject tampered appcasts/assets.
+7. [ ] Verify beta and stable channel separation.
+8. [ ] Publish a signed/notarized migration release through the current public GitHub updater and test `v0.3.14 -> migration release -> Sparkle stable`.
+9. [ ] Change website links only after the approved R2 stable asset readback passes.
+10. [ ] Keep the public GitHub API/migration asset available through an approved adoption threshold and legacy-client support window.
+11. [ ] Remove the app's public GitHub Releases dependency only after migration evidence passes.
+12. [ ] Exercise rollback, higher-version forward fix, and out-of-band rescue installer.
+13. [ ] Obtain legal review of MIT/future licensing.
+14. [ ] Only then consider repository privacy with explicit owner approval.
+
+## Release automation gate
+
+- [ ] PR CI runs without production secrets.
+- [ ] Candidate build is manual and version/SHA-specific.
+- [ ] Build/test/sign/notarize/staple/verify/checksum/appcast/R2 steps fail closed.
+- [ ] Apple notarization must return `Accepted`.
+- [ ] Gatekeeper must report Notarized Developer ID.
+- [ ] Sparkle EdDSA private key remains in protected release secrets.
+- [ ] R2 credentials are least privilege and environment-scoped.
+- [ ] Candidate asset is immutable and read back after upload.
+- [ ] Merge to `main` changes no customer feed.
+- [ ] Beta promotion requires protected Environment approval.
+- [ ] Stable promotion requires a separate protected Environment approval.
+- [ ] Rollout expansion requires approval.
+- [ ] Workflow records source SHA, manifest/checksum, approver, previous known-good version, and deployment timestamps.
+
+## Clean install and update checks
+
+- [ ] Clean macOS 13+ account installs without Terminal or security bypass.
+- [ ] Gatekeeper accepts app and installer.
+- [ ] First-run setup works without production credentials.
+- [ ] Existing v0.3.14 config and data survive update.
+- [ ] Trust records, pending uploads, receipts, logs, and customer files survive update.
+- [ ] Failed update leaves current version functional.
+- [ ] Update download/install never interrupts import or unsafe-ejects a card.
+- [ ] Apple Silicon passes.
+- [ ] Intel passes or an owner-approved equivalent environment passes.
+
+## Paid public-release checks
+
+- [ ] Monthly purchase passes.
+- [ ] Yearly purchase passes.
+- [ ] Trial passes.
+- [ ] Restore passes.
+- [ ] Second Mac passes.
+- [ ] Expired subscription passes safe-idle behavior.
+- [ ] Refund passes safe-idle behavior.
+- [ ] Offline grace passes with signed entitlement.
+- [ ] Billing and entitlement outages do not interrupt active import.
+- [ ] Cancellation and failed renewal preserve paid-through access and customer files.
+- [ ] No permanent client-side license key is used.
+
+## Known limitations in the current public code
+
+- Auto-update is not Sparkle. The app checks GitHub Releases and opens an installer or release page.
+- Update checks and automatic opening are off by default.
+- The public website still downloads v0.3.14 from GitHub.
+- The current GitHub Actions workflow does not sign, notarize, staple, publish, generate an appcast, upload to R2, promote channels, or roll back.
+- Cloud sync through local provider folders depends on the customer's signed-in sync app. Direct rclone remains an advanced path.
+- Google Calendar OAuth still requires proper consent-screen/test-user configuration where applicable.
+- Calendar ambiguity and post-upload rename/move behavior still require full end-to-end release testing.
+
+## Licensing gate
+
+DDump currently contains an MIT license. Subject to legal review of the full repository, contribution history, and third-party components, copies already distributed under MIT retain valid permissions granted under the applicable license terms. A later repository-visibility or future-license change is not expected to revoke valid existing grants.
+
+- [ ] Legal review covers existing MIT grants and future licensing.
+- [ ] Contributor-rights audit is complete.
+- [ ] Future release and website language accurately distinguishes prior MIT releases from any later terms.
+- [ ] Owner approves the future source and licensing model.
+
+## Final public-release approval
+
+- [ ] Exact version, source SHA, artifact SHA-256, appcast, and manifest are identified.
+- [ ] All required tests and legal/operations gates pass.
+- [ ] Owner approves the channel and rollout.
+- [ ] Public asset and appcast external readback pass.
+- [ ] Monitoring and rollback are live.
+- [ ] Stable promotion is performed as an explicit action, not a merge side effect.
