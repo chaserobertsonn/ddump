@@ -12,7 +12,7 @@ echo "== DDump public-readiness check =="
 
 echo
 echo "== Syntax =="
-bash -n bin/ddump.sh bin/install.sh bin/ddump-calendar-lookup.sh bin/ddump-notify.sh
+bash -n bin/ddump.sh bin/install.sh bin/ddump-access-policy.sh bin/ddump-calendar-lookup.sh bin/ddump-notify.sh
 bash -n scripts/build-app.sh scripts/package-dmg.sh
 git diff --check
 grep -q 'DDUMP_RELEASE_MODE' scripts/package-dmg.sh

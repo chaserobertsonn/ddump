@@ -16,6 +16,7 @@ mkdir -p "$STATE_DIR" "$LOG_DIR" "$REPORT_DIR"
 LOG_FILE="${LOG_DIR}/ddump.log"
 LOCK_DIR="${STATE_DIR}/run.lock"
 RUN_LOCK_PID_FILE="${LOCK_DIR}/pid"
+RUN_LOCK_ACCESS_LEASE_FILE="${LOCK_DIR}/access_lease.env"
 APP_NOTIFICATION_QUEUE="${STATE_DIR}/app_notifications.tsv"
 
 log() {
@@ -585,7 +586,7 @@ acquire_run_lock() {
       if /bin/kill -0 "$existing_pid" >/dev/null 2>&1; then
         /bin/kill -KILL "$existing_pid" >/dev/null 2>&1 || true
       fi
-      /bin/rm -f "$RUN_LOCK_PID_FILE" 2>/dev/null || true
+      /bin/rm -f "$RUN_LOCK_PID_FILE" "$RUN_LOCK_ACCESS_LEASE_FILE" 2>/dev/null || true
       /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
       if /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
         /bin/echo "$$" >"$RUN_LOCK_PID_FILE"
@@ -608,7 +609,7 @@ acquire_run_lock() {
   fi
 
   log "Removing stale run lock (${lock_age}s old, previous pid: ${existing_pid:-none})."
-  /bin/rm -f "$RUN_LOCK_PID_FILE" 2>/dev/null || true
+  /bin/rm -f "$RUN_LOCK_PID_FILE" "$RUN_LOCK_ACCESS_LEASE_FILE" 2>/dev/null || true
   /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
   if ! /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
     log "Another run acquired the lock; exiting."
@@ -623,7 +624,7 @@ release_run_lock() {
     owner_pid="$(/bin/cat "$RUN_LOCK_PID_FILE" 2>/dev/null || true)"
   fi
   if [[ "$owner_pid" == "$$" ]]; then
-    /bin/rm -f "$RUN_LOCK_PID_FILE" 2>/dev/null || true
+    /bin/rm -f "$RUN_LOCK_PID_FILE" "$RUN_LOCK_ACCESS_LEASE_FILE" 2>/dev/null || true
     /bin/rmdir "$LOCK_DIR" 2>/dev/null || true
   fi
 }
@@ -775,6 +776,13 @@ GOOGLE_DRIVE_DESKTOP_APP_NAME="Google Drive"
 GOOGLE_DRIVE_DESKTOP_APP_PATH="/Applications/Google Drive.app"
 AUTO_LAUNCH_SYNC_APPS="1"
 SYNC_APP_READY_WAIT_SECONDS="8"
+PAID_ACCESS_ENFORCEMENT="0"
+ENTITLEMENT_PUBLIC_KEYS=""
+ENTITLEMENT_MINIMUM_ISSUED_AT="0"
+ENTITLEMENT_ISSUER="https://api.ddump.app"
+ENTITLEMENT_AUDIENCE="com.ddump.app"
+ENTITLEMENT_ENVIRONMENT="test"
+ENTITLEMENT_PRODUCT_IDS="ddump_test_monthly,ddump_test_annual"
 NTFY_TOPIC=""
 NTFY_NOTIFY_STAGING_STARTED="0"
 NTFY_NOTIFY_CARD_EJECTED="1"
@@ -812,6 +820,15 @@ fi
 if [[ -f "$USER_CONFIG_PATH" ]]; then
   # shellcheck disable=SC1090
   source "$USER_CONFIG_PATH"
+fi
+
+if [[ -f "${SCRIPT_DIR}/ddump-access-policy.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/ddump-access-policy.sh"
+else
+  ddump_authorize_new_import() {
+    [[ "${PAID_ACCESS_ENFORCEMENT:-0}" != "1" ]]
+  }
 fi
 
 manual_selection_active=0
@@ -5863,8 +5880,6 @@ if [[ "$CREATE_DAILY_FOLDER" == "1" ]]; then
   run_day_folder="$(/bin/date +"$DAILY_FOLDER_FORMAT")"
 fi
 
-start_dump_memory_index
-
 processed_volume_count=0
 imported_file_count_total=0
 run_stopped=0
@@ -5875,15 +5890,33 @@ no_candidate_volume_names=""
 upload_complete_volume_count=0
 upload_complete_file_count=0
 upload_complete_targets=""
-/bin/rm -f "$LAST_SKIPPED_VOLUME_FILE" 2>/dev/null || true
+allow_new_import=1
+if ! ddump_authorize_new_import; then
+  allow_new_import=0
+  log "New import was not authorized (${DDUMP_ACCESS_DECISION:-indeterminate}); connected cards remain mounted and untouched."
+  set_status_phase "access_required" "Sign in or restore access to start a new import. Existing recovery and safe cleanup remain available."
+else
+  access_lease_tmp="$(/usr/bin/mktemp "${LOCK_DIR}/access-lease.XXXXXX")"
+  {
+    /bin/echo 'schema="1"'
+    /bin/echo "authorized_epoch=\"$(/bin/date '+%s')\""
+    /bin/echo "decision=\"${DDUMP_ACCESS_DECISION:-allowed}\""
+  } >"$access_lease_tmp"
+  /bin/chmod 600 "$access_lease_tmp"
+  /bin/mv "$access_lease_tmp" "$RUN_LOCK_ACCESS_LEASE_FILE"
+fi
 
-volume_paths_file="$(/usr/bin/mktemp "${STATE_DIR}/volume-paths.${run_id}.XXXXXX")"
-: >"$volume_paths_file"
-for queued_vol_path in /Volumes/*; do
-  [[ -d "$queued_vol_path" ]] || continue
-  queue_path_unique "$volume_paths_file" "$queued_vol_path"
-done
-queue_manual_selection_volume_roots "$volume_paths_file"
+if [[ "$allow_new_import" == "1" ]]; then
+  start_dump_memory_index
+  /bin/rm -f "$LAST_SKIPPED_VOLUME_FILE" 2>/dev/null || true
+
+  volume_paths_file="$(/usr/bin/mktemp "${STATE_DIR}/volume-paths.${run_id}.XXXXXX")"
+  : >"$volume_paths_file"
+  for queued_vol_path in /Volumes/*; do
+    [[ -d "$queued_vol_path" ]] || continue
+    queue_path_unique "$volume_paths_file" "$queued_vol_path"
+  done
+  queue_manual_selection_volume_roots "$volume_paths_file"
 
 queued_volume_names=()
 while IFS= read -r queued_vol_path || [[ -n "$queued_vol_path" ]]; do
@@ -6808,8 +6841,9 @@ while IFS= read -r vol_path || [[ -n "$vol_path" ]]; do
   /bin/rm -f "$imported_files_file"
   /bin/rm -f "$source_roots_file"
   /bin/rm -f "$no_eject_hold_file"
-done <"$volume_paths_file"
-/bin/rm -f "$volume_paths_file"
+  done <"$volume_paths_file"
+  /bin/rm -f "$volume_paths_file"
+fi
 
 # Old cloud/backup recovery used to run before connected-card discovery and
 # could delay a new import by minutes. New card safety is handled first; only
@@ -6850,7 +6884,9 @@ if [[ "$summary_errors_total" -gt 0 || "$run_stopped" == "1" ]]; then
   run_status_for_db="partial"
 fi
 db_exec "UPDATE import_runs SET completed_at=$(sql_quote "$(/bin/date '+%Y-%m-%d %H:%M:%S')"), status=$(sql_quote "$run_status_for_db"), volume_count=$processed_volume_count, imported_count=$imported_file_count_total, skipped_count=$summary_skipped_existing_total, error_count=$summary_errors_total, summary=$(sql_quote "$summary_message") WHERE run_id=$(sql_quote "$run_id");" >/dev/null || true
-if [[ "$run_stopped" == "1" ]]; then
+if [[ "$allow_new_import" != "1" ]]; then
+  set_status_phase "access_required" "Sign in or restore access to start a new import. Existing recovery and safe cleanup remain available."
+elif [[ "$run_stopped" == "1" ]]; then
   set_status_phase "stopped" "$summary_message"
 else
   set_status_phase "complete" "$summary_message"

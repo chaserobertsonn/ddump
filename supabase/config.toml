@@ -1,0 +1,28 @@
+project_id = "ddump-paid-launch-local"
+
+[api]
+enabled = true
+
+[functions.browser-callback-handoff]
+verify_jwt = true
+
+[functions.account-profile]
+verify_jwt = true
+
+[functions.billing-session]
+verify_jwt = true
+
+[functions.entitlement-refresh]
+verify_jwt = true
+
+[functions.restore-device]
+verify_jwt = true
+
+[functions.revenuecat-webhook]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions/operations-reconcile]
+verify_jwt = false

@@ -270,8 +270,12 @@ final class AppState: ObservableObject {
       }
     }
     refreshCloudMountStatus(showProgress: false)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-      self?.checkForUpdatesIfNeeded()
+    DDumpSparkleUpdateBridge.shared.startIfConfigured()
+    AppHelperMigrationRunner.shared.startIfConfigured()
+    if !DDumpSparkleUpdateBridge.isEnabledInBundle {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+        self?.checkForUpdatesIfNeeded()
+      }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
       guard let self else { return }
@@ -1717,9 +1721,25 @@ client_secret=\(quotedClientSecret)
       guard !tag.isEmpty else { return }
 
       let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-      if self.normalizedVersion(tag) == self.normalizedVersion(current) {
+      guard let versionOrdering = DDumpSemanticVersion.compare(remote: tag, installed: current) else {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Could not verify the release version. No update was offered."
+          self.appendAppLog("legacy updater rejected malformed version metadata")
+        }
+        return
+      }
+
+      if versionOrdering == .orderedSame {
         DispatchQueue.main.async {
           self.lastUtilityMessage = "DDump is up to date."
+        }
+        return
+      }
+
+      if versionOrdering == .orderedAscending {
+        DispatchQueue.main.async {
+          self.lastUtilityMessage = "Installed DDump \(current) is newer than public release \(tag). No downgrade was offered."
+          self.appendAppLog("legacy updater rejected downgrade remote=\(tag) installed=\(current)")
         }
         return
       }
@@ -1742,7 +1762,11 @@ client_secret=\(quotedClientSecret)
 
   func checkForUpdatesNow() {
     lastUtilityMessage = "Checking for DDump updates…"
-    checkForUpdatesIfNeeded(force: true)
+    if DDumpSparkleUpdateBridge.isEnabledInBundle {
+      DDumpSparkleUpdateBridge.shared.checkForUpdates()
+    } else {
+      checkForUpdatesIfNeeded(force: true)
+    }
   }
 
   func runTroubleshooter() {
@@ -1829,11 +1853,6 @@ client_secret=\(quotedClientSecret)
     }
     let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
     return lines.suffix(maxLines).joined(separator: "\n")
-  }
-
-  private func normalizedVersion(_ raw: String) -> String {
-    raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
   }
 
   var shouldWarnBeforeQuit: Bool {
@@ -3723,7 +3742,7 @@ struct ContentView: View {
     switch state.phase {
     case "importing", "scanning", "starting", "uploading", "recovering": return .ddumpPeach
     case "complete": return .ddumpSuccess
-    case "stopped", "paused": return .ddumpWarning
+    case "stopped", "paused", "access_required": return .ddumpWarning
     default: return .ddumpFG3
     }
   }
@@ -3739,6 +3758,7 @@ struct ContentView: View {
     case "recovering": return "Recovering"
     case "paused": return "Paused"
     case "stopped": return "Stopped"
+    case "access_required": return "Access required"
     case "complete": return "Done"
     default: return state.runActive ? "Working…" : "Waiting"
     }
@@ -4123,6 +4143,7 @@ struct SettingsSheet: View {
     case naming = "Naming"
     case detection = "Import"
     case notifications = "Alerts"
+    case account = "Account"
 
     var icon: String {
       switch self {
@@ -4130,6 +4151,7 @@ struct SettingsSheet: View {
       case .naming: return "character.textbox"
       case .detection: return "camera.aperture"
       case .notifications: return "bell"
+      case .account: return "person.crop.circle"
       }
     }
   }
@@ -5315,6 +5337,8 @@ struct SettingsView: View {
         DetectionSettings()
       case .notifications:
         NotificationsSettings()
+      case .account:
+        PaidLaunchSettings()
       }
     }
     .background(Color.ddumpBG)
@@ -5355,6 +5379,8 @@ struct GeneralSettings: View {
   @State private var updateChecksEnabled: Bool = false
   @State private var autoUpdatesEnabled: Bool = false
   @State private var updateCheckFrequency: String = "weekly"
+  @State private var betaUpdatesEligible: Bool = false
+  @State private var betaUpdatesOptIn: Bool = false
   @State private var windowRestoreMode: String = "remember"
   @State private var autoLaunchSyncApps: Bool = true
   @State private var showTroubleshooting: Bool = false
@@ -5580,11 +5606,26 @@ struct GeneralSettings: View {
         Toggle("Check for updates", isOn: $updateChecksEnabled)
           .ddumpOnChange(of: updateChecksEnabled) { v in
             state.set("UPDATE_CHECKS_ENABLED", v ? "1" : "0")
+            DDumpSparkleUpdateBridge.shared.applyPreferences(
+              checksEnabled: v,
+              automaticallyDownloadsUpdates: autoUpdatesEnabled,
+              frequency: updateCheckFrequency
+            )
           }
 
-        Toggle("Open download page automatically", isOn: $autoUpdatesEnabled)
+        Toggle(
+          DDumpSparkleUpdateBridge.isEnabledInBundle
+            ? "Download updates automatically"
+            : "Open download page automatically",
+          isOn: $autoUpdatesEnabled
+        )
           .ddumpOnChange(of: autoUpdatesEnabled) { v in
             state.set("AUTO_UPDATES_ENABLED", v ? "1" : "0")
+            DDumpSparkleUpdateBridge.shared.applyPreferences(
+              checksEnabled: updateChecksEnabled,
+              automaticallyDownloadsUpdates: v,
+              frequency: updateCheckFrequency
+            )
           }
           .disabled(!updateChecksEnabled)
 
@@ -5600,11 +5641,39 @@ struct GeneralSettings: View {
           .frame(width: 180)
           .ddumpOnChange(of: updateCheckFrequency) { v in
             state.set("UPDATE_CHECK_FREQUENCY", v)
+            DDumpSparkleUpdateBridge.shared.applyPreferences(
+              checksEnabled: updateChecksEnabled,
+              automaticallyDownloadsUpdates: autoUpdatesEnabled,
+              frequency: v
+            )
           }
         }
         .disabled(!updateChecksEnabled)
 
-        Text("Update now checks GitHub Releases immediately. Automatic update checks are off by default; signed in-app updates can be added later.")
+        if DDumpSparkleUpdateBridge.isEnabledInBundle {
+          Toggle("Receive beta updates", isOn: $betaUpdatesOptIn)
+            .ddumpOnChange(of: betaUpdatesOptIn) { enabled in
+              let approved = betaUpdatesEligible && enabled
+              if enabled != approved { betaUpdatesOptIn = approved }
+              state.set("BETA_UPDATES_OPT_IN", approved ? "1" : "0")
+              DDumpSparkleUpdateBridge.shared.refreshChannelSelection()
+            }
+            .disabled(!betaUpdatesEligible)
+
+          Text(
+            betaUpdatesEligible
+              ? "Beta updates require this explicit opt-in. Turning it off returns this same app build to the stable feed."
+              : "Beta updates are available only to accounts assigned by the DDump backend."
+          )
+          .font(.caption)
+          .foregroundColor(.secondary)
+        }
+
+        Text(
+          DDumpSparkleUpdateBridge.isEnabledInBundle
+            ? "Update now checks the signed DDump appcast. Automatic checks and background downloads are off until you enable them. Installation waits until DDump is safely idle."
+            : "Update now checks the bounded GitHub migration release path. Automatic checks are off by default."
+        )
           .font(.caption)
           .foregroundColor(.secondary)
       }
@@ -5633,6 +5702,8 @@ struct GeneralSettings: View {
       updateChecksEnabled = state.get("UPDATE_CHECKS_ENABLED", default: "0") == "1"
       autoUpdatesEnabled = state.get("AUTO_UPDATES_ENABLED", default: "0") == "1"
       updateCheckFrequency = state.get("UPDATE_CHECK_FREQUENCY", default: "weekly")
+      betaUpdatesEligible = DDumpSparkleUpdateBridge.betaUpdatesEligible
+      betaUpdatesOptIn = betaUpdatesEligible && state.get("BETA_UPDATES_OPT_IN", default: "0") == "1"
       windowRestoreMode = state.get("WINDOW_RESTORE_MODE", default: "remember")
       autoLaunchSyncApps = state.get("AUTO_LAUNCH_SYNC_APPS", default: "1") == "1"
     }
@@ -7784,6 +7855,9 @@ struct DDumpApp: App {
         .preferredColorScheme(state.preferredColorScheme())
         .onAppear {
           appDelegate.appState = state
+        }
+        .onOpenURL { url in
+          PaidLaunchRuntime.shared.handleOpenURL(url)
         }
     }
     // Settings are opened through ContentView's sheet. The native Settings scene

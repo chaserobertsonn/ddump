@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "helperSetVersion": "1.0.0",
+  "minimumAppVersion": "0.3.18",
+  "createdAt": "2026-09-01T00:00:00Z",
+  "forwardFixForVersions": [],
+  "preservePreviousSnapshot": true,
+  "files": [
+    {
+      "role": "appSupportBin",
+      "sourceRelativePath": "bin/ddump-helper-migration-smoke.sh",
+      "installRelativePath": "ddump-helper-migration-smoke.sh",
+      "sha256": "8bafec0f416852230bf9bd9be866aaf391300771998be43a61ceb779b9ec62e6",
+      "mode": 493,
+      "signing": null
+    },
+    {
+      "role": "launchAgentTemplate",
+      "sourceRelativePath": "LaunchAgents/com.ddump.plist",
+      "installRelativePath": "com.ddump.plist",
+      "sha256": "f7bf8eeaab0645476fd5de187a0672efb79fedf2771b1a459cdbb49d08be8dd6",
+      "mode": 420,
+      "signing": null
+    },
+    {
+      "role": "launchAgentTemplate",
+      "sourceRelativePath": "LaunchAgents/com.ddump.network-watch.plist",
+      "installRelativePath": "com.ddump.network-watch.plist",
+      "sha256": "f44592375be9d31229e6ea1e8b649f01edbe0a6d4dfd7df55ebaeffe07508866",
+      "mode": 420,
+      "signing": null
+    }
+  ]
+}

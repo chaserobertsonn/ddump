@@ -1,0 +1,15 @@
+{
+  "tasks": {
+    "test": "deno test --allow-env=DDUMP_ENVIRONMENT,DDUMP_ENTITLEMENT_PRIVATE_KEY_PKCS8_B64,DDUMP_ENTITLEMENT_PUBLIC_KEY_SPKI_B64,DDUMP_ENTITLEMENT_KEY_ID,DDUMP_REVENUECAT_WEBHOOK_AUTHORIZATION,DDUMP_REVENUECAT_WEBHOOK_HMAC_SECRET,DDUMP_STRIPE_WEBHOOK_SECRET"
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "semiColons": true,
+    "singleQuote": false
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any"]
+    }
+  }
+}

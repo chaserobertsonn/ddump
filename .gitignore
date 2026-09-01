@@ -9,6 +9,7 @@ DDump
 *.dSYM/
 build/
 dist/
+.build/
 *.dmg
 *.zip
 
