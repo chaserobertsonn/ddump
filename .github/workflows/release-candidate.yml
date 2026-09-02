@@ -62,7 +62,7 @@ jobs:
       DDUMP_ENTITLEMENT_PUBLIC_KEYS: ${{ vars.DDUMP_ENTITLEMENT_PUBLIC_KEYS }}
       DDUMP_CHECK_EMAIL_URL: ${{ vars.DDUMP_CHECK_EMAIL_URL }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
@@ -116,7 +116,7 @@ jobs:
       DDUMP_RELEASE_AUTH_PRIVATE_KEY_B64: ${{ secrets.DDUMP_RELEASE_AUTH_PRIVATE_KEY_B64 }}
       DDUMP_PROTECTED_ENVIRONMENT: release-beta
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
 
@@ -171,7 +171,7 @@ jobs:
       DDUMP_R2_ACCESS_KEY_ID: ${{ secrets.DDUMP_R2_BETA_ACCESS_KEY_ID }}
       DDUMP_R2_SECRET_ACCESS_KEY: ${{ secrets.DDUMP_R2_BETA_SECRET_ACCESS_KEY }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
 
