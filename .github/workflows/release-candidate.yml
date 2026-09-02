@@ -1,0 +1,195 @@
+name: Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full source commit SHA to build.
+        required: true
+      version:
+        description: DDump version, for example 0.4.0.
+        required: true
+      build:
+        description: Sparkle build number.
+        required: true
+      channel:
+        description: Candidate channel.
+        required: true
+        type: choice
+        options:
+          - private-preview
+          - beta
+      release_notes_url:
+        description: HTTPS release notes URL for Sparkle appcast metadata.
+        required: true
+      previous_known_good_version:
+        description: Previous known-good version for rollback records.
+        required: true
+      phased_rollout_interval:
+        description: Sparkle phased rollout interval in seconds, or 0 to disable.
+        required: true
+        default: "0"
+      dry_run:
+        description: Build only; do not expose signing/R2 secrets.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  secretless-build:
+    name: Secretless candidate build
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      DDUMP_SOURCE_SHA: ${{ inputs.source_sha }}
+      DDUMP_VERSION: ${{ inputs.version }}
+      DDUMP_BUILD: ${{ inputs.build }}
+      DDUMP_CHANNEL: ${{ inputs.channel }}
+      DDUMP_RELEASE_NOTES_URL: ${{ inputs.release_notes_url }}
+      DDUMP_PREVIOUS_KNOWN_GOOD_VERSION: ${{ inputs.previous_known_good_version }}
+      DDUMP_PHASED_ROLLOUT_INTERVAL: ${{ inputs.phased_rollout_interval }}
+      DDUMP_REQUIRED_CHECKS: ${{ vars.DDUMP_REQUIRED_CHECKS }}
+      DDUMP_SPARKLE_PUBLIC_ED_KEY: ${{ vars.DDUMP_SPARKLE_PUBLIC_ED_KEY }}
+      DDUMP_PAID_ENVIRONMENT: ${{ vars.DDUMP_PAID_ENVIRONMENT }}
+      DDUMP_SUPABASE_URL: ${{ vars.DDUMP_SUPABASE_URL }}
+      DDUMP_SUPABASE_PUBLISHABLE_KEY: ${{ vars.DDUMP_SUPABASE_PUBLISHABLE_KEY }}
+      DDUMP_ENTITLEMENT_ISSUER: ${{ vars.DDUMP_ENTITLEMENT_ISSUER }}
+      DDUMP_ENTITLEMENT_AUDIENCE: ${{ vars.DDUMP_ENTITLEMENT_AUDIENCE }}
+      DDUMP_ENTITLEMENT_PUBLIC_KEYS: ${{ vars.DDUMP_ENTITLEMENT_PUBLIC_KEYS }}
+      DDUMP_CHECK_EMAIL_URL: ${{ vars.DDUMP_CHECK_EMAIL_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Build exact unsigned candidate
+        run: ./scripts/release/build-candidate.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ddump-candidate-build-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: |
+            dist/release/*.candidate-build.tar.gz
+            dist/release/candidate-provenance.json
+          if-no-files-found: error
+          retention-days: 14
+
+  dry-run-summary:
+    name: Dry-run summary
+    if: inputs.dry_run
+    needs: secretless-build
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - name: Report dry run
+        run: |
+          echo "Dry run complete. No signing, notarization, Sparkle, R2, beta, or stable promotion secrets were exposed."
+
+  sign-notarize:
+    name: Protected signing and notarization
+    if: ${{ !inputs.dry_run }}
+    needs: secretless-build
+    runs-on: macos-14
+    timeout-minutes: 60
+    environment: release-beta
+    env:
+      DDUMP_SOURCE_SHA: ${{ inputs.source_sha }}
+      DDUMP_VERSION: ${{ inputs.version }}
+      DDUMP_BUILD: ${{ inputs.build }}
+      DDUMP_CHANNEL: ${{ inputs.channel }}
+      DDUMP_RELEASE_NOTES_URL: ${{ inputs.release_notes_url }}
+      DDUMP_PREVIOUS_KNOWN_GOOD_VERSION: ${{ inputs.previous_known_good_version }}
+      DDUMP_PHASED_ROLLOUT_INTERVAL: ${{ inputs.phased_rollout_interval }}
+      DDUMP_DOWNLOADS_BASE_URL: ${{ vars.DDUMP_DOWNLOADS_BASE_URL }}
+      DDUMP_SIGN_IDENTITY: ${{ secrets.DDUMP_DEVELOPER_ID_APPLICATION_IDENTITY }}
+      DDUMP_DEVELOPER_ID_APPLICATION_CERT_P12_B64: ${{ secrets.DDUMP_DEVELOPER_ID_APPLICATION_CERT_P12_B64 }}
+      DDUMP_DEVELOPER_ID_APPLICATION_CERT_PASSWORD: ${{ secrets.DDUMP_DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
+      DDUMP_NOTARYTOOL_KEY_ID: ${{ secrets.DDUMP_NOTARYTOOL_KEY_ID }}
+      DDUMP_NOTARYTOOL_ISSUER_ID: ${{ secrets.DDUMP_NOTARYTOOL_ISSUER_ID }}
+      DDUMP_NOTARYTOOL_PRIVATE_KEY_P8_B64: ${{ secrets.DDUMP_NOTARYTOOL_PRIVATE_KEY_P8_B64 }}
+      DDUMP_SPARKLE_EDDSA_PRIVATE_KEY_B64: ${{ secrets.DDUMP_SPARKLE_EDDSA_PRIVATE_KEY_B64 }}
+      DDUMP_RELEASE_AUTH_PRIVATE_KEY_B64: ${{ secrets.DDUMP_RELEASE_AUTH_PRIVATE_KEY_B64 }}
+      DDUMP_PROTECTED_ENVIRONMENT: release-beta
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ddump-candidate-build-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: dist/release-input
+          merge-multiple: true
+
+      - name: Sign exact candidate artifact
+        run: |
+          if [[ "${GITHUB_REF_NAME}" != "main" && "${DDUMP_ALLOW_NON_MAIN_RELEASE_TOOLING:-0}" != "1" ]]; then
+            echo "release tooling must run from protected main" >&2
+            exit 1
+          fi
+          prefix="releases/${DDUMP_CHANNEL}/${DDUMP_VERSION}"
+          if [[ "$DDUMP_CHANNEL" == "private-preview" ]]; then
+            prefix="releases/candidates/${DDUMP_SOURCE_SHA}/${DDUMP_VERSION}"
+          fi
+          export DDUMP_ARTIFACT_R2_KEY="${prefix}/DDump-${DDUMP_VERSION}.dmg"
+          export DDUMP_ARTIFACT_SHA256_R2_KEY="${prefix}/DDump-${DDUMP_VERSION}.dmg.sha256"
+          export DDUMP_MANIFEST_R2_KEY="${prefix}/release-manifest.json"
+          export DDUMP_ARTIFACT_URL="${DDUMP_DOWNLOADS_BASE_URL%/}/${DDUMP_CHANNEL}/${DDUMP_VERSION}/DDump-${DDUMP_VERSION}.dmg"
+          candidate_tar="$(find dist/release-input -name '*.candidate-build.tar.gz' -print -quit)"
+          test -n "$candidate_tar"
+          ./scripts/release/sign-notarize-candidate.sh "$candidate_tar" dist/release-signed
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ddump-signed-candidate-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: |
+            dist/release-signed/DDump-${{ inputs.version }}.dmg
+            dist/release-signed/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  upload-candidate:
+    name: Protected immutable R2 upload
+    if: ${{ !inputs.dry_run }}
+    needs: sign-notarize
+    runs-on: macos-14
+    timeout-minutes: 20
+    environment: release-beta
+    env:
+      DDUMP_SOURCE_SHA: ${{ inputs.source_sha }}
+      DDUMP_VERSION: ${{ inputs.version }}
+      DDUMP_CHANNEL: ${{ inputs.channel }}
+      DDUMP_DOWNLOADS_BASE_URL: ${{ vars.DDUMP_DOWNLOADS_BASE_URL }}
+      DDUMP_PRIVATE_PREVIEW_READBACK_URL: ${{ vars.DDUMP_PRIVATE_PREVIEW_READBACK_URL }}
+      DDUMP_R2_ACCOUNT_ID: ${{ secrets.DDUMP_R2_ACCOUNT_ID }}
+      DDUMP_R2_BUCKET: ${{ secrets.DDUMP_R2_RELEASE_BUCKET }}
+      DDUMP_R2_ACCESS_KEY_ID: ${{ secrets.DDUMP_R2_BETA_ACCESS_KEY_ID }}
+      DDUMP_R2_SECRET_ACCESS_KEY: ${{ secrets.DDUMP_R2_BETA_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ddump-signed-candidate-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: dist/release-signed
+          merge-multiple: true
+
+      - name: Upload immutable candidate assets
+        run: ./scripts/release/upload-candidate-assets.sh dist/release-signed
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ddump-candidate-upload-evidence-${{ inputs.version }}-${{ inputs.source_sha }}
+          path: |
+            dist/release-signed/candidate-readback.json
+            dist/release-signed/release-manifest.json
+            dist/release-signed/release-authorization.json
+          if-no-files-found: warn
+          retention-days: 30

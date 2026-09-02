@@ -1,6 +1,6 @@
 # Public Release Checklist
 
-Last evidence review: 2026-08-22
+Last evidence review: 2026-09-01
 
 This checklist covers public distribution. Paid-launch architecture and commerce gates are in:
 
@@ -38,10 +38,8 @@ A checked box requires command output, CI evidence, or authoritative external re
   - Evidence: GitHub Releases readback on 2026-08-22.
 - [x] Live `ddump.app` download buttons still point to GitHub-hosted v0.3.14.
   - Evidence: HTTPS 200 readback and parsed links on 2026-08-22.
-- [x] Current updater checks the public GitHub Releases API and opens a DMG/ZIP/release page.
-  - Evidence: source inspection on 2026-08-22.
-- [x] Sparkle is not implemented.
-  - Evidence: source/repository search on 2026-08-22.
+- [x] Public v0.3.14 uses the GitHub Releases API and predates Sparkle.
+  - Evidence: baseline source inspection on 2026-08-22; no public migration release has been published.
 - [x] MIT License exists in the repository.
   - Evidence: `LICENSE` readback on 2026-08-22.
 
@@ -59,29 +57,30 @@ A checked box requires command output, CI evidence, or authoritative external re
   - Evidence: packaging/installer source inspection and CI artifact construction.
 - [x] Source defaults remove known private drive names and personal notification topics.
   - Evidence: repository default/config inspection and public-readiness checks.
+- [x] Implementation branch pins Sparkle 2.9.6, rejects updater downgrades, embeds stable/beta configuration, signs enclosures/feeds synthetically, and defers install/relaunch until safe idle.
+  - Evidence: `docs/IMPLEMENTATION_EVIDENCE_2026-09-01.md`.
+- [x] Protected candidate/beta/stable workflow code and immutable R2/appcast promotion/rollback tooling are implemented with no production activation.
+  - Evidence: workflow/action-pin/static/synthetic release tests on 2026-09-01.
 
 ### PLANNED
 
 - [ ] Treat 0.3.18 as a private-beta candidate, not the paid marketing release.
-- [ ] Implement Sparkle 2 with EdDSA signatures.
-- [ ] Publish immutable assets through Cloudflare R2 at `downloads.ddump.app`.
-- [ ] Publish separate beta/stable appcasts at `updates.ddump.app`.
-- [ ] Add protected beta/stable promotion and rollback automation.
+- [ ] Exercise Sparkle with a real protected signed/notarized candidate and clean Mac update.
+- [ ] Publish and externally verify immutable assets through Cloudflare R2 at `downloads.ddump.app` after approval.
+- [ ] Publish and externally verify separate beta/stable appcasts at `updates.ddump.app` after approval.
+- [ ] Configure and exercise protected beta/stable Environments, promotion, and rollback.
 - [ ] Complete the paid-launch, entitlement, legal, support, and monitoring gates.
 
 ### BLOCKED
 
 - [ ] Do not publish 0.3.18 as paid stable until `docs/GO_LIVE_CHECKLIST.md` passes.
-- [ ] Do not change the repository to private while downloads or updates rely on public GitHub URLs.
-- [ ] Do not claim full automatic updates until Sparkle is implemented and verified.
-- [ ] Do not describe existing MIT-licensed copies as proprietary.
+- [x] Keep the repository public and MIT licensed; visibility and licensing changes are out of scope.
+- [ ] Do not claim full automatic updates until Sparkle is externally verified.
 
 ### OWNER DECISION
 
 - [ ] Approve private-beta audience and release notes.
 - [ ] Approve stable paid release version and rollout.
-- [ ] Approve future licensing after legal review.
-- [ ] Approve repository visibility only after GitHub distribution dependencies are removed.
 
 ## 0.3.18 private-beta candidate gate
 
@@ -109,29 +108,28 @@ The current website and updater depend on public GitHub. Required order:
 3. [ ] Configure and verify `updates.ddump.app/stable/appcast.xml`.
 4. [ ] Publish an immutable signed/notarized test asset to R2.
 5. [ ] Verify anonymous HTTP 200, TLS, content type, length, SHA-256, and cache headers.
-6. [ ] Implement Sparkle 2 and reject tampered appcasts/assets.
-7. [ ] Verify beta and stable channel separation.
+6. [x] Implement pinned Sparkle 2 and synthetically reject tampered appcasts/assets.
+7. [x] Implement separate beta/stable URLs and channel allowlisting; external feed verification remains pending.
 8. [ ] Publish a signed/notarized migration release through the current public GitHub updater and test `v0.3.14 -> migration release -> Sparkle stable`.
 9. [ ] Change website links only after the approved R2 stable asset readback passes.
 10. [ ] Keep the public GitHub API/migration asset available through an approved adoption threshold and legacy-client support window.
 11. [ ] Remove the app's public GitHub Releases dependency only after migration evidence passes.
 12. [ ] Exercise rollback, higher-version forward fix, and out-of-band rescue installer.
-13. [ ] Obtain legal review of MIT/future licensing.
-14. [ ] Only then consider repository privacy with explicit owner approval.
+13. [ ] Obtain legal review of customer terms, privacy, refunds, tax, and accurate MIT-source representations.
 
 ## Release automation gate
 
-- [ ] PR CI runs without production secrets.
-- [ ] Candidate build is manual and version/SHA-specific.
-- [ ] Build/test/sign/notarize/staple/verify/checksum/appcast/R2 steps fail closed.
+- [x] PR CI is read-only and references no production secrets.
+- [x] Candidate build is manual and exact version/build/SHA/channel-specific.
+- [x] Workflow code fails closed on missing signing/notarization/signature/approval/readback inputs; real protected execution remains pending.
 - [ ] Apple notarization must return `Accepted`.
 - [ ] Gatekeeper must report Notarized Developer ID.
-- [ ] Sparkle EdDSA private key remains in protected release secrets.
-- [ ] R2 credentials are least privilege and environment-scoped.
+- [x] Sparkle EdDSA private key is referenced only as a protected Environment secret; configuration remains pending.
+- [ ] R2 credentials are configured least privilege and environment-scoped.
 - [ ] Candidate asset is immutable and read back after upload.
-- [ ] Merge to `main` changes no customer feed.
-- [ ] Beta promotion requires protected Environment approval.
-- [ ] Stable promotion requires a separate protected Environment approval.
+- [x] Merge/PR workflow contains no customer-feed mutation.
+- [x] Beta promotion is isolated in a `release-beta` Environment workflow.
+- [x] Stable promotion is isolated in a separate `release-stable` Environment workflow and does not rebuild the artifact.
 - [ ] Rollout expansion requires approval.
 - [ ] Workflow records source SHA, manifest/checksum, approver, previous known-good version, and deployment timestamps.
 
@@ -161,24 +159,22 @@ The current website and updater depend on public GitHub. Required order:
 - [ ] Cancellation and failed renewal preserve paid-through access and customer files.
 - [ ] No permanent client-side license key is used.
 
-## Known limitations in the current public code
+## Known limitations before public cutover
 
-- Auto-update is not Sparkle. The app checks GitHub Releases and opens an installer or release page.
+- Public v0.3.14 is not Sparkle. The new bounded migration path exists only in the implementation branch and has not been published or exercised end to end.
 - Update checks and automatic opening are off by default.
 - The public website still downloads v0.3.14 from GitHub.
-- The current GitHub Actions workflow does not sign, notarize, staple, publish, generate an appcast, upload to R2, promote channels, or roll back.
+- Release workflows are implemented but no real protected candidate, R2 upload, appcast promotion, or external readback has run.
 - Cloud sync through local provider folders depends on the customer's signed-in sync app. Direct rclone remains an advanced path.
 - Google Calendar OAuth still requires proper consent-screen/test-user configuration where applicable.
 - Calendar ambiguity and post-upload rename/move behavior still require full end-to-end release testing.
 
-## Licensing gate
+## Public repository and MIT license invariant
 
-DDump currently contains an MIT license. Subject to legal review of the full repository, contribution history, and third-party components, copies already distributed under MIT retain valid permissions granted under the applicable license terms. A later repository-visibility or future-license change is not expected to revoke valid existing grants.
-
-- [ ] Legal review covers existing MIT grants and future licensing.
-- [ ] Contributor-rights audit is complete.
-- [ ] Future release and website language accurately distinguishes prior MIT releases from any later terms.
-- [ ] Owner approves the future source and licensing model.
+- [x] Repository remains public.
+- [x] MIT license remains unchanged.
+- [x] Release automation does not mutate repository visibility or licensing.
+- [ ] Release and website language accurately describes the public MIT source and separately approved paid hosted services.
 
 ## Final public-release approval
 

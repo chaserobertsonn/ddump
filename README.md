@@ -12,10 +12,13 @@ DDump is a macOS photo-card ingest app for photographers who need a reliable pat
   the final paid marketing release.
 - The Gatekeeper bundle-type fix is commit `fcf2ba7`. PR #3 merged to `main` as
   `338e231`, and post-merge macOS CI passed on 2026-08-22.
-- The current updater checks public GitHub Releases and opens the installer.
-  Sparkle is not implemented.
-- Paid-launch architecture, release automation, Donna operations, and evidence
-  gates are documented under `docs/`.
+- Public v0.3.14 checks GitHub Releases and opens the installer. This source
+  tree now contains the bounded migration fix plus pinned Sparkle 2 stable/beta
+  update support; neither path has been published.
+- The paid-launch account, billing, entitlement, safe-access, helper migration,
+  backend, and release foundations are implemented but production-disabled.
+  See `docs/IMPLEMENTATION_EVIDENCE_2026-09-01.md` and
+  `docs/OWNER_ACTIVATION_PACKET.md` for proved checks and external gates.
 
 Do not infer live release state from this snapshot alone. Verify GitHub, the
 public download URL, CI, and the exact artifact before promotion.
@@ -249,16 +252,13 @@ be published.
 
 ## Source License and Repository Visibility
 
-This repository currently contains the MIT License and is public. Subject to
-legal review of the full repository, contribution history, and third-party
-components, copies already distributed under MIT retain valid permissions
-granted by that license. A later repository-visibility or future-license change
-is not expected to revoke valid existing grants. Legal and contributor-rights
-review are required before any future proprietary licensing claim.
+This repository remains public and MIT licensed. The paid-launch work does not
+change repository visibility or licensing.
 
-The website and current updater depend on public GitHub release URLs. Public
-downloads must move to `downloads.ddump.app`, and Sparkle feeds must be verified
-at `updates.ddump.app`, before the source repository can safely be made private.
+The website and public v0.3.14 updater still depend on public GitHub release
+URLs. The migration release must remain available there while later versions
+move customer updates to verified feeds at `updates.ddump.app` and immutable
+assets at `downloads.ddump.app`.
 
 To build a public release, first create and install a Developer ID Application
 certificate. Store notarization credentials in the login keychain once; use an
@@ -477,10 +477,11 @@ folders like `DCIM/101_2026` under the Backup Folder.
 - Smart naming does not reuse existing destination folders by default. Turn on `SMART_ASSIGN_EXISTING_FOLDERS` only when those folders were created for your shoots today.
 - SQLite memory is OFF by default (Dump Folder memory mode is default).
 - Card eject grace defaults to 60 seconds.
-- Update checks and automatic installer opening are OFF by default. When enabled,
-  the current implementation reads public GitHub Releases and opens the latest
-  installer; it does not replace the app automatically. Sparkle 2 and signed
-  beta/stable appcasts are planned but not implemented.
+- Update checks are OFF by default. Legacy builds use the bounded GitHub
+  migration checker, which now rejects equal, older, and malformed versions.
+  Sparkle 2 is integrated for migration-and-later builds with signed separate
+  beta/stable appcasts; install/relaunch and helper synchronization wait for a
+  verified safe-idle boundary. No feed has been published.
 - Notification settings live in their own Settings tab. Each event can independently use ntfy, macOS notifications, or both.
 - Default ntfy toggles prioritize card ejected, upload complete, and pending recovery. Mount-failure ntfy alerts are off by default because cloud mounts are short lived and retried from the app.
 - Google Drive Desktop local-folder copy is the default cloud handoff. The

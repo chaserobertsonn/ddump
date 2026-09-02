@@ -1,8 +1,8 @@
 # DDump Paid Launch Architecture
 
-Last evidence review: 2026-08-22
+Last evidence review: 2026-09-01
 
-This document describes the target architecture for a paid direct-download DDump product. It is an architecture record, not proof that billing, entitlements, or automatic updates are implemented.
+This document describes the implemented foundation and remaining activation gates for a paid direct-download DDump product. Code-level completion is not evidence that provider dashboards, production billing, DNS, or public distribution are active.
 
 ## Status vocabulary
 
@@ -28,14 +28,18 @@ Unchecked checklist items are not complete.
 | VERIFIED | The latest public GitHub Release is [v0.3.14](https://github.com/chaserobertsonn/ddump/releases/tag/v0.3.14). | `gh release view` readback on 2026-08-22. |
 | VERIFIED | `ddump.app` currently links three download buttons to the GitHub-hosted v0.3.14 DMG. | HTTPS 200 readback and parsed live anchor URLs on 2026-08-22. |
 | VERIFIED | The updater queries `https://api.github.com/repos/<repo>/releases/latest` and opens a DMG, ZIP, or release page. | `app/DDumpApp.swift`, `checkForUpdatesIfNeeded`. |
-| VERIFIED | Sparkle is not implemented. | Source inspection and repository search on 2026-08-22. |
+| VERIFIED | At the `ebfb538` baseline Sparkle was absent and the updater used GitHub Releases. | Source inspection on 2026-08-22. |
 | VERIFIED | The repository contains the MIT License. | `LICENSE` readback on 2026-08-22. |
+| COMPLETED | Strict semantic ordering rejects equal/older GitHub releases. | `scripts/test-swift.sh` on 2026-09-01. |
+| COMPLETED | Account, hosted checkout, signed entitlement, safe-idle access policy, Billing Lab, Sparkle 2.9.6, helper migration, and release workflow foundations are implemented. | `docs/IMPLEMENTATION_EVIDENCE_2026-09-01.md`. |
+| COMPLETED | Supabase schema/functions cover immutable account/provider mappings, device authorization, raw-body webhooks, canonical recomputation, signed entitlements, rate limits, deletion, dead-letter replay, and reconciliation. | Deno format/type checks and 17 tests on 2026-09-01. |
 
 ## Release classification
 
 ### COMPLETED
 
 - The Gatekeeper bundle-type fix is on `main`; the evidence register records successful post-merge CI.
+- Paid-launch foundation implementation and deterministic safety/release tests are complete on the implementation branch.
 
 ### VERIFIED
 
@@ -45,15 +49,15 @@ Unchecked checklist items are not complete.
 ### PLANNED
 
 - Treat 0.3.18 as a private-beta candidate only.
-- Build the paid-launch system described below before a paid marketing release.
-- Move customer-facing downloads and update feeds to Cloudflare R2 custom domains.
-- Replace the current GitHub release checker with Sparkle 2.
+- Deploy and exercise the paid-launch foundation against real provider test mode.
+- Move customer-facing downloads and update feeds to Cloudflare R2 custom domains after external verification and owner approval.
+- Publish and test the bounded v0.3.14 GitHub-to-Sparkle migration release.
 
 ### BLOCKED
 
 - The source repository must not become private while the website or updater depends on public GitHub release/API URLs.
 - Paid launch is blocked until account, billing, entitlement, restore, outage, update, rollback, legal, and card-safety tests pass.
-- Proprietary future licensing is blocked pending legal review and a contributor-rights review.
+- Repository visibility and MIT licensing remain unchanged and are outside this launch's scope.
 
 ### OWNER DECISION
 
@@ -109,7 +113,7 @@ Responsibilities:
 - Issue short-lived, signed offline entitlement documents containing account ID, entitlement ID, status, issued time, refresh deadline, grace expiry, authorized installation binding, device policy, and key ID.
 - Record an auditable entitlement event trail without storing payment-card data.
 
-This service is PLANNED. The hosting platform, database, and authentication provider are OWNER DECISION items.
+The Supabase/Postgres implementation foundation is COMPLETED but undeployed. Production project ownership, email delivery, secrets, policy values, monitoring, and activation remain external gates and OWNER DECISION items.
 
 ### Stripe Billing
 
@@ -156,7 +160,7 @@ R2 assets must be public-read, versioned, immutable, cacheable, and independentl
 
 ### Enforcement boundary and limits
 
-`server-authoritative` means the server is the source of subscription truth. It does not mean a customer-controlled Mac is tamper-proof DRM. Previously distributed MIT-licensed source and binaries remain subject to their granted permissions, and a motivated local administrator can modify software they control. Paid-launch policy, support, hosted services, and future licensed builds must not promise retroactive or unbreakable enforcement.
+`server-authoritative` means the server is the source of subscription truth. It does not mean a customer-controlled Mac is tamper-proof DRM. Public MIT-licensed source and binaries remain subject to their granted permissions, and a motivated local administrator can modify software they control. Paid-launch policy, support, and hosted services must not promise retroactive or unbreakable enforcement.
 
 The current importer can start through the app, its LaunchAgent, direct `ddump.sh` invocation, and retry/recovery paths. A UI-only paywall is therefore not an enforcement boundary. The planned implementation must route every supported **new import** entry point through one shared entitlement/start-authorization boundary.
 
@@ -260,11 +264,9 @@ Never place these in Slack, documentation values, commits, logs, app binaries, r
 
 Store production secrets only in encrypted GitHub Environment secrets or an approved server secret store. Use separate development, beta, and production credentials where providers support it. Rotate credentials after exposure or operator departure.
 
-## Repository visibility and MIT licensing
+## Public repository and MIT license invariant
 
-### Public GitHub dependency conflict
-
-The current website links directly to a public GitHub Release asset, and the current updater calls the public GitHub Releases API. Making the repository private first would break anonymous website downloads and the in-app release check or force customers through authenticated GitHub access.
+The current website links directly to a public GitHub Release asset, and the current updater calls the public GitHub Releases API. Repository visibility changes are prohibited for this launch and would also break anonymous website downloads and the in-app release check or force customers through authenticated GitHub access.
 
 Required migration order:
 
@@ -272,14 +274,8 @@ Required migration order:
 2. Build a signed/notarized migration release that the current GitHub updater can discover and that installs Sparkle 2 with the stable custom-domain appcast.
 3. Keep the public GitHub Releases API and migration asset available while testing `v0.3.14 -> migration release -> Sparkle stable` on supported Macs.
 4. Move website downloads to R2 and verify anonymous clean install, update preservation, rollback, outage behavior, and legacy-client adoption.
-5. Define a measured retirement threshold and support window for clients that never installed the migration release.
-6. Only after the threshold, support plan, and explicit owner approval may GitHub updater assets be retired or repository privacy be considered.
-
-### MIT license consequence
-
-DDump currently contains an MIT license. Subject to legal review of the full repository, contribution history, and third-party components, copies already distributed under MIT retain the permissions granted to their recipients, including use, modification, redistribution, sublicensing, and sale under the applicable license terms. A later repository-visibility or licensing change is not expected to revoke valid existing grants.
-
-Legal review and a contributor-rights audit are required before any future proprietary licensing language, source-availability change, or customer representation. Do not describe past MIT releases as proprietary.
+5. Define a measured support plan for clients that never installed the migration release.
+6. Keep the repository public, keep the MIT license, and retain the bounded migration asset for legacy clients. Paid services and hosted infrastructure do not require a visibility or licensing change.
 
 ## Required external inventory
 
@@ -370,13 +366,12 @@ No automation may infer these approvals:
 - Owner approval for prices, trial, refund policy, grace period, bounded offline revocation exposure, device limit, launch offer, and enforcement model.
 - Owner approval for authentication/account recovery, entitlement hosting/database, transactional email, monitoring, and service ownership.
 - Owner approval for Cloudflare/R2/DNS, registrar, website hosting, and customer download/update cutover.
-- Legal approval for future licensing, terms, privacy, refunds, tax posture, and existing MIT implications.
+- Legal approval for terms, privacy, refunds, tax posture, and accurate MIT-source representations.
 - Owner approval for production Stripe and RevenueCat activation.
 - Owner approval for merge when product decisions remain.
 - Owner approval for beta release publication.
 - Owner approval for stable promotion and rollout expansion.
 - Named incident authority approval for rollback or rollout pause.
-- Owner approval before making the repository private.
 - Owner approval before rotating production credentials in a way that can interrupt service.
 
 ## Exit criteria for paid marketing release
@@ -395,11 +390,17 @@ Paid marketing remains BLOCKED until all of the following have evidence:
 
 ## Official implementation references
 
-Provider behavior changes over time. Verify the current official documentation before implementation:
+Provider behavior changes over time. These official references were rechecked on 2026-09-01:
 
-- RevenueCat Web overview: <https://www.revenuecat.com/docs/web/overview>
-- RevenueCat Stripe Billing integration: <https://www.revenuecat.com/docs/web/integrations/stripe>
+- RevenueCat Web Purchase Links: <https://www.revenuecat.com/docs/web/web-billing/web-purchase-links>
+- RevenueCat Web payment integrations: <https://www.revenuecat.com/docs/web/payment-integrations>
+- RevenueCat hosted web paywalls: <https://www.revenuecat.com/docs/web/paywalls>
 - RevenueCat webhooks: <https://www.revenuecat.com/docs/integrations/webhooks>
 - Stripe subscriptions: <https://docs.stripe.com/billing/subscriptions/overview>
+- Stripe webhook signature verification: <https://docs.stripe.com/webhooks/signature>
+- Supabase Auth PKCE: <https://supabase.com/docs/guides/auth/sessions/pkce-flow>
 - Sparkle publishing and EdDSA appcast signatures: <https://sparkle-project.org/documentation/publishing/>
+- Sparkle update preferences and signed-feed settings: <https://sparkle-project.org/documentation/customization/>
+- Apple Developer ID and notarization: <https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution>
 - Cloudflare R2 public buckets and custom domains: <https://developers.cloudflare.com/r2/buckets/public-buckets/>
+- Cloudflare R2 S3 conditional operations: <https://developers.cloudflare.com/r2/api/s3/api/>

@@ -10,6 +10,7 @@ DEFAULT_MOUNT_LABEL="com.ddump.rclone-gdrive"
 OLD_MOUNT_LABEL="com.ddump.rclone-gdrive.legacy"
 LEGACY_CHASE_MOUNT_LABEL="com.chase.rclone-gdrive"
 APP_VERSION="${DDUMP_VERSION:-0.3.18}"
+APP_BUILD="${DDUMP_BUILD:-$APP_VERSION}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -22,6 +23,7 @@ DEFAULT_CONFIG="${PROJECT_DIR}/config/config.env"
 APP_BUNDLE="${HOME}/Applications/DDump.app"
 PREBUILT_APP_BUNDLE="${PROJECT_DIR}/app/DDump.app"
 MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+APP_SWIFT_SOURCES=("${PROJECT_DIR}/app/"*.swift "${PROJECT_DIR}/app/PaidLaunch/"*.swift)
 
 if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
@@ -44,7 +46,7 @@ for s in ddump.sh ddump-trust.sh ddump-monitor.sh ddump-control.sh \
          ddump-settings.sh ddump-debug-snapshot.sh \
          ddump-notify.sh ddump-cluster.sh ddump-calendar-lookup.sh \
          ddump-google-calendar.py \
-         rclone-gdrive-mount.sh ddump-network-watch.sh ddump-cloud-idle-watch.sh; do
+         ddump-access-policy.sh rclone-gdrive-mount.sh ddump-network-watch.sh ddump-cloud-idle-watch.sh; do
   if [[ -f "${PROJECT_DIR}/bin/${s}" ]]; then
     cp "${PROJECT_DIR}/bin/${s}" "${BIN_DIR}/${s}"
     chmod +x "${BIN_DIR}/${s}"
@@ -78,7 +80,7 @@ elif [[ -f "${PROJECT_DIR}/app/DDumpApp.swift" ]]; then
   <key>CFBundleIdentifier</key>
   <string>com.ddump.app</string>
   <key>CFBundleVersion</key>
-  <string>${APP_VERSION}</string>
+  <string>${APP_BUILD}</string>
   <key>CFBundleShortVersionString</key>
   <string>${APP_VERSION}</string>
   <key>CFBundleExecutable</key>
@@ -126,7 +128,7 @@ PLIST
           "${sdk_args[@]}" \
           -target "${arch}-apple-macosx${MACOS_DEPLOYMENT_TARGET}" \
           -o "$out" \
-          "${PROJECT_DIR}/app/DDumpApp.swift"
+          "${APP_SWIFT_SOURCES[@]}"
     }
     if build_slice "$(uname -m)" "${APP_BUNDLE}/Contents/MacOS/DDump"; then
       chmod +x "${APP_BUNDLE}/Contents/MacOS/DDump"
@@ -463,9 +465,17 @@ else
   replace_key_if_exact 'ONBOARDING_COMPLETED' '0' '1'
 fi
 add_missing_key 'UPDATE_CHECKS_ENABLED' '"0"' "Enable public-release update checks."
-add_missing_key 'AUTO_UPDATES_ENABLED' '"0"' "Open the GitHub download page automatically when a newer release is found."
+add_missing_key 'AUTO_UPDATES_ENABLED' '"0"' "Automatically download signed Sparkle updates in migration-and-later builds; legacy builds open the bounded GitHub migration page."
 add_missing_key 'UPDATE_CHECK_FREQUENCY' '"weekly"' "Update check cadence: startup | weekly | monthly."
 add_missing_key 'UPDATE_GITHUB_REPO' '"chaserobertsonn/ddump"' "GitHub owner/repo used for release update checks."
+add_missing_key 'BETA_UPDATES_OPT_IN' '"0"' "Explicit per-Mac beta update opt-in; eligibility is also required."
+add_missing_key 'PAID_ACCESS_ENFORCEMENT' '"0"' "Production-disabled new-import entitlement enforcement."
+add_missing_key 'ENTITLEMENT_PUBLIC_KEYS' '""' "Public entitlement verification keys as key-id:base64url entries."
+add_missing_key 'ENTITLEMENT_MINIMUM_ISSUED_AT' '"0"' "Anti-rollback floor for signed entitlement issue time."
+add_missing_key 'ENTITLEMENT_ISSUER' '"https://api.ddump.app"'
+add_missing_key 'ENTITLEMENT_AUDIENCE' '"com.ddump.app"'
+add_missing_key 'ENTITLEMENT_ENVIRONMENT' '"test"'
+add_missing_key 'ENTITLEMENT_PRODUCT_IDS' '"ddump_test_monthly,ddump_test_annual"'
 add_missing_key 'WINDOW_RESTORE_MODE' '"remember"' "Main window behavior: remember | compact | large."
 
 normalize_escaped_home_path 'RCLONE_BIN'

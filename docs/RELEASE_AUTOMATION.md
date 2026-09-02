@@ -1,8 +1,8 @@
 # DDump Release Automation
 
-Last evidence review: 2026-08-22
+Last evidence review: 2026-09-01
 
-This document defines the target release pipeline for signed DDump builds. It does not authorize a release and does not claim the target automation exists.
+This document defines the implemented release pipeline for signed DDump builds. It does not authorize a release or claim that protected credentials, R2, DNS, or customer feeds have been configured or exercised.
 
 ## Status vocabulary
 
@@ -28,19 +28,21 @@ This document defines the target release pipeline for signed DDump builds. It do
   - SHA-256: `c723f1ec3ed95c900a0923d215335373a9d1606a3d21ecb7b087a342df056dbd`.
 - Latest public GitHub Release is v0.3.14.
 - The live site still links v0.3.14 from GitHub.
-- The app still reads public GitHub Releases and opens an installer. Sparkle is absent.
+- The public v0.3.14 path still depends on GitHub; no migration release has been published.
 
 ### COMPLETED
 
 - Local build/sign/notarize/staple/Gatekeeper validation for the 0.3.18 private-beta candidate.
 - CI verification for the open Gatekeeper fix.
+- Sparkle 2.9.6 is pinned by reviewed archive SHA-256 and embedded in release builds.
+- Separate stable/beta feeds, whole-feed and enclosure EdDSA signing, safe-idle relaunch deferral, and helper migration are implemented and pass synthetic/local tests.
+- Candidate, protected signing/notarization, immutable R2 upload/readback, beta/stable exact-artifact promotion, appcast CAS rollback, provenance, and forward-fix scripts/workflows are implemented.
 
 ### PLANNED
 
-- Sparkle 2 with EdDSA signatures.
-- Cloudflare R2 distribution at `downloads.ddump.app`.
-- Separate stable and beta appcasts at `updates.ddump.app`.
-- GitHub Actions signing, notarization, stapling, verification, checksums, appcast generation, R2 upload, explicit promotion, monitoring, and rollback support.
+- Configure protected GitHub Environments and secrets, then exercise a real signed/notarized candidate workflow.
+- Configure Cloudflare R2 and externally verify `downloads.ddump.app` and `updates.ddump.app`.
+- Run clean-install, legacy migration, real-card, rollback, forward-fix, and external readback acceptance tests.
 
 ### BLOCKED
 
@@ -182,7 +184,7 @@ Steps:
 4. After Environment approval, a separate isolated signing job verifies the manifest and artifact before exposing any signing credential.
 5. The secret-bearing job runs only fixed, reviewed signing/notarization tooling from the protected release workflow. It must not execute candidate binaries, repository-supplied hooks, arbitrary build scripts, or unpinned dependencies.
 6. Import or access the Developer ID identity through a temporary keychain or isolated signing service without printing/exporting it; restrict network egress where practical and destroy temporary keychain material on every exit path.
-7. Sign nested code, app, installer, and DMG in the correct order.
+7. Sign nested code and the app inside-out, notarize/staple it, copy those exact accepted app bytes into the installer payload, then sign the installer and DMG in order.
 8. Verify strict signatures, bundle identifiers, Team ID `W4GNV4SRNU`, designated requirements, and nested helper signers. Generic `Notarized Developer ID` output is not sufficient.
 9. Submit the exact signed app/final DMG hashes to Apple notarization and require `Accepted` readback.
 10. Fetch and archive notarization logs as restricted CI artifacts.
@@ -231,6 +233,7 @@ Required evidence:
 - Crash, import-error, update-error, entitlement-error, and support thresholds are green.
 - Rollback or forward-fix candidate is ready.
 - Release notes and customer communication are approved.
+- Stable phased-rollout interval is explicitly approved; use `0` to disable phased rollout.
 
 Steps:
 
@@ -319,7 +322,7 @@ Actions permissions must be least privilege. Third-party Actions must be pinned 
 3. Test `v0.3.14 -> migration release -> Sparkle stable`, including config/data preservation, Gatekeeper, offline behavior, rollback, and rescue installer.
 4. Move the website to immutable R2 downloads while keeping the public GitHub API and migration asset available.
 5. Measure legacy-version adoption and support failures. Owner approves the retirement threshold and support window.
-6. Only after the threshold passes may the app's GitHub updater dependency be considered retired. Repository privacy remains a separate owner-approved action.
+6. Only after the threshold passes may new app versions retire the GitHub updater code path. The repository remains public and the bounded migration asset remains available.
 
 ## Update publication flow
 
@@ -332,13 +335,13 @@ Actions permissions must be least privilege. Third-party Actions must be pinned 
 7. Beta appcast changes atomically and rollout is monitored.
 8. Beta health gates pass for the approved soak period.
 9. Owner approves stable promotion.
-10. The exact tested artifact is promoted, stable appcast changes atomically, and rollout starts at the approved phase.
+10. The exact tested stable-flavor artifact is promoted, stable appcast changes atomically, and rollout starts at the approved phase; non-opted-in installs select stable by default.
 11. Monitoring decides whether an owner-approved expansion, pause, rollback, or forward fix occurs.
 
 ## Beta rollout flow
 
-1. The entitlement service assigns and persists a named beta cohort or deterministic rollout bucket for the authenticated account.
-2. Only an eligible signed app selects the beta appcast; the feed itself is not an access-control boundary.
+1. The entitlement service assigns and persists beta eligibility for the authenticated account.
+2. Only a backend-eligible account with explicit opt-in on that Mac selects the beta appcast; the feed itself is not an access-control boundary.
 3. Sparkle reads only the beta feed.
 4. The beta appcast references a signed/notarized immutable beta asset.
 5. The app downloads but does not install during scanning, copying, verification, organization, backup handoff, recovery, or safe eject.
@@ -418,4 +421,4 @@ Privacy rule: never send filenames, customer paths, card volume names, media met
 
 ## Current implementation gap
 
-The current `.github/workflows/macos-ci.yml` is validation-only. It does not sign, notarize, staple, Gatekeeper-assess, generate checksums/appcasts, sign with Sparkle EdDSA, upload to R2, promote channels, or roll back. Those remain PLANNED and must not be represented as complete.
+The workflows and scripts exist and their secretless/synthetic checks pass, but no protected release run has imported the real Developer ID identity, submitted a new candidate to Apple, uploaded to the production R2 account, changed an appcast, or produced external custom-domain readback. Those external gates remain unchecked. The public website and public v0.3.14 download are unchanged.

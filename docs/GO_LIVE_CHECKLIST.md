@@ -1,6 +1,6 @@
 # DDump Go-Live Checklist
 
-Last evidence review: 2026-08-22
+Last evidence review: 2026-09-01
 
 This is the release gate for turning DDump from a public preview/private-beta candidate into a paid product. A checked box means evidence exists. Configuration, intent, a Slack claim, or a locally generated file without validation is not enough.
 
@@ -29,8 +29,8 @@ This is the release gate for turning DDump from a public preview/private-beta ca
   - Evidence: GitHub Releases readback on 2026-08-22.
 - [x] `ddump.app` currently serves HTTP 200 and links to the GitHub-hosted v0.3.14 DMG.
   - Evidence: live HTTPS readback and parsed links on 2026-08-22.
-- [x] Current updater uses public GitHub Releases and opens an installer; Sparkle is absent.
-  - Evidence: source inspection on 2026-08-22.
+- [x] The public v0.3.14 baseline uses GitHub Releases and had no Sparkle migration path.
+  - Evidence: baseline source inspection on 2026-08-22; no public release/feed was changed by the implementation branch.
 - [x] Repository contains an MIT License.
   - Evidence: repository readback on 2026-08-22.
 
@@ -40,22 +40,23 @@ This is the release gate for turning DDump from a public preview/private-beta ca
   - Evidence: local Mac validation commands listed in the VERIFIED section.
 - [x] Gatekeeper bundle-type fix is on `main` with green post-merge CI.
   - Evidence: GitHub merge and check-run readback listed in the VERIFIED section.
+- [x] Paid-launch code foundation implements safe-idle access policy, Supabase account/backend boundaries, signed entitlements, RevenueCat hosted-checkout resolution, Billing Lab, Sparkle 2, helper migration, and protected release automation.
+  - Evidence: `docs/IMPLEMENTATION_EVIDENCE_2026-09-01.md`; this does not claim external activation.
 
 ### PLANNED
 
 - [ ] Stripe Billing monthly and yearly subscriptions.
-- [ ] RevenueCat Web paywalls, offerings, entitlements, restore, targeting, and experiments.
-- [ ] DDump customer accounts and server-authoritative signed offline entitlements.
-- [ ] Sparkle 2 signed updates.
-- [ ] R2 release assets and separate stable/beta appcasts.
-- [ ] Explicit beta/stable promotion, phased rollout, monitoring, and rollback.
+- [ ] Configure and exercise RevenueCat Web paywalls, offerings, products, and lifecycle in real provider test mode.
+- [ ] Deploy test/production account and entitlement environments with approved policies and monitoring.
+- [ ] Exercise a protected signed/notarized Sparkle candidate and clean migration path.
+- [ ] Configure R2 release assets and externally verify separate stable/beta appcasts.
+- [ ] Exercise explicit beta/stable promotion, phased rollout, monitoring, and rollback.
 
 ### BLOCKED
 
 - [ ] Do not call 0.3.18 the final paid marketing release.
-- [ ] Do not make the repository private while the site or updater depends on public GitHub URLs.
+- [x] Keep the repository public and MIT licensed; visibility and licensing changes are out of scope for this launch.
 - [ ] Do not start paid marketing until every required gate below is checked.
-- [ ] Do not adopt proprietary future licensing until legal and contributor-rights review is complete.
 
 ### OWNER DECISION
 
@@ -68,26 +69,25 @@ This is the release gate for turning DDump from a public preview/private-beta ca
 - [ ] Accept or reject bounded offline refund/revocation exposure through the signed hard grace deadline; immediate revocation is impossible while a Mac is offline.
 - [ ] Approve launch offer and founding-user treatment.
 - [ ] Approve authentication provider and account recovery policy.
-- [ ] Approve future source-license model after legal review.
 - [ ] Approve beta cohort, stable health thresholds, rollout phases, and incident authority.
 
 ## 1. Card-safety release gate
 
 All items are mandatory and non-negotiable.
 
-- [ ] Entitlement expiry cannot stop an active scan, copy, verification, organization, backup handoff, recovery, or safe-eject sequence.
-- [ ] Cancellation, refund, failed renewal, logout, and vendor outage cannot interrupt an active import.
-- [ ] Billing or update UI cannot kill or restart the ingest helper.
-- [ ] A mounted card can never be stranded by an entitlement response or paywall.
+- [x] Entitlement expiry cannot stop an active scan, copy, verification, organization, backup handoff, recovery, or safe-eject sequence.
+- [x] Cancellation, refund, failed renewal, logout, and vendor outage cannot interrupt an active import.
+- [x] Billing or update UI cannot kill or restart the ingest helper.
+- [x] A mounted card can never be stranded by an entitlement response or paywall.
 - [ ] Eject still waits for existing copy verification, inventory stability, do-not-eject, stop-after-file, and safety prompts.
-- [ ] Expired or refunded users retain access to customer files, receipts, logs, diagnostics, settings, support, and safe cleanup.
-- [ ] New-import denial occurs only before card work begins and only at a safe idle boundary.
-- [ ] A valid signed offline entitlement works through the approved grace period.
-- [ ] Vendor unavailability is not treated as an explicit revocation.
-- [ ] Sparkle may not install or relaunch while scan, copy, verification, organization, backup handoff, recovery, mounted-card safety hold, or safe eject is active.
-- [ ] Entitlement and updater modules cannot directly call ingest or eject controls.
-- [ ] App UI, LaunchAgent, direct helper invocation, retry, and recovery entry points all use one shared new-import authorization boundary; UI-only enforcement is forbidden.
-- [ ] A successful start authorization remains valid through scan, copy, verification, organization, backup handoff, recovery, and safe eject; state changes affect only the next run after safe idle.
+- [x] Expired or refunded users retain access to customer files, receipts, logs, diagnostics, settings, support, and safe cleanup.
+- [x] New-import denial occurs only before card work begins and only at a safe idle boundary.
+- [x] A valid signed offline entitlement works through the configurable test grace period. Production duration remains OWNER DECISION.
+- [x] Vendor unavailability is not treated as an explicit revocation.
+- [x] Sparkle may not install or relaunch while scan, copy, verification, organization, backup handoff, recovery, mounted-card safety hold, or safe eject is active.
+- [x] Entitlement and updater modules cannot directly call ingest or eject controls.
+- [x] App UI, LaunchAgent, direct helper invocation, retry, and recovery entry points use the shared pre-volume-discovery authorization boundary; UI-only enforcement is absent.
+- [x] A successful start authorization remains valid through scan, copy, verification, organization, backup handoff, recovery, and safe eject; state changes affect only the next run after safe idle.
 - [ ] Threat-model tests cover direct/manual helper invocation, modified helper detection or supported response, LaunchAgent mount start, retry, and callback bypass attempts.
 - [ ] Ingest owns a crash-recoverable atomic state machine/operation lease for idle, scan, copy, verify, organize, backup handoff, recovery, eject-pending, and safe-idle.
 - [ ] Closing the UI, helper restart/kill, simultaneous entitlement change, and update races immediately before eject cannot release or bypass the active lease.
@@ -96,13 +96,13 @@ All items are mandatory and non-negotiable.
 ## 2. Account and identity gate
 
 - [ ] Create separate development/test and production account environments.
-- [ ] Select authentication provider.
+- [x] Select Supabase Auth with passwordless email and PKCE as the implemented default.
 - [ ] Configure account creation, email verification, sign-in, logout, session refresh, recovery, and account deletion.
-- [ ] Define canonical immutable DDump account ID.
-- [ ] Map one DDump account to Stripe Customer ID and RevenueCat App User ID.
-- [ ] Define privacy-preserving device identifier and reset policy.
+- [x] Define canonical immutable DDump account ID.
+- [x] Implement immutable account mappings for auth, RevenueCat App User ID, and optional Stripe Customer ID.
+- [x] Implement per-installation Ed25519 identity with only its SHA-256 binding sent/stored outside Keychain.
 - [ ] Define second-Mac and device-replacement behavior.
-- [ ] Protect sessions against replay, fixation, CSRF, open redirect, and deep-link spoofing.
+- [x] Protect passwordless sessions with PKCE, random state, expiry, Keychain-persisted pending flow, bearer-token callback rejection, and HTTPS-only service URLs.
 - [ ] Bind checkout handoff to account, offering, state nonce, and expiration; never return reusable auth or entitlement tokens in URLs.
 - [ ] Use HTTPS universal links or a provider-approved loopback return with PKCE; if a custom URL scheme exists, treat it only as a wake-up signal and require authenticated device-bound polling/redemption with atomic single-use invalidation.
 - [ ] Test scheme hijacking, replay, expired state, cross-account completion, offering mismatch, and reused handoff codes.
@@ -146,20 +146,20 @@ All items are mandatory and non-negotiable.
 
 - [ ] RevenueCat project and DDump app created under the correct business owner.
 - [ ] Stripe Billing connection configured in test and production environments.
-- [ ] App User ID policy uses DDump account IDs, not anonymous permanent licenses.
+- [x] App User ID policy uses DDump account IDs, not anonymous permanent licenses.
 - [ ] Monthly and yearly products mapped correctly.
 - [ ] One canonical paid entitlement created and documented.
 - [ ] Current offering includes approved monthly/yearly packages.
 - [ ] Hosted web paywall displays price, cadence, trial, renewal, cancellation, and restore terms accurately.
 - [ ] Targeting rules are documented and testable.
-- [ ] A/B variant assignment is stable per account and recorded.
-- [ ] Restore behavior works through account sign-in.
-- [ ] RevenueCat private API key is server-only.
-- [ ] RevenueCat webhook authorization is verified.
-- [ ] RevenueCat environment, project/app, App User ID, product, and entitlement mappings are verified before state changes.
-- [ ] RevenueCat webhook event IDs process idempotently.
-- [ ] RevenueCat is the sole provider-derived entitlement mutation source; direct Stripe webhooks are immutable audit/reconciliation triggers and never independently grant access.
-- [ ] Composite idempotency key includes provider, environment, project/account, and event ID; durable receipt occurs before acknowledgment.
+- [x] A/B variant assignment is stable per account and recorded; beta/debug test overrides are backend-allowlisted and expiring.
+- [x] Restore behavior is implemented as account sign-in, device authorization, and signed entitlement refresh.
+- [x] RevenueCat private/API and purchase-link configuration is server-only; the app contains no privileged provider key.
+- [x] RevenueCat webhook authorization/HMAC exact-raw-body verification is implemented and tested.
+- [x] RevenueCat environment, project/app, App User ID, product, and entitlement mappings are verified before state changes.
+- [x] RevenueCat webhook event IDs process idempotently and retry an incomplete `received` event.
+- [x] RevenueCat is the sole provider-derived entitlement mutation source; direct Stripe webhooks are immutable audit/reconciliation triggers and never independently grant access.
+- [x] Composite idempotency key includes provider, environment, project, and event ID; durable receipt precedes successful acknowledgment.
 - [ ] Versioned state transition tests cover trialing, incomplete, active, past-due, unpaid, cancellation-at-period-end, expired, refunded, dispute, chargeback, duplicate, delayed, and out-of-order events.
 - [ ] Stripe and RevenueCat state reconcile without duplicate subscriptions or purchases.
 - [ ] Dashboard member access follows least privilege.
@@ -168,35 +168,35 @@ All items are mandatory and non-negotiable.
 
 - [ ] Select hosting platform, durable database, and service owner.
 - [ ] Deploy development/test and production environments.
-- [ ] Implement authenticated entitlement refresh.
-- [ ] Implement verified Stripe/RevenueCat webhook ingestion.
-- [ ] Store canonical state and an auditable event history.
-- [ ] Issue signed entitlement documents with account, entitlement, status, issue time, refresh deadline, grace expiry, authorized installation binding, device policy, and key ID.
+- [x] Implement authenticated entitlement refresh.
+- [x] Implement verified Stripe/RevenueCat webhook ingestion.
+- [x] Store canonical state and an auditable event history.
+- [x] Issue signed entitlement documents with account, entitlement, status, issue time, refresh deadline, grace expiry, authorized installation binding, device policy, and key ID.
 - [ ] Keep entitlement signing private key in KMS or an isolated server secret store.
-- [ ] Embed only the public verification key in DDump.
-- [ ] Store signed entitlement and installation private material in macOS Keychain/Secure Enclave where available; only non-secret timing metadata may use protected app support.
-- [ ] Token includes issuer, audience, account, installation key, product, policy version, token ID, `iat`, `nbf`, refresh deadline, hard `exp`, and key ID.
-- [ ] Refresh returns typed `valid`, `indeterminate`, or verified `revoked`; provider unavailability is never fabricated as revocation.
-- [ ] Reject invalid signature, wrong audience/account/installation, stale or revoked key ID, corruption, copied token, replay, and pre-revocation-epoch token.
-- [ ] Logout invalidates local cache/session after active work reaches safe idle.
+- [x] Embed only public entitlement verification keys in DDump.
+- [x] Store session, installation private key, signed entitlement model, and anti-rollback state in Keychain; expose only a device-bound signed document through mode-0600 app support for the shared helper gate.
+- [x] Token includes issuer, audience, account, installation key hash, product, policy version, token ID, `iat`, `nbf`, refresh deadline, hard `exp`, revocation epochs, and key ID.
+- [x] Refresh returns typed `valid`, `indeterminate`, or verified `revoked`; provider unavailability is never fabricated as revocation.
+- [x] Reject invalid signature, wrong audience/account/installation/key hash, stale or unknown/revoked key ID, corruption, copied token, replay, and pre-revocation-epoch token.
+- [x] Logout invalidates local session only after active work reaches safe idle.
 - [ ] Rotate signing keys without locking out valid customers.
 - [ ] Reconcile webhook lag and provider outage without asking customers to repurchase.
 - [ ] Support override/repair is audited, expiring, and least privilege.
-- [ ] Entitlement refresh has a bounded timeout and never runs on the ingest path.
+- [x] Entitlement refresh has a bounded timeout and never runs on the ingest path.
 - [ ] Monitoring covers refresh latency/error, webhook lag, token issuance failures, and state divergence.
 
 ## 6. Purchase and lifecycle data-flow gate
 
 ### Purchase
 
-- [ ] App opens hosted paywall and Stripe Checkout in the system browser.
-- [ ] Checkout is tied to an authenticated DDump account.
+- [x] App resolves RevenueCat Web Purchase Links and opens hosted checkout in the system browser without collecting card data.
+- [x] Checkout is tied to an authenticated DDump account and identified RevenueCat App User ID.
 - [ ] Monthly purchase returns active entitlement.
 - [ ] Yearly purchase returns active entitlement.
 - [ ] Trial returns trialing entitlement with correct dates.
 - [ ] Checkout abandonment does not create entitlement.
 - [ ] Delayed webhooks show pending state and do not double-charge.
-- [ ] App refreshes entitlement after checkout and stores a signed offline token.
+- [x] App polls after checkout, refreshes entitlement, verifies it, and stores a signed offline token.
 
 ### Cancellation
 
@@ -215,7 +215,7 @@ All items are mandatory and non-negotiable.
 
 ### Restore and second Mac
 
-- [ ] Restore is account sign-in plus refresh, not a permanent license key.
+- [x] Restore is account sign-in plus refresh, not a permanent license key.
 - [ ] Existing purchase restores on a clean Mac.
 - [ ] Second Mac follows approved device policy.
 - [ ] Device replacement does not duplicate subscription or strand access.
@@ -233,20 +233,20 @@ All items are mandatory and non-negotiable.
 
 ## 7. Sparkle 2 update gate
 
-- [ ] Sparkle 2 dependency is pinned and reviewed.
-- [ ] Developer ID and Sparkle EdDSA trust roles are documented separately.
-- [ ] EdDSA private key is available only to protected release automation.
-- [ ] EdDSA public key is embedded in the app.
-- [ ] Stable app uses `https://updates.ddump.app/stable/appcast.xml`.
-- [ ] Beta opt-in/account state uses `https://updates.ddump.app/beta/appcast.xml`.
-- [ ] Appcasts include version, build, minimum macOS, release notes, HTTPS enclosure, exact length, and EdDSA signature.
-- [ ] Tampered appcast is rejected.
-- [ ] Tampered DMG is rejected.
-- [ ] Update can download during background use but cannot install/relaunch until scan, copy, verification, organization, backup handoff, recovery, mounted-card safety hold, and safe eject are finished.
-- [ ] Update preserves config, trust records, account, entitlement cache, pending work, receipts, logs, and customer files.
+- [x] Sparkle 2.9.6 dependency is pinned by reviewed URL and SHA-256.
+- [x] Developer ID, Sparkle EdDSA, entitlement, and release-authorization trust roles are documented separately.
+- [x] EdDSA private key is referenced only by protected release/promotion secret names.
+- [x] Release builds require the EdDSA public key embedded in the app.
+- [x] Stable app configuration uses `https://updates.ddump.app/stable/appcast.xml`.
+- [x] Explicit beta channel configuration uses `https://updates.ddump.app/beta/appcast.xml`.
+- [x] Appcasts include version, build, minimum macOS, release notes, HTTPS enclosure, exact length, channel/phased metadata, enclosure EdDSA, and whole-feed EdDSA signatures.
+- [x] Synthetic tampered/invalid Sparkle signature verification fails closed through Sparkle `sign_update --verify` and app verifier tests.
+- [x] Tampered enclosure signatures are rejected by the pinned Sparkle verification path.
+- [x] Update can download during background use but cannot install/relaunch until scan, copy, verification, organization, backup handoff, recovery, mounted-card safety hold, and safe eject are finished.
+- [x] Helper migration preserves config/runtime state; Sparkle replaces only the app while customer files and app support remain outside the bundle.
 - [ ] Failed update leaves current app functional.
-- [ ] Beta feed cannot leak into stable.
-- [ ] Version ordering and forward-fix behavior are tested.
+- [x] Beta items carry a beta channel and separate URL; beta selection requires backend eligibility plus explicit local opt-in, while every other client selects stable.
+- [x] Version ordering and higher-version forward-fix behavior are tested.
 
 ## 8. Cloudflare R2 and domain gate
 
@@ -283,30 +283,30 @@ All items are mandatory and non-negotiable.
 ## 9. GitHub release automation gate
 
 - [ ] `main` is protected with required checks.
-- [ ] CI has read-only contents and no production secrets.
+- [x] CI workflow permissions are read-only and no production secrets are referenced.
 - [ ] Beta and stable GitHub Environments exist with required owner reviewers.
-- [ ] Third-party Actions are pinned to reviewed commit SHAs.
-- [ ] Candidate workflow accepts exact source commit/version/channel inputs.
+- [x] Third-party Actions are pinned to full commit SHAs and checked by `verify-action-pins.sh`.
+- [x] Candidate workflow accepts exact source commit/version/build/channel/rollout inputs.
 - [ ] Candidate source is on protected `main` or an explicitly approved protected release ref; environment approval names the exact SHA, and secret-bearing jobs use the protected default-branch workflow definition.
 - [ ] Untrusted PR/fork code and arbitrary repository scripts never run with signing, notarization, Sparkle, R2, billing, or entitlement secrets.
 - [ ] A no-secret build job emits provenance-attested artifacts; an isolated signer verifies the manifest and runs only fixed reviewed signing/notarization tooling.
-- [ ] Temporary keychain/signing material is destroyed on success, failure, or cancellation; secret-bearing jobs restrict egress where practical.
+- [x] Temporary keychain/signing material is removed by the signer trap on success or failure; runner cancellation cleanup remains a GitHub-hosted runner guarantee to verify in a real run.
 - [ ] Workflow rejects reused version/build numbers.
-- [ ] Workflow builds and tests universal macOS 13+ app and installer.
-- [ ] Workflow signs nested code, app, installer, and DMG correctly.
+- [x] Secretless CI builds/tests universal macOS 13+ app and installer locally; protected workflow code uses the same candidate artifact.
+- [ ] Protected workflow signs nested code, app, installer, and DMG correctly in a real credentialed run.
 - [ ] Workflow requires Apple notarization `Accepted` readback.
 - [ ] Workflow staples and validates tickets.
 - [ ] Workflow requires `codesign`, `stapler`, `spctl`, disk-image, and architecture verification.
 - [ ] Verification fails closed unless app bundle ID is `com.ddump.app`, installer bundle ID is `com.ddump.app.installer`, Team ID is `W4GNV4SRNU`, nested helper signers/designated requirements match, and notarization covers the exact artifact hashes.
-- [ ] Workflow generates checksums, manifest, release notes, and Sparkle appcast/signature.
+- [x] Workflow code generates checksums, provenance/release authorization, release-note URL metadata, and enclosure/whole-appcast Sparkle signatures; protected execution remains unverified.
 - [ ] Workflow uploads immutable objects and verifies external R2 readback.
-- [ ] Merge to `main` does not publish beta/stable appcasts.
-- [ ] Beta promotion is a separate approved action.
-- [ ] Stable promotion is a separate approved action.
+- [x] Merge/PR CI has no appcast publication step.
+- [x] Beta promotion is a separate protected workflow action.
+- [x] Stable promotion is a separate protected workflow action that copies exact beta bytes without rebuilding.
 - [ ] Rollout expansion is a separate approved action.
 - [ ] Deployment history records approver, manifest digest, previous version, and timestamps.
 - [ ] Concurrency prevents two promotions racing on one channel.
-- [ ] Appcast promotion uses digest/ETag compare-and-swap and aborts on a concurrent feed change.
+- [x] Appcast promotion code uses signed-manifest digest verification and ETag compare-and-swap; external R2 execution remains unverified.
 
 ## 10. Release rollout and rollback gate
 
@@ -389,8 +389,7 @@ Each row requires exact build/version, account/environment, commands or test cas
 - [ ] Support playbooks cover lost access, duplicate purchase, restore, refund, billing outage, update failure, missing files, stuck card, failed backup, and corrupted config.
 - [ ] Tax collection, registrations, invoices, and record retention reviewed by qualified support.
 - [ ] Legal review covers direct-download subscriptions, auto-renewal disclosures, cancellation, refunds, privacy, and source licensing.
-- [ ] Contributor-rights review is complete before future proprietary licensing.
-- [ ] Documentation states that existing MIT-licensed copies retain granted permissions.
+- [x] Documentation states that DDump remains public and MIT licensed.
 
 ## 13. Required external account inventory
 
@@ -438,28 +437,20 @@ All values remain encrypted and are never copied into this checklist.
 - [ ] Cloudflare/R2/DNS, registrar, website hosting, and customer download/update cutover approval.
 - [ ] Offline grace, bounded offline revocation exposure, device count, and replacement-policy approval.
 - [ ] Beta cohort, health thresholds, rollout phases, and incident-authority approval.
-- [ ] Legal/licensing and contributor-rights approval.
+- [ ] Legal approval for customer terms, privacy, refunds, subscription disclosures, and accurate MIT-source representations.
 - [ ] Enforcement/tamper-resistance goal, signed-helper design, user-modified-helper policy, and treatment of previously distributed MIT copies approval.
 - [ ] Production Stripe/RevenueCat configuration approval.
 - [ ] Beta release approval.
 - [ ] Stable release approval.
 - [ ] Each stable rollout expansion approval.
 - [ ] Rollback/forward-fix authority and customer-message approval.
-- [ ] Repository visibility change approval after migration evidence.
 
-## Repository visibility transition gate
+## Public repository and MIT license invariant
 
-The repository may be considered for private visibility only when all are checked:
-
-- [ ] Website has no customer-facing GitHub asset URL.
-- [ ] App has no customer updater dependency on GitHub Releases.
-- [ ] Signed/notarized migration release has passed `v0.3.14 -> migration release -> Sparkle stable` on supported Macs.
-- [ ] Public GitHub updater/API and migration asset remain available through the approved legacy-client adoption threshold and support window.
-- [ ] Anonymous R2 stable download works.
-- [ ] Stable and beta Sparkle feeds work from custom domains.
-- [ ] Clean install, update preservation, outage, and rollback tests pass without public GitHub access.
-- [ ] Existing MIT grants and future licensing have legal review.
-- [ ] Owner explicitly approves the visibility change.
+- [x] Repository remains public.
+- [x] MIT license remains unchanged.
+- [x] Release automation contains no repository-visibility or licensing mutation.
+- [ ] Customer website and updater distribution migrate to R2/Sparkle without removing the public repository or bounded legacy migration asset.
 
 ## Final paid-launch decision
 
@@ -469,6 +460,6 @@ Do not call DDump paid and launched until all five gates are green:
 2. **Commerce:** monthly, yearly, trial, restore, cancellation, refund, second Mac, outage, and offline grace work end to end.
 3. **Distribution:** signed Sparkle updates and R2 downloads operate on stable/beta custom domains with rollback.
 4. **Operations:** owner-approved promotion, monitoring, support, incident response, and audit evidence are live.
-5. **Legal:** terms, privacy, refunds, tax, and MIT/future-licensing review are complete.
+5. **Legal:** terms, privacy, refunds, tax, and accurate MIT-source representations are complete.
 
 Until then, 0.3.18 remains a private-beta candidate and v0.3.14 remains the latest public GitHub release.

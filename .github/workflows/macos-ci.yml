@@ -12,12 +12,37 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Public readiness
         run: ./scripts/public-readiness-check.sh
 
+      - name: App and release behavior tests
+        run: ./scripts/run-tests.sh
+
+      - name: Backend format, type, and unit tests
+        run: |
+          npx -y deno@2.9.6 fmt --check supabase tests/backend backend
+          npx -y deno@2.9.6 check supabase/functions/*/index.ts tests/backend/*.ts
+          npx -y deno@2.9.6 test --config backend/deno.json tests/backend
+
+      - name: Release automation static checks
+        run: |
+          bash -n scripts/release/*.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in Path("scripts/release").glob("*.py"):
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
+          ./scripts/release/verify-action-pins.sh .github/workflows
+
       - name: Build unsigned installer DMG
+        env:
+          DDUMP_BUILD: "318"
+          DDUMP_SPARKLE_ENABLED: "1"
+          DDUMP_HELPER_MIGRATION_ENABLED: "1"
+          DDUMP_PAID_LAUNCH_ENABLED: "1"
+          DDUMP_PAID_BUILD_FLAVOR: beta
         run: ./scripts/package-dmg.sh
 
       - name: Verify universal binaries and local artifact
@@ -27,3 +52,6 @@ jobs:
           [[ " $app_archs " == *" arm64 "* && " $app_archs " == *" x86_64 "* ]]
           [[ " $installer_archs " == *" arm64 "* && " $installer_archs " == *" x86_64 "* ]]
           test -f dist/DDump-0.3.18-unsigned.dmg
+          [[ "$(/usr/bin/plutil -extract CFBundleVersion raw -o - dist/DDump.app/Contents/Info.plist)" == "318" ]]
+          [[ "$(/usr/bin/plutil -extract DDumpSparkleEnabled raw -o - dist/DDump.app/Contents/Info.plist)" == "true" ]]
+          [[ "$(/usr/bin/plutil -extract DDumpPaidLaunchEnabled raw -o - dist/DDump.app/Contents/Info.plist)" == "true" ]]

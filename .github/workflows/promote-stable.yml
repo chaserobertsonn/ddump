@@ -1,0 +1,77 @@
+name: Promote Stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      beta_manifest_r2_key:
+        description: Immutable beta release-manifest.json R2 key.
+        required: true
+      expected_beta_manifest_sha256:
+        description: SHA-256 of the signed beta manifest body.
+        required: true
+      expected_current_stable_etag:
+        description: Current stable appcast ETag, or NONE for first publish.
+        required: true
+      stable_rollout:
+        description: Approved stable rollout phase.
+        required: true
+      phased_rollout_interval:
+        description: Sparkle phased rollout interval in seconds; use 0 to disable.
+        required: true
+        default: "0"
+      beta_evidence_url:
+        description: URL to beta soak/test evidence.
+        required: true
+      stable_approval_notes:
+        description: Owner approval record or issue/PR URL.
+        required: true
+      rollback_ready:
+        description: Rollback appcast/asset path is ready.
+        required: true
+        type: boolean
+      forward_fix_ready:
+        description: Higher-version forward-fix path is ready.
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  promote-stable:
+    runs-on: macos-14
+    timeout-minutes: 25
+    environment: release-stable
+    env:
+      DDUMP_DOWNLOADS_BASE_URL: ${{ vars.DDUMP_DOWNLOADS_BASE_URL }}
+      DDUMP_UPDATES_BASE_URL: ${{ vars.DDUMP_UPDATES_BASE_URL }}
+      DDUMP_STABLE_ROLLOUT: ${{ inputs.stable_rollout }}
+      DDUMP_PHASED_ROLLOUT_INTERVAL: ${{ inputs.phased_rollout_interval }}
+      DDUMP_BETA_EVIDENCE_URL: ${{ inputs.beta_evidence_url }}
+      DDUMP_STABLE_APPROVAL_NOTES: ${{ inputs.stable_approval_notes }}
+      DDUMP_ROLLBACK_READY: ${{ inputs.rollback_ready && '1' || '0' }}
+      DDUMP_FORWARD_FIX_READY: ${{ inputs.forward_fix_ready && '1' || '0' }}
+      DDUMP_R2_ACCOUNT_ID: ${{ secrets.DDUMP_R2_ACCOUNT_ID }}
+      DDUMP_R2_BUCKET: ${{ secrets.DDUMP_R2_RELEASE_BUCKET }}
+      DDUMP_R2_ACCESS_KEY_ID: ${{ secrets.DDUMP_R2_STABLE_ACCESS_KEY_ID }}
+      DDUMP_R2_SECRET_ACCESS_KEY: ${{ secrets.DDUMP_R2_STABLE_SECRET_ACCESS_KEY }}
+      DDUMP_RELEASE_AUTH_PUBLIC_KEY_B64: ${{ secrets.DDUMP_RELEASE_AUTH_PUBLIC_KEY_B64 }}
+      DDUMP_RELEASE_AUTH_PRIVATE_KEY_B64: ${{ secrets.DDUMP_RELEASE_AUTH_PRIVATE_KEY_B64 }}
+      DDUMP_SPARKLE_EDDSA_PRIVATE_KEY_B64: ${{ secrets.DDUMP_SPARKLE_EDDSA_PRIVATE_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Promote exact beta artifact to stable
+        run: |
+          ./scripts/release/promote-stable.sh \
+            "${{ inputs.beta_manifest_r2_key }}" \
+            "${{ inputs.expected_beta_manifest_sha256 }}" \
+            "${{ inputs.expected_current_stable_etag }}" \
+            dist/promote-stable
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ddump-stable-promotion-${{ github.run_id }}
+          path: dist/promote-stable/*.json
+          if-no-files-found: error
+          retention-days: 365

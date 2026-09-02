@@ -1,0 +1,61 @@
+name: Promote Beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_manifest_r2_key:
+        description: Immutable beta release-manifest.json R2 key.
+        required: true
+      expected_manifest_sha256:
+        description: SHA-256 of the signed manifest body.
+        required: true
+      expected_current_beta_etag:
+        description: Current beta appcast ETag, or NONE for first publish.
+        required: true
+      beta_rollout:
+        description: Approved beta cohort or rollout percentage.
+        required: true
+      release_notes_approved:
+        description: Owner-approved release notes.
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  promote-beta:
+    runs-on: macos-14
+    timeout-minutes: 20
+    environment: release-beta
+    env:
+      DDUMP_BETA_ROLLOUT: ${{ inputs.beta_rollout }}
+      DDUMP_RELEASE_NOTES_APPROVED: ${{ inputs.release_notes_approved }}
+      DDUMP_UPDATES_BASE_URL: ${{ vars.DDUMP_UPDATES_BASE_URL }}
+      DDUMP_R2_ACCOUNT_ID: ${{ secrets.DDUMP_R2_ACCOUNT_ID }}
+      DDUMP_R2_BUCKET: ${{ secrets.DDUMP_R2_RELEASE_BUCKET }}
+      DDUMP_R2_ACCESS_KEY_ID: ${{ secrets.DDUMP_R2_BETA_ACCESS_KEY_ID }}
+      DDUMP_R2_SECRET_ACCESS_KEY: ${{ secrets.DDUMP_R2_BETA_SECRET_ACCESS_KEY }}
+      DDUMP_RELEASE_AUTH_PUBLIC_KEY_B64: ${{ secrets.DDUMP_RELEASE_AUTH_PUBLIC_KEY_B64 }}
+      DDUMP_SPARKLE_EDDSA_PRIVATE_KEY_B64: ${{ secrets.DDUMP_SPARKLE_EDDSA_PRIVATE_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require release-note approval
+        run: |
+          [[ "${DDUMP_RELEASE_NOTES_APPROVED}" == "true" ]]
+
+      - name: Promote beta appcast with CAS
+        run: |
+          ./scripts/release/promote-beta.sh \
+            "${{ inputs.candidate_manifest_r2_key }}" \
+            "${{ inputs.expected_manifest_sha256 }}" \
+            "${{ inputs.expected_current_beta_etag }}" \
+            dist/promote-beta
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ddump-beta-promotion-${{ github.run_id }}
+          path: dist/promote-beta/*.json
+          if-no-files-found: error
+          retention-days: 90

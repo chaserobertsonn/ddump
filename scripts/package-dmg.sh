@@ -7,6 +7,7 @@ umask 022
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_VERSION="${DDUMP_VERSION:-0.3.18}"
+APP_BUILD="${DDUMP_BUILD:-$APP_VERSION}"
 MACOS_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 RELEASE_MODE="${DDUMP_RELEASE_MODE:-0}"
 SIGN_IDENTITY="${DDUMP_SIGN_IDENTITY:-}"
@@ -117,7 +118,9 @@ mkdir -p "$ROOT_DIR" "${PAYLOAD_DIR}/bin" "${PAYLOAD_DIR}/config" "${PAYLOAD_DIR
 
 cp -R "${PROJECT_DIR}/bin/." "${PAYLOAD_DIR}/bin/"
 cp -R "${PROJECT_DIR}/config/." "${PAYLOAD_DIR}/config/"
-cp "${PROJECT_DIR}/app/DDumpApp.swift" "${PAYLOAD_DIR}/app/DDumpApp.swift"
+cp "${PROJECT_DIR}/app/"*.swift "${PAYLOAD_DIR}/app/"
+mkdir -p "${PAYLOAD_DIR}/app/PaidLaunch"
+cp "${PROJECT_DIR}/app/PaidLaunch/"*.swift "${PAYLOAD_DIR}/app/PaidLaunch/"
 cp -R "${PROJECT_DIR}/app/Assets" "${PAYLOAD_DIR}/app/Assets"
 cp -R "${DIST_DIR}/DDump.app" "${PAYLOAD_DIR}/app/DDump.app"
 cp "${PROJECT_DIR}/README.md" "${PAYLOAD_DIR}/README.md"
@@ -144,7 +147,7 @@ cat >"${INSTALLER_APP}/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>com.ddump.app.installer</string>
   <key>CFBundleVersion</key>
-  <string>${APP_VERSION}</string>
+  <string>${APP_BUILD}</string>
   <key>CFBundleShortVersionString</key>
   <string>${APP_VERSION}</string>
   <key>CFBundleExecutable</key>

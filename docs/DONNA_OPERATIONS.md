@@ -1,8 +1,8 @@
 # Donna Operations for DDump
 
-Last evidence review: 2026-08-22
+Last evidence review: 2026-09-01
 
-This runbook defines how Donna may move DDump work from an idea to a monitored release. It does not grant blanket permission to buy services, change production accounts, publish releases, make the repository private, or bypass owner approvals.
+This runbook defines how Donna may move DDump work from an idea to a monitored release. It does not grant blanket permission to buy services, change production accounts, publish releases, alter repository visibility or licensing, or bypass owner approvals.
 
 ## Status vocabulary
 
@@ -16,23 +16,22 @@ This runbook defines how Donna may move DDump work from an idea to a monitored r
 
 ### VERIFIED
 
-- Canonical server checkout: `/root/DFP-Coding/DDump`.
+- Canonical repository: `chaserobertsonn/ddump`; DDump is personal work and local branches belong under `/Users/chaserobertson/Personal-Projects`.
 - GitHub repository: `chaserobertsonn/ddump`, currently public.
 - 0.3.18 local DMG is signed, notarized, stapled, and Gatekeeper-accepted.
 - Gatekeeper fix `fcf2ba7` merged through PR #3 as `338e231`, and post-merge macOS CI passed.
 - Latest public release and live website download remain v0.3.14.
-- Current updater depends on public GitHub Releases; Sparkle is absent.
+- Public v0.3.14 still depends on GitHub Releases; the implementation branch now contains the bounded migration and Sparkle foundation but nothing has been published.
 
 ### PLANNED
 
-- Donna workflow: idea -> branch -> tests -> private preview -> owner approval -> merge -> explicit release -> monitored rollout.
-- GitHub Environments for beta and stable release approvals.
-- R2 downloads, Sparkle feeds, Stripe/RevenueCat entitlement monitoring, and rollback automation.
+- Configure GitHub Environments for beta and stable release approvals.
+- Deploy and exercise R2 downloads, Sparkle feeds, RevenueCat/Supabase test mode, entitlement monitoring, and rollback automation.
 
 ### BLOCKED
 
 - No stable paid release until the go-live gates pass.
-- No private repository transition until public downloads and updates are independent of GitHub visibility.
+- Repository remains public and MIT licensed; no visibility or licensing transition is part of this launch.
 
 ### OWNER DECISION
 
@@ -178,7 +177,7 @@ Exit gate: rollout reaches the approved target or is paused/rolled back with an 
 | Change Stripe/RevenueCat production settings | Yes | No | Owner |
 | Select or change production auth, entitlement hosting, database, email, or monitoring provider | Yes | No | Owner |
 | Change Cloudflare/R2/DNS, registrar, website hosting, or customer download/update cutover | Yes | No | Owner |
-| Change repository visibility | Yes | No | Owner, after migration gates |
+| Change repository visibility or MIT license | No | No | Out of scope; DDump remains public and MIT licensed |
 | Buy services or change paid plans | Yes | No | Two-step purchase approval policy |
 | Send customer communication | Yes | No | Owner |
 
@@ -251,18 +250,12 @@ The first action is rollout pause, not speculative code changes in production.
 - [ ] Initial rollout percentage and expansion gate are recorded.
 - [ ] Support and customer communication owners are ready.
 
-## Repository visibility transition
+## Public repository and MIT license invariant
 
-Donna must refuse to make the repository private until all are VERIFIED:
-
-1. Website downloads use `downloads.ddump.app` and return the approved artifact anonymously.
-2. Stable and beta Sparkle feeds use `updates.ddump.app` and pass clean update tests.
-3. The app no longer calls the public GitHub Releases API for customer updates.
-4. Rollback and monitoring operate without public repository access.
-5. Existing MIT license implications have legal review.
-6. Owner explicitly approves the visibility change.
-
-Previously distributed MIT-licensed copies retain their granted permissions regardless of a later visibility change.
+Donna must refuse repository-visibility or license changes for this launch.
+DDump remains public and MIT licensed. Moving customer downloads and appcasts to
+R2 is an availability and release-integrity change only; it does not authorize
+source restriction or relicensing.
 
 ## Evidence retention
 
